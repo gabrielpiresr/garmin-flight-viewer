@@ -4,9 +4,11 @@ import { airspaceTypeLabel, type AirspaceInfo } from "../lib/airspaceLayersDb";
 export function AirspaceInfoPanel({
   info,
   onClose,
+  className,
 }: {
   info: AirspaceInfo;
   onClose: () => void;
+  className?: string;
 }) {
   const typeLabel = airspaceTypeLabel(info.type);
   const rows: Array<{ label: string; value: string }> = [
@@ -25,7 +27,9 @@ export function AirspaceInfoPanel({
 
   return (
     <aside
-      className="pointer-events-auto flex max-h-[calc(100%-1rem)] w-[min(100%-1rem,24rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50"
+      className={`pointer-events-auto flex max-h-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50 ${
+        className ?? "w-full"
+      }`}
       style={{ borderTopColor: info.color, borderTopWidth: 3 }}
     >
       <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-3 py-2">

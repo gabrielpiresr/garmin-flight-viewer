@@ -88,11 +88,19 @@ import { sendFplExportEmail } from "../../lib/notificationsDb";
 import { FlightBriefingAiPanel } from "../FlightBriefingAiPanel";
 import { useIsDesktopLg } from "../../hooks/useMediaQuery";
 import {
+  IconFolderSmall,
+  IconSaveAsSmall,
+  IconSaveSmall,
+  PlanejamentoBackIcon,
+  PlanejamentoEditorTabs,
   PlanejamentoFloatingNav,
+  PlanejamentoHoverButton,
   PlanejamentoSectionHeader,
   type PlanejamentoSectionId,
 } from "./PlanejamentoSectionShell";
 import { PlanejamentoRouteCards } from "./PlanejamentoRouteCards";
+import { PlanejamentoLibrary } from "./PlanejamentoLibrary";
+import { PlanejamentoDialog, planejamentoDialogButtons } from "./PlanejamentoDialog";
 import type {
   FlightBriefingAiGenerateInput,
   FlightBriefingAiReport,
@@ -104,7 +112,7 @@ const Route3DView = lazy(() => import("../Route3DView"));
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15";
 const btnIcon =
-  "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40";
+  "inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40";
 const btnPrimary =
   "inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50";
 const btnSecondary =
@@ -283,31 +291,6 @@ function normalizeRouteWaypoints(waypoints: FlightPlanWaypoint[]): FlightPlanWay
   });
 }
 
-function IconNewRoute() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.414a1.5 1.5 0 00-.44-1.06L12.646 2.44A1.5 1.5 0 0011.586 2H4.5zM11 3.5V7h3.5L11 3.5zM10 10a.75.75 0 01.75.75v1.5h1.5a.75.75 0 010 1.5h-1.5v1.5a.75.75 0 01-1.5 0v-1.5h-1.5a.75.75 0 010-1.5h1.5v-1.5A.75.75 0 0110 10z" />
-    </svg>
-  );
-}
-
-function IconSave() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M3 3.5A1.5 1.5 0 014.5 2h7.086a1.5 1.5 0 011.06.44l3.914 3.914a1.5 1.5 0 01.44 1.06V16.5A1.5 1.5 0 0115.5 18h-11A1.5 1.5 0 013 16.5v-13zM5 4v4.75c0 .69.56 1.25 1.25 1.25h4.5c.69 0 1.25-.56 1.25-1.25V4H5zm0 8.5v3h10v-3H5z" />
-    </svg>
-  );
-}
-
-function IconSaveAs() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M3 3.5A1.5 1.5 0 014.5 2h7.086a1.5 1.5 0 011.06.44l3.914 3.914a1.5 1.5 0 01.44 1.06V16.5A1.5 1.5 0 0115.5 18h-11A1.5 1.5 0 013 16.5v-13zM5 4v4.75c0 .69.56 1.25 1.25 1.25h4.5c.69 0 1.25-.56 1.25-1.25V4H5z" />
-      <path d="M14.75 11.25a.75.75 0 00-1.5 0v1.5h-1.5a.75.75 0 000 1.5h1.5v1.5a.75.75 0 001.5 0v-1.5h1.5a.75.75 0 000-1.5h-1.5v-1.5z" />
-    </svg>
-  );
-}
-
 function IconReverse() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
@@ -320,9 +303,11 @@ function IconReverse() {
 function WaypointNoteInput({
   value,
   onCommit,
+  className,
 }: {
   value: string;
   onCommit: (note: string) => void;
+  className?: string;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => {
@@ -330,7 +315,10 @@ function WaypointNoteInput({
   }, [value]);
   return (
     <input
-      className="min-w-[8rem] rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-[11px] text-slate-200"
+      className={
+        className ??
+        "min-w-[8rem] rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-[11px] text-slate-200"
+      }
       value={draft}
       placeholder="Obs…"
       onChange={(e) => setDraft(e.target.value)}
@@ -348,14 +336,6 @@ function IconPlus() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
       <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-    </svg>
-  );
-}
-
-function IconFolder() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M3.75 3A1.75 1.75 0 002 4.75v10.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0018 15.25v-8.5A1.75 1.75 0 0016.25 5h-5.586a.25.25 0 01-.177-.073l-1.414-1.414A1.75 1.75 0 007.836 3H3.75z" />
     </svg>
   );
 }
@@ -421,7 +401,13 @@ function IconPanelExpand() {
   );
 }
 
-export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
+export function PlanejamentoTab({
+  onLeave: _onLeave,
+  onCompactEditorChange,
+}: {
+  onLeave?: () => void;
+  onCompactEditorChange?: (active: boolean) => void;
+}) {
   const { showToast } = useToast();
   const { user } = useAuth();
   const [waypoints, setWaypoints] = useState<FlightPlanWaypoint[]>([]);
@@ -448,7 +434,6 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const [savedRoutesLoading, setSavedRoutesLoading] = useState(false);
   const [activeSavedId, setActiveSavedId] = useState<string | null>(null);
   const [saveName, setSaveName] = useState("");
-  const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [showFplExportModal, setShowFplExportModal] = useState(false);
@@ -456,7 +441,19 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const [measureMode, setMeasureMode] = useState(false);
   const [planningPanelCollapsed, setPlanningPanelCollapsed] = useState(false);
   const isDesktopLg = useIsDesktopLg();
+  const [view, setView] = useState<"library" | "editor">("library");
+  const [editorMounted, setEditorMounted] = useState(false);
+  const [openedSections, setOpenedSections] = useState<ReadonlySet<PlanejamentoSectionId>>(() => new Set());
   const [activeSection, setActiveSection] = useState<PlanejamentoSectionId>("map");
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [deleteRouteTarget, setDeleteRouteTarget] = useState<SavedFlightRoute | null>(null);
+  const [deleteBriefingId, setDeleteBriefingId] = useState<string | null>(null);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
+  const pendingNavRef = useRef<(() => void) | null>(null);
+  const runAfterSaveAsRef = useRef<(() => void) | null>(null);
+  const cleanFingerprintRef = useRef("");
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     if (!isDesktopLg) setPlanningPanelCollapsed(true);
@@ -636,6 +633,71 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const displayRouteName = saveName.trim() || (waypoints.length ? suggestRouteName(waypoints) : routeLabel);
   const displayBriefingName =
     briefingName.trim() || suggestBriefingName(originIcao, destIcao);
+
+  function routeFingerprint() {
+    return JSON.stringify({
+      id: activeSavedId,
+      name: saveName.trim(),
+      waypoints,
+      alternates,
+    });
+  }
+
+  function setCleanFingerprint(next: {
+    id: string | null;
+    name: string;
+    waypoints: FlightPlanWaypoint[];
+    alternates: string[];
+  }) {
+    cleanFingerprintRef.current = JSON.stringify({
+      id: next.id,
+      name: next.name.trim(),
+      waypoints: next.waypoints,
+      alternates: next.alternates,
+    });
+  }
+
+  function isRouteDirty() {
+    if (!editorMounted) return false;
+    if (!activeSavedId && waypoints.length === 0 && !saveName.trim()) return false;
+    return routeFingerprint() !== cleanFingerprintRef.current;
+  }
+  dirtyRef.current = isRouteDirty();
+
+  function openEditor(section: PlanejamentoSectionId) {
+    setEditorMounted(true);
+    setOpenedSections((prev) => {
+      if (prev.has(section)) return prev;
+      const next = new Set(prev);
+      next.add(section);
+      return next;
+    });
+    setActiveSection(section);
+    setView("editor");
+  }
+
+  function selectSection(id: PlanejamentoSectionId) {
+    setOpenedSections((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    setActiveSection(id);
+  }
+
+  function goToLibrary() {
+    withUnsavedGuard(() => setView("library"));
+  }
+
+  function withUnsavedGuard(action: () => void) {
+    if (!isRouteDirty()) {
+      action();
+      return;
+    }
+    pendingNavRef.current = action;
+    setUnsavedOpen(true);
+  }
 
   const nexAtlasText = useMemo(() => waypointsToNexAtlasText(waypoints), [waypoints]);
 
@@ -1193,6 +1255,20 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
     setGenerated(false);
   }
 
+  function applyWaypointAltitude(index: number, altitudeFt: number) {
+    const nextAlt = Math.round(altitudeFt);
+    setWaypoints((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, altitudeFt: nextAlt } : item)),
+    );
+    if (index > 0) {
+      const isLast = index === waypoints.length - 1;
+      const field = waypoints[index]?.fieldElevFt;
+      if (!isLast || field == null || nextAlt !== Math.round(field)) {
+        setCruiseAltitudeFt(String(nextAlt));
+      }
+    }
+  }
+
   function clearBriefingState() {
     setActiveBriefingId(null);
     setBriefingName("");
@@ -1217,6 +1293,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
 
   function newRoute() {
     clearRoute();
+    setCleanFingerprint({ id: null, name: "", waypoints: [], alternates: [] });
     showToast({ variant: "success", title: "Nova rota", message: "Roteiro limpo para começar do zero." });
   }
 
@@ -1247,14 +1324,14 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
     });
   }
 
-  async function handleSave() {
+  async function handleSave(): Promise<boolean> {
     if (waypoints.length < 2) {
       showToast({
         variant: "warning",
         title: "Rota incompleta",
         message: "Adicione ao menos 2 pontos para salvar.",
       });
-      return;
+      return false;
     }
     try {
       if (activeSavedId) {
@@ -1270,20 +1347,28 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
         setActiveSavedId(saved.id);
         setSaveName(saved.name);
         setSavedRoutes(await listSavedFlightRoutes());
+        setCleanFingerprint({
+          id: saved.id,
+          name: saved.name,
+          waypoints,
+          alternates,
+        });
         showToast({ variant: "success", title: "Rota atualizada", message: saved.name });
-        return;
+        return true;
       }
-      await handleSaveAs();
+      await requestSaveAs();
+      return false;
     } catch (err) {
       showToast({
         variant: "error",
         title: "Falha ao salvar",
         message: err instanceof Error ? err.message : "Não foi possível salvar a rota.",
       });
+      return false;
     }
   }
 
-  async function handleSaveAs() {
+  async function requestSaveAs() {
     if (waypoints.length < 2) {
       showToast({
         variant: "warning",
@@ -1292,12 +1377,16 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
       });
       return;
     }
-    const suggested = (saveName.trim() || suggestRouteName(waypoints)).trim();
-    const name = window.prompt("Salvar como — nome da rota:", suggested)?.trim();
-    if (!name) return;
+    setSaveAsName((saveName.trim() || suggestRouteName(waypoints)).trim());
+    setSaveAsOpen(true);
+  }
+
+  async function persistSaveAs(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
     try {
       const saved = await saveFlightRoute({
-        name,
+        name: trimmed,
         waypoints,
         alternates,
         cruiseSpeedKt: cruiseOpt,
@@ -1307,8 +1396,18 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
       setActiveSavedId(saved.id);
       setSaveName(saved.name);
       setSavedRoutes(await listSavedFlightRoutes());
+      setCleanFingerprint({
+        id: saved.id,
+        name: saved.name,
+        waypoints,
+        alternates,
+      });
       showToast({ variant: "success", title: "Rota salva como", message: saved.name });
+      const after = runAfterSaveAsRef.current;
+      runAfterSaveAsRef.current = null;
+      after?.();
     } catch (err) {
+      runAfterSaveAsRef.current = null;
       showToast({
         variant: "error",
         title: "Falha ao salvar",
@@ -1317,18 +1416,29 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
     }
   }
 
+  async function handleSaveAs() {
+    await requestSaveAs();
+  }
+
   function handleLoad(route: SavedFlightRoute) {
-    setWaypoints(normalizeRouteWaypoints(route.waypoints));
-    setAlternates(Array.isArray(route.alternates) ? [...route.alternates] : []);
+    const nextWaypoints = normalizeRouteWaypoints(route.waypoints);
+    const nextAlternates = Array.isArray(route.alternates) ? [...route.alternates] : [];
+    setWaypoints(nextWaypoints);
+    setAlternates(nextAlternates);
     setActiveSavedId(route.id);
     setSaveName(route.name);
     if (route.cruiseSpeedKt != null) setCruiseSpeedKt(String(route.cruiseSpeedKt));
     if (route.fuelBurnPerHour != null) setFuelBurn(String(route.fuelBurnPerHour));
     if (route.fuelUnit) setFuelUnit(route.fuelUnit);
-    setShowSavedPanel(false);
     clearBriefingState();
     setLinkedBriefings(listBriefingsForRoute(route.id));
     setFitKey(`load-${route.id}-${Date.now()}`);
+    setCleanFingerprint({
+      id: route.id,
+      name: route.name,
+      waypoints: nextWaypoints,
+      alternates: nextAlternates,
+    });
     showToast({ variant: "success", title: "Rota carregada", message: route.name });
   }
 
@@ -1875,22 +1985,108 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const compactMode = !isDesktopLg;
 
   useEffect(() => {
-    if (!compactMode) return;
-    const needsRoute =
-      activeSection === "profile" ||
-      activeSection === "view3d" ||
-      activeSection === "airspace";
+    const needsRoute = activeSection === "view3d" || activeSection === "airspace";
     if (needsRoute && !hasRouteForSections) setActiveSection("map");
-  }, [compactMode, activeSection, hasRouteForSections]);
+  }, [activeSection, hasRouteForSections]);
+
+  useEffect(() => {
+    onCompactEditorChange?.(view === "editor");
+  }, [onCompactEditorChange, view]);
+
+  useEffect(() => {
+    if (view !== "editor") return;
+    const timer = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+    return () => window.clearTimeout(timer);
+  }, [view, activeSection]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
 
   return (
     <>
+    <div hidden={view !== "library"}>
+      <PlanejamentoLibrary
+        routes={savedRoutes}
+        loading={savedRoutesLoading}
+        activeSavedId={activeSavedId}
+        onNewRoute={() => {
+          withUnsavedGuard(() => {
+            newRoute();
+            openEditor("map");
+          });
+        }}
+        onOpenRoute={(route) => {
+          withUnsavedGuard(() => {
+            handleLoad(route);
+            openEditor("map");
+          });
+        }}
+        onDelete={(route) => setDeleteRouteTarget(route)}
+      />
+    </div>
+
+    {editorMounted && view === "editor" ? (
     <div className={compactMode ? "@container flex min-h-0 flex-col" : "@container flex flex-col gap-3"}>
+      <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950 px-3 py-2 md:px-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={btnIcon}
+            title="Voltar às rotas"
+            aria-label="Voltar às rotas"
+            onClick={goToLibrary}
+          >
+            <PlanejamentoBackIcon />
+          </button>
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">
+            {displayRouteName}
+          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <PlanejamentoHoverButton
+              variant="primary"
+              icon={<IconSaveSmall />}
+              label="Salvar"
+              title={activeSavedId ? "Salvar (atualizar)" : "Salvar"}
+              onClick={() => void handleSave()}
+              disabled={waypoints.length < 2}
+            />
+            <PlanejamentoHoverButton
+              icon={<IconSaveAsSmall />}
+              label="Salvar como"
+              title="Salvar como…"
+              onClick={() => void handleSaveAs()}
+              disabled={waypoints.length < 2}
+            />
+            <PlanejamentoHoverButton
+              icon={<IconFolderSmall />}
+              label="Abrir rota"
+              onClick={goToLibrary}
+            />
+          </div>
+        </div>
+        {isDesktopLg ? (
+          <div className="mt-1">
+            <PlanejamentoEditorTabs
+              active={activeSection}
+              hasRoute={hasRouteForSections}
+              onSelect={selectSection}
+            />
+          </div>
+        ) : null}
+      </header>
+
       {compactMode && activeSection !== "map" && activeSection !== "view3d" ? (
         <PlanejamentoSectionHeader section={activeSection} />
       ) : null}
 
-      {(isDesktopLg || activeSection === "map") ? (
+      {activeSection === "map" ? (
       <FlightPlanMap
         waypoints={waypoints}
         originLabel={waypoints[0] ? waypointDisplayName(waypoints[0]) : null}
@@ -1973,46 +2169,11 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
               <button
                 type="button"
                 className={btnIcon}
-                title="Nova rota"
-                onClick={newRoute}
-                disabled={!waypoints.length && !activeSavedId}
-              >
-                <IconNewRoute />
-              </button>
-              <button
-                type="button"
-                className={btnIcon}
-                title={activeSavedId ? "Salvar (atualizar)" : "Salvar"}
-                onClick={() => void handleSave()}
-                disabled={waypoints.length < 2}
-              >
-                <IconSave />
-              </button>
-              <button
-                type="button"
-                className={btnIcon}
-                title="Salvar como…"
-                onClick={() => void handleSaveAs()}
-                disabled={waypoints.length < 2}
-              >
-                <IconSaveAs />
-              </button>
-              <button
-                type="button"
-                className={btnIcon}
                 title="Inverter rota"
                 onClick={reverseRoute}
                 disabled={waypoints.length < 2}
               >
                 <IconReverse />
-              </button>
-              <button
-                type="button"
-                className={`${btnIcon} ${showSavedPanel ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-200" : ""}`}
-                title="Rotas salvas"
-                onClick={() => setShowSavedPanel((v) => !v)}
-              >
-                <IconFolder />
               </button>
               <button
                 type="button"
@@ -2111,47 +2272,6 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                 <span>{formatFuel(summary.fuelEstimate, fuelUnit)}</span>
               </div>
             </div>
-
-            {showSavedPanel ? (
-              <div className="max-h-40 overflow-auto rounded-lg border border-slate-800 p-2">
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Rotas salvas ({savedRoutes.length})
-                </p>
-                {savedRoutesLoading ? (
-                  <p className="text-xs text-slate-500">Carregando rotas da conta…</p>
-                ) : savedRoutes.length === 0 ? (
-                  <p className="text-xs text-slate-500">Nenhuma rota salva na sua conta.</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {savedRoutes.map((r) => (
-                      <li
-                        key={r.id}
-                        className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 ${
-                          activeSavedId === r.id
-                            ? "border-emerald-500/40 bg-emerald-500/10"
-                            : "border-slate-800 bg-slate-900/50"
-                        }`}
-                      >
-                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => handleLoad(r)}>
-                          <p className="truncate text-sm font-semibold text-slate-100">{r.name}</p>
-                          <p className="text-[10px] text-slate-500">
-                            {r.waypoints.length} pts · {new Date(r.updatedAt).toLocaleDateString("pt-BR")}
-                          </p>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-slate-500 hover:text-rose-300"
-                          title="Excluir"
-                          onClick={() => void handleDeleteSaved(r.id)}
-                        >
-                          ×
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ) : null}
 
             <div className="border-t border-slate-800 pt-2">
             <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1.5">
@@ -2297,7 +2417,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
       />
       ) : null}
 
-      {(isDesktopLg || activeSection === "route") ? (
+      {activeSection === "route" ? (
         <>
       {isDesktopLg ? (
       <section className="shrink-0 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/60">
@@ -2677,11 +2797,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
             );
           }}
           onRemove={removeWaypoint}
-          onMove={(index, dir) => {
-            const to = index + dir;
-            if (to < 0 || to >= waypoints.length) return;
-            reorderWaypoint(index, to);
-          }}
+          onReorder={reorderWaypoint}
           onImport={() => {
             setRouteTextDraft(nexAtlasText);
             setShowPasteModal(true);
@@ -2689,32 +2805,38 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
           onExport={() => setShowFplExportModal(true)}
           waypointDisplayName={waypointDisplayName}
           noteInput={({ value, onChange }) => (
-            <WaypointNoteInput value={value} onCommit={onChange} />
+            <WaypointNoteInput
+              value={value}
+              onCommit={onChange}
+              className="h-8 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200"
+            />
           )}
         />
       )}
+        {waypoints.length >= 2 ? (
+          <div className="mt-3">
+            <RouteVerticalProfileChart
+              waypoints={waypoints}
+              legs={legs}
+              totalDistanceNm={summary.distanceNm}
+              performance={performanceProfile}
+              corridors={legCorridors}
+              airspaces={airspaces}
+              onWaypointAltitudeChange={applyWaypointAltitude}
+            />
+          </div>
+        ) : null}
         </>
       ) : null}
 
-        {(isDesktopLg || activeSection === "profile") && waypoints.length >= 2 ? (
-          <RouteVerticalProfileChart
-            waypoints={waypoints}
-            legs={legs}
-            totalDistanceNm={summary.distanceNm}
-            performance={performanceProfile}
-            corridors={legCorridors}
-            airspaces={airspaces}
-          />
-        ) : null}
-
-        {(isDesktopLg || activeSection === "view3d") && waypoints.length >= 2 ? (
+        {activeSection === "view3d" && waypoints.length >= 2 ? (
           <Suspense
             fallback={
               <section
                 className={`grid place-items-center border border-slate-700/70 bg-slate-950 text-[11px] text-slate-500 ${
                   compactMode
                     ? "h-[calc(100dvh-8.25rem)] rounded-none border-x-0"
-                    : "h-[480px] rounded-2xl"
+                    : "h-[720px] rounded-2xl lg:h-[800px]"
                 }`}
               >
                 Carregando vista 3D…
@@ -2728,14 +2850,17 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
               corridors={legCorridors}
               airspaceVolumes={airspaceVolumes}
               aerodromes={aerodromes}
+              alternates={alternates}
               onAerodromeDetails={(bundle) => setDetailBundle(bundle)}
               variant={compactMode ? "section" : "embedded"}
               className={compactMode ? "-mx-3 md:-mx-4" : ""}
+              canvasClassName={compactMode ? undefined : "h-[720px] lg:h-[800px]"}
             />
           </Suspense>
         ) : null}
 
-        {(isDesktopLg || activeSection === "alternates") ? (
+        {openedSections.has("alternates") ? (
+        <div hidden={activeSection !== "alternates"}>
         <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
           <div className="mb-3">
             <h3 className="text-sm font-semibold text-slate-100">Aeródromos alternativos</h3>
@@ -2854,9 +2979,11 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
             </table>
           </div>
         </section>
+        </div>
         ) : null}
 
-        {(isDesktopLg || activeSection === "airspace") ? (
+        {openedSections.has("airspace") ? (
+        <div hidden={activeSection !== "airspace"}>
         <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
@@ -2920,9 +3047,11 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
             </div>
           ) : null}
         </section>
+        </div>
         ) : null}
 
-        {(isDesktopLg || activeSection === "briefing") ? (
+        {openedSections.has("briefing") ? (
+        <div hidden={activeSection !== "briefing"}>
         <>
         <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
@@ -2983,7 +3112,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                   <button
                     type="button"
                     className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-rose-500/15 hover:text-rose-300"
-                    onClick={() => void handleDeleteBriefing(item.id)}
+                    onClick={() => setDeleteBriefingId(item.id)}
                   >
                     Excluir
                   </button>
@@ -3437,17 +3566,194 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
           </section>
         ) : null}
         </>
+        </div>
         ) : null}
 
     </div>
+    ) : null}
 
-      {compactMode ? (
+      {compactMode && view === "editor" ? (
         <PlanejamentoFloatingNav
           active={activeSection}
           hasRoute={hasRouteForSections}
-          onSelect={setActiveSection}
-          onLeave={() => onLeave?.()}
+          onSelect={selectSection}
+          onLeave={goToLibrary}
         />
+      ) : null}
+
+      {saveAsOpen ? (
+        <PlanejamentoDialog
+          title="Salvar como"
+          onClose={() => {
+            setSaveAsOpen(false);
+            runAfterSaveAsRef.current = null;
+          }}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => {
+                  setSaveAsOpen(false);
+                  runAfterSaveAsRef.current = null;
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.primary}
+                disabled={!saveAsName.trim()}
+                onClick={() => {
+                  setSaveAsOpen(false);
+                  void persistSaveAs(saveAsName);
+                }}
+              >
+                Salvar
+              </button>
+            </>
+          }
+        >
+          <label className="block space-y-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Nome da rota</span>
+            <input
+              className={inputClass}
+              value={saveAsName}
+              autoFocus
+              onChange={(e) => setSaveAsName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && saveAsName.trim()) {
+                  e.preventDefault();
+                  setSaveAsOpen(false);
+                  void persistSaveAs(saveAsName);
+                }
+              }}
+            />
+          </label>
+        </PlanejamentoDialog>
+      ) : null}
+
+      {deleteRouteTarget ? (
+        <PlanejamentoDialog
+          title="Excluir rota"
+          onClose={() => setDeleteRouteTarget(null)}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => setDeleteRouteTarget(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.danger}
+                onClick={() => {
+                  const id = deleteRouteTarget.id;
+                  setDeleteRouteTarget(null);
+                  void handleDeleteSaved(id);
+                }}
+              >
+                Excluir
+              </button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-300">
+            Excluir a rota “{deleteRouteTarget.name}”? Esta ação não pode ser desfeita.
+          </p>
+        </PlanejamentoDialog>
+      ) : null}
+
+      {deleteBriefingId ? (
+        <PlanejamentoDialog
+          title="Excluir briefing"
+          onClose={() => setDeleteBriefingId(null)}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => setDeleteBriefingId(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.danger}
+                onClick={() => {
+                  const id = deleteBriefingId;
+                  setDeleteBriefingId(null);
+                  void handleDeleteBriefing(id);
+                }}
+              >
+                Excluir
+              </button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-300">Excluir este briefing? Esta ação não pode ser desfeita.</p>
+        </PlanejamentoDialog>
+      ) : null}
+
+      {unsavedOpen ? (
+        <PlanejamentoDialog
+          title="Alterações não salvas"
+          onClose={() => {
+            setUnsavedOpen(false);
+            pendingNavRef.current = null;
+          }}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => {
+                  setUnsavedOpen(false);
+                  pendingNavRef.current = null;
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.danger}
+                onClick={() => {
+                  const next = pendingNavRef.current;
+                  pendingNavRef.current = null;
+                  setUnsavedOpen(false);
+                  next?.();
+                }}
+              >
+                Descartar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.primary}
+                onClick={() => {
+                  const next = pendingNavRef.current;
+                  pendingNavRef.current = null;
+                  setUnsavedOpen(false);
+                  if (activeSavedId) {
+                    void handleSave().then((ok) => {
+                      if (ok) next?.();
+                    });
+                    return;
+                  }
+                  runAfterSaveAsRef.current = () => next?.();
+                  void requestSaveAs();
+                }}
+              >
+                Salvar
+              </button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-300">
+            Há alterações nesta rota. Salvar antes de continuar?
+          </p>
+        </PlanejamentoDialog>
       ) : null}
 
       {showConfigModal ? (

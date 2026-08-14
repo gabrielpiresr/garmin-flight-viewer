@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Area,
   CartesianGrid,
@@ -39,6 +39,7 @@ type Props = {
   performance?: RoutePerformanceProfile | null;
   corridors?: Array<LegCorridorInfo | null>;
   airspaces?: FlightPlanAirspaceHit[];
+  onWaypointAltitudeChange?: (index: number, altitudeFt: number) => void;
 };
 
 type ChartMouseState = {
@@ -361,17 +362,80 @@ type ScatterShapeProps = {
 
 const terrainCache = new Map<string, RouteElevationPoint[]>();
 
-function TriangleMarker(props: { cx?: number; cy?: number }) {
-  const { cx, cy } = props;
+function TriangleMarker(props: {
+  cx?: number;
+  cy?: number;
+  onPointerDown?: (event: ReactPointerEvent<SVGGElement>) => void;
+}) {
+  const { cx, cy, onPointerDown } = props;
   if (cx == null || cy == null || !Number.isFinite(cx) || !Number.isFinite(cy)) return null;
   const size = 6;
   return (
-    <polygon
-      points={`${cx},${cy - size} ${cx - size * 0.9},${cy + size * 0.7} ${cx + size * 0.9},${cy + size * 0.7}`}
-      fill="#22d3ee"
-      stroke="#ecfeff"
-      strokeWidth={1}
-    />
+    <g
+      style={{ cursor: onPointerDown ? "ns-resize" : undefined }}
+      onPointerDown={(event) => {
+        if (!onPointerDown) return;
+        event.stopPropagation();
+        event.preventDefault();
+        onPointerDown(event);
+      }}
+    >
+      <circle cx={cx} cy={cy} r={14} fill="transparent" />
+      <polygon
+        points={`${cx},${cy - size} ${cx - size * 0.9},${cy + size * 0.7} ${cx + size * 0.9},${cy + size * 0.7}`}
+        fill="#22d3ee"
+        stroke="#ecfeff"
+        strokeWidth={1}
+      />
+    </g>
+  );
+}
+
+function AltitudeConfirmPopover({
+  edit,
+  plotWidth,
+  plotHeight,
+  plotLeft,
+  plotTop,
+  onCancel,
+  onConfirm,
+}: {
+  edit: { label: string; fromFt: number; previewFt: number; clientX: number; clientY: number };
+  plotWidth: number;
+  plotHeight: number;
+  plotLeft: number;
+  plotTop: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const left = Math.min(Math.max(8, edit.clientX - plotLeft - 90), Math.max(8, plotWidth - 188));
+  const top = Math.min(Math.max(8, edit.clientY - plotTop - 84), Math.max(8, plotHeight - 108));
+  return (
+    <div
+      className="absolute z-40 w-44 rounded-lg border border-slate-700 bg-slate-950 p-2.5 shadow-xl"
+      style={{ left, top }}
+    >
+      <p className="truncate text-[11px] font-semibold text-slate-100">{edit.label}</p>
+      <p className="mt-1 font-mono text-[11px] text-cyan-200">
+        {edit.fromFt} → {edit.previewFt} ft
+      </p>
+      <div className="mt-2 flex justify-end gap-1.5">
+        <button
+          type="button"
+          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-800"
+          onClick={onCancel}
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500"
+          onClick={onConfirm}
+        >
+          Aplicar
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -544,6 +608,7 @@ export function RouteVerticalProfileChart({
   performance = null,
   corridors = [],
   airspaces = [],
+  onWaypointAltitudeChange,
 }: Props) {
   const [terrain, setTerrain] = useState<RouteElevationPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -564,6 +629,33 @@ export function RouteVerticalProfileChart({
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelClientXRef = useRef<number | null>(null);
+  const altDraggingRef = useRef(false);
+  const yDomainRef = useRef<[number, number]>([0, 500]);
+  const xAxisHeightRef = useRef(40);
+  const altitudeDragRef = useRef<{
+    index: number;
+    label: string;
+    fromFt: number;
+    previewFt: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const [altitudeDrag, setAltitudeDrag] = useState<{
+    index: number;
+    label: string;
+    fromFt: number;
+    previewFt: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const [altitudeConfirm, setAltitudeConfirm] = useState<{
+    index: number;
+    label: string;
+    fromFt: number;
+    previewFt: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const geometryKey = useMemo(
     () =>
       waypoints.length >= 2
@@ -742,9 +834,13 @@ export function RouteVerticalProfileChart({
       maxFt = Math.max(maxFt, b.altMax);
     }
     if (performance?.cruiseAltFt) maxFt = Math.max(maxFt, performance.cruiseAltFt);
+    if (altitudeDrag) maxFt = Math.max(maxFt, altitudeDrag.previewFt);
+    if (altitudeConfirm) maxFt = Math.max(maxFt, altitudeConfirm.previewFt);
     const padded = Math.ceil((maxFt * 1.15) / 500) * 500;
     return [0, Math.max(500, padded)] as [number, number];
-  }, [chartData, performance, corridorBands, visibleXDomain]);
+  }, [chartData, performance, corridorBands, visibleXDomain, altitudeDrag, altitudeConfirm]);
+  yDomainRef.current = yDomain;
+  xAxisHeightRef.current = xAxisHeight;
 
   const applyZoom = (next: XDomain | null) => {
     if (!next) {
@@ -766,9 +862,67 @@ export function RouteVerticalProfileChart({
     const start = dragStartXRef.current;
     dragStartXRef.current = null;
     setDragRange(null);
+    if (altDraggingRef.current) return;
     if (start == null || endX == null) return;
     applyZoom([start, endX]);
   };
+
+  function snapAltitudeFt(raw: number): number {
+    return Math.max(0, Math.round(raw / 100) * 100);
+  }
+
+  function altitudeFtFromClientY(clientY: number): number {
+    const el = plotShellRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const top = 14;
+    const bottom = rect.height - xAxisHeightRef.current - 4;
+    const plotH = Math.max(1, bottom - top);
+    const ratio = Math.min(1, Math.max(0, (clientY - rect.top - top) / plotH));
+    const [y0, y1] = yDomainRef.current;
+    return snapAltitudeFt(y1 - ratio * (y1 - y0));
+  }
+
+  function waypointIndexFromXNm(xNm: number): number {
+    let best = 0;
+    let bestDist = Infinity;
+    waypointMarks.forEach((mark, index) => {
+      const dist = Math.abs(mark.xNm - xNm);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = index;
+      }
+    });
+    return bestDist <= 1 ? best : -1;
+  }
+
+  function startAltitudeDrag(xNm: number, event: ReactPointerEvent) {
+    if (!onWaypointAltitudeChange) return;
+    const index = waypointIndexFromXNm(xNm);
+    if (index < 0) return;
+    const mark = waypointMarks[index];
+    const wp = waypoints[index];
+    const fromFt =
+      wp?.altitudeFt != null && Number.isFinite(wp.altitudeFt)
+        ? snapAltitudeFt(wp.altitudeFt)
+        : mark?.altitudeFt != null
+          ? snapAltitudeFt(mark.altitudeFt)
+          : snapAltitudeFt(altitudeFtFromClientY(event.clientY));
+    altDraggingRef.current = true;
+    dragStartXRef.current = null;
+    setDragRange(null);
+    setAltitudeConfirm(null);
+    const next = {
+      index,
+      label: mark?.label || wp?.label || `Ponto ${index + 1}`,
+      fromFt,
+      previewFt: fromFt,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    altitudeDragRef.current = next;
+    setAltitudeDrag(next);
+  }
 
   useEffect(() => {
     if (dragRange == null) return undefined;
@@ -780,6 +934,47 @@ export function RouteVerticalProfileChart({
       window.removeEventListener("pointerup", onUp);
     };
   }, [dragRange]);
+
+  const isAltitudeDrag = altitudeDrag != null;
+  useEffect(() => {
+    if (!isAltitudeDrag) return undefined;
+    const onMove = (event: PointerEvent) => {
+      event.preventDefault();
+      const prev = altitudeDragRef.current;
+      if (!prev) return;
+      const next = {
+        ...prev,
+        previewFt: altitudeFtFromClientY(event.clientY),
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+      altitudeDragRef.current = next;
+      setAltitudeDrag(next);
+    };
+    const onUp = (event: PointerEvent) => {
+      const prev = altitudeDragRef.current;
+      const nextFt = altitudeFtFromClientY(event.clientY);
+      altDraggingRef.current = false;
+      altitudeDragRef.current = null;
+      setAltitudeDrag(null);
+      if (prev && nextFt !== prev.fromFt) {
+        setAltitudeConfirm({
+          ...prev,
+          previewFt: nextFt,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+      }
+    };
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [isAltitudeDrag]);
 
   const hasPlanned = chartData.some((p) => p.plannedFt != null);
   const ready = waypoints.length >= 2 && totalDistanceNm > 0;
@@ -854,7 +1049,7 @@ export function RouteVerticalProfileChart({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-semibold text-slate-100">Perfil vertical</h3>
-          <span className="text-[10px] text-slate-500">Arraste para ampliar</span>
+          <span className="text-[10px] text-slate-500">Arraste o ponto para altitude · o fundo para ampliar</span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
           {loading ? <span className="text-cyan-300/80">Atualizando relevo…</span> : null}
@@ -904,6 +1099,7 @@ export function RouteVerticalProfileChart({
                 data={chartData}
                 margin={{ top: 14, right: 12, left: 0, bottom: 4 }}
                 onMouseDown={(state) => {
+                  if (altDraggingRef.current || altitudeConfirm) return;
                   const width = plotShellRef.current?.clientWidth ?? 0;
                   const x = xNmFromChartState(state as ChartMouseState, visibleXDomain, width);
                   if (x == null) return;
@@ -911,7 +1107,7 @@ export function RouteVerticalProfileChart({
                   setDragRange([x, x]);
                 }}
                 onMouseMove={(state) => {
-                  if (dragStartXRef.current == null) return;
+                  if (altDraggingRef.current || dragStartXRef.current == null) return;
                   const width = plotShellRef.current?.clientWidth ?? 0;
                   const x = xNmFromChartState(state as ChartMouseState, visibleXDomain, width);
                   if (x == null) return;
@@ -956,13 +1152,13 @@ export function RouteVerticalProfileChart({
                   tickLine={{ stroke: "#334155" }}
                 />
                 <Tooltip
-                  key={dragRange || airspaceHover ? "paused" : "live"}
+                  key={dragRange || airspaceHover || altitudeDrag || altitudeConfirm ? "paused" : "live"}
                   content={<ProfileTooltip />}
-                  cursor={dragRange || airspaceHover ? false : { stroke: "#64748b", strokeDasharray: "3 3" }}
+                  cursor={dragRange || airspaceHover || altitudeDrag || altitudeConfirm ? false : { stroke: "#64748b", strokeDasharray: "3 3" }}
                   allowEscapeViewBox={{ x: true, y: true }}
                   wrapperStyle={{ outline: "none", zIndex: 20, pointerEvents: "none" }}
                   offset={12}
-                  active={dragRange || airspaceHover ? false : undefined}
+                  active={dragRange || airspaceHover || altitudeDrag || altitudeConfirm ? false : undefined}
                 />
                 {showAirspaces
                   ? visibleAirspaceBands.map((b) => (
@@ -1037,7 +1233,21 @@ export function RouteVerticalProfileChart({
                 <Scatter
                   dataKey="waypointFt"
                   name="waypointFt"
-                  shape={(props: ScatterShapeProps) => <TriangleMarker cx={props.cx} cy={props.cy} />}
+                  shape={(props: ScatterShapeProps) => (
+                    <TriangleMarker
+                      cx={props.cx}
+                      cy={props.cy}
+                      onPointerDown={
+                        onWaypointAltitudeChange
+                          ? (event) => {
+                              const payload = props.payload as ChartRow | undefined;
+                              if (payload?.xNm == null) return;
+                              startAltitudeDrag(payload.xNm, event);
+                            }
+                          : undefined
+                      }
+                    />
+                  )}
                   isAnimationActive={false}
                   legendType="none"
                 />
@@ -1087,6 +1297,21 @@ export function RouteVerticalProfileChart({
                     ifOverflow="hidden"
                   />
                 ) : null}
+                {altitudeDrag || altitudeConfirm ? (
+                  <ReferenceLine
+                    y={(altitudeDrag ?? altitudeConfirm)!.previewFt}
+                    stroke="#22d3ee"
+                    strokeDasharray="4 4"
+                    ifOverflow="extendDomain"
+                    label={{
+                      value: `${(altitudeDrag ?? altitudeConfirm)!.previewFt} ft`,
+                      position: "insideTopRight",
+                      fill: "#a5f3fc",
+                      fontSize: 11,
+                      fontWeight: 600,
+                    }}
+                  />
+                ) : null}
               </ComposedChart>
             </ResponsiveContainer>
             {showAirspaces && airspaceHover ? (
@@ -1099,6 +1324,20 @@ export function RouteVerticalProfileChart({
               >
                 <AirspaceHoverCard band={airspaceHover.band} />
               </div>
+            ) : null}
+            {altitudeConfirm ? (
+              <AltitudeConfirmPopover
+                edit={altitudeConfirm}
+                plotWidth={plotShellRef.current?.clientWidth ?? 320}
+                plotHeight={plotShellRef.current?.clientHeight ?? 240}
+                plotLeft={plotShellRef.current?.getBoundingClientRect().left ?? 0}
+                plotTop={plotShellRef.current?.getBoundingClientRect().top ?? 0}
+                onCancel={() => setAltitudeConfirm(null)}
+                onConfirm={() => {
+                  onWaypointAltitudeChange?.(altitudeConfirm.index, altitudeConfirm.previewFt);
+                  setAltitudeConfirm(null);
+                }}
+              />
             ) : null}
           </div>
         ) : (

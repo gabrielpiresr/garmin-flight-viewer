@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type PointerEvent, type ReactNode } from "react";
 import type { FlightPlanWaypoint } from "../../types/flightPlanning";
 import {
   formatBearingDeg,
@@ -31,12 +31,20 @@ type Props = {
   onAltitudeChange: (index: number, value: string) => void;
   onNoteChange: (index: number, value: string) => void;
   onRemove: (index: number) => void;
-  onMove: (index: number, dir: -1 | 1) => void;
+  onReorder: (from: number, to: number) => void;
   onImport: () => void;
   onExport: () => void;
   waypointDisplayName: (wp: FlightPlanWaypoint) => string;
   noteInput: (props: { value: string; onChange: (v: string) => void }) => ReactNode;
 };
+
+function IconGrip() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M7 4a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0zm8-12a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0z" />
+    </svg>
+  );
+}
 
 export function PlanejamentoRouteCards({
   waypoints,
@@ -51,18 +59,65 @@ export function PlanejamentoRouteCards({
   onAltitudeChange,
   onNoteChange,
   onRemove,
-  onMove,
+  onReorder,
   onImport,
   onExport,
   waypointDisplayName,
   noteInput,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragIndexRef = useRef<number | null>(null);
+  const itemRefs = useRef<Array<HTMLLIElement | null>>([]);
+
+  function indexFromClientY(y: number, fallback: number) {
+    let over = fallback;
+    let best = Infinity;
+    itemRefs.current.forEach((el, i) => {
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) {
+        over = i;
+        best = 0;
+        return;
+      }
+      const d = Math.abs(y - (rect.top + rect.bottom) / 2);
+      if (d < best) {
+        best = d;
+        over = i;
+      }
+    });
+    return over;
+  }
+
+  function onGripPointerDown(event: PointerEvent<HTMLButtonElement>, index: number) {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragIndexRef.current = index;
+    setDragIndex(index);
+    setDragOverIndex(index);
+  }
+
+  function onGripPointerMove(event: PointerEvent<HTMLButtonElement>) {
+    const from = dragIndexRef.current;
+    if (from == null) return;
+    setDragOverIndex(indexFromClientY(event.clientY, from));
+  }
+
+  function onGripPointerUp(event: PointerEvent<HTMLButtonElement>) {
+    const from = dragIndexRef.current;
+    const to = from == null ? null : indexFromClientY(event.clientY, from);
+    dragIndexRef.current = null;
+    if (from != null && to != null) onReorder(from, to);
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
 
   return (
-    <div className="space-y-3 pb-4">
+    <div className="space-y-2 pb-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="inline-flex rounded-xl border border-slate-700 bg-slate-950 p-0.5">
+        <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
           {(
             [
               ["etapa", "Etapa"],
@@ -73,7 +128,7 @@ export function PlanejamentoRouteCards({
               key={id}
               type="button"
               onClick={() => onAccumModeChange(id)}
-              className={`min-h-10 rounded-lg px-3 text-xs font-semibold transition ${
+              className={`min-h-8 rounded-md px-2.5 text-[11px] font-semibold transition ${
                 accumMode === id ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -84,7 +139,7 @@ export function PlanejamentoRouteCards({
         <div className="relative">
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-lg text-slate-200"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-base text-slate-200"
             aria-label="Mais ações"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((v) => !v)}
@@ -103,14 +158,14 @@ export function PlanejamentoRouteCards({
                 <div className="flex items-center gap-1.5 border-b border-slate-800 px-2 py-2">
                   <input
                     type="number"
-                    className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm text-slate-200"
+                    className="h-8 w-full rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200"
                     placeholder="Alt ft"
                     value={bulkAltitudeFt}
                     onChange={(e) => onBulkAltitudeFtChange(e.target.value)}
                   />
                   <button
                     type="button"
-                    className="min-h-10 shrink-0 rounded-lg border border-slate-700 px-2 text-xs font-semibold text-slate-200 disabled:opacity-40"
+                    className="h-8 shrink-0 rounded-lg border border-slate-700 px-2 text-[11px] font-semibold text-slate-200 disabled:opacity-40"
                     disabled={waypoints.length < 2 || !bulkAltitudeFt.trim()}
                     onClick={() => {
                       onApplyBulkAltitude();
@@ -122,7 +177,7 @@ export function PlanejamentoRouteCards({
                 </div>
                 <button
                   type="button"
-                  className="block w-full px-3 py-2.5 text-left text-sm text-cyan-300 hover:bg-slate-900"
+                  className="block w-full px-3 py-2 text-left text-sm text-cyan-300 hover:bg-slate-900"
                   onClick={() => {
                     setMenuOpen(false);
                     onImport();
@@ -132,7 +187,7 @@ export function PlanejamentoRouteCards({
                 </button>
                 <button
                   type="button"
-                  className="block w-full px-3 py-2.5 text-left text-sm text-emerald-300 hover:bg-slate-900 disabled:opacity-40"
+                  className="block w-full px-3 py-2 text-left text-sm text-emerald-300 hover:bg-slate-900 disabled:opacity-40"
                   disabled={waypoints.length < 2}
                   onClick={() => {
                     setMenuOpen(false);
@@ -152,7 +207,7 @@ export function PlanejamentoRouteCards({
           Adicione pontos no mapa ou pela busca para montar a rota.
         </p>
       ) : (
-        <ul className="space-y-2.5">
+        <ul className="space-y-1.5">
           {waypoints.map((wp, idx) => {
             const leg = idx > 0 ? legs[idx - 1] : null;
             const corridor = idx > 0 ? legCorridors[idx] : null;
@@ -177,104 +232,96 @@ export function PlanejamentoRouteCards({
             return (
               <li
                 key={`card-${wp.lat}-${wp.lng}-${idx}`}
-                className="rounded-2xl border border-slate-700/80 bg-slate-950/60 p-3"
+                ref={(el) => {
+                  itemRefs.current[idx] = el;
+                }}
+                className={`rounded-xl border bg-slate-950/60 px-2 py-1.5 ${
+                  dragOverIndex === idx ? "border-emerald-400/70 bg-emerald-500/10" : "border-slate-700/80"
+                } ${dragIndex === idx ? "opacity-60" : ""}`}
               >
-                <div className="flex items-start gap-2">
-                  <div className="flex flex-col gap-1">
-                    <button
-                      type="button"
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-slate-300 disabled:opacity-30"
-                      disabled={idx === 0}
-                      aria-label="Mover para cima"
-                      onClick={() => onMove(idx, -1)}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-slate-300 disabled:opacity-30"
-                      disabled={idx >= waypoints.length - 1}
-                      aria-label="Mover para baixo"
-                      onClick={() => onMove(idx, 1)}
-                    >
-                      ↓
-                    </button>
-                  </div>
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          #{idx + 1}
-                        </p>
-                        <p className="truncate text-base font-semibold text-slate-100">
-                          {waypointDisplayName(wp)}
-                        </p>
-                        <p className="font-mono text-[11px] text-slate-500">
-                          {formatCompactAviationCoord(wp.lat, wp.lng)}
-                        </p>
-                      </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-7 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-slate-500 active:cursor-grabbing"
+                    aria-label={`Arrastar ${waypointDisplayName(wp)}`}
+                    onPointerDown={(event) => onGripPointerDown(event, idx)}
+                    onPointerMove={onGripPointerMove}
+                    onPointerUp={onGripPointerUp}
+                    onPointerCancel={onGripPointerUp}
+                  >
+                    <IconGrip />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="shrink-0 text-[10px] font-semibold text-slate-500">#{idx + 1}</span>
+                      <p className="min-w-0 truncate text-sm font-semibold text-slate-100">
+                        {waypointDisplayName(wp)}
+                      </p>
+                      <p className="hidden min-w-0 truncate font-mono text-[10px] text-slate-500 sm:block">
+                        {formatCompactAviationCoord(wp.lat, wp.lng)}
+                      </p>
                       <button
                         type="button"
-                        className="inline-flex h-11 w-11 items-center justify-center rounded-xl text-xl text-slate-500 hover:bg-slate-900 hover:text-rose-300"
+                        className="ml-auto inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-slate-500 hover:bg-slate-900 hover:text-rose-300"
                         aria-label={`Remover ${waypointDisplayName(wp)}`}
                         onClick={() => onRemove(idx)}
                       >
                         ×
                       </button>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                      <div>
-                        <p className="text-[10px] uppercase text-slate-500">Proa</p>
-                        <p className="font-semibold text-emerald-400">
-                          {leg ? formatBearingDeg(leg.bearingDeg) : "—"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase text-slate-500">Dist</p>
-                        <p className="font-mono text-slate-200">
-                          {dist != null ? `${dist.toFixed(1)} nm` : "—"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase text-slate-500">Tempo</p>
-                        <p className="font-mono text-slate-200">{formatEteClock(ete)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase text-slate-500">Comb.</p>
-                        <p className="font-mono text-slate-200">
-                          {fuel != null ? formatFuel(fuel, fuelUnit) : "—"}
-                        </p>
-                      </div>
-                    </div>
-                    {corridor ? (
-                      <p className="text-[11px] text-cyan-300/90">
-                        Corredor {corridor.name}
-                        {corridor.altMin != null || corridor.altMax != null
-                          ? ` · ${corridor.altMin ?? "—"}–${corridor.altMax ?? "—"} ft`
-                          : ""}
-                      </p>
-                    ) : null}
-                    <div className="flex flex-wrap items-end gap-2">
-                      <label className="block min-w-[7rem] flex-1">
-                        <span className="text-[10px] uppercase text-slate-500">Alt ft</span>
-                        <input
-                          type="number"
-                          className="mt-0.5 min-h-11 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-                          value={wp.altitudeFt ?? ""}
-                          placeholder="—"
-                          onChange={(e) => onAltitudeChange(idx, e.target.value)}
-                        />
-                      </label>
-                      <div className="min-w-[10rem] flex-[2]">
-                        <span className="text-[10px] uppercase text-slate-500">Obs</span>
-                        <div className="mt-0.5">
-                          {noteInput({
-                            value: wp.note ?? "",
-                            onChange: (v) => onNoteChange(idx, v),
-                          })}
-                        </div>
-                      </div>
-                    </div>
+                    <p className="font-mono text-[10px] text-slate-500 sm:hidden">
+                      {formatCompactAviationCoord(wp.lat, wp.lng)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-1 grid grid-cols-4 gap-x-2 pl-9 text-[11px]">
+                  <p>
+                    <span className="text-slate-500">Proa </span>
+                    <span className="font-semibold text-emerald-400">
+                      {leg ? formatBearingDeg(leg.bearingDeg) : "—"}
+                    </span>
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Dist </span>
+                    <span className="font-mono text-slate-200">
+                      {dist != null ? `${dist.toFixed(1)}` : "—"}
+                    </span>
+                  </p>
+                  <p>
+                    <span className="text-slate-500">ETE </span>
+                    <span className="font-mono text-slate-200">{formatEteClock(ete)}</span>
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Comb </span>
+                    <span className="font-mono text-slate-200">
+                      {fuel != null ? formatFuel(fuel, fuelUnit) : "—"}
+                    </span>
+                  </p>
+                </div>
+                {corridor ? (
+                  <p className="mt-0.5 truncate pl-9 text-[10px] text-cyan-300/90">
+                    {corridor.name}
+                    {corridor.altMin != null || corridor.altMax != null
+                      ? ` · ${corridor.altMin ?? "—"}–${corridor.altMax ?? "—"} ft`
+                      : ""}
+                  </p>
+                ) : null}
+                <div className="mt-1.5 flex items-center gap-2 pl-9">
+                  <label className="flex w-[5.5rem] shrink-0 items-center gap-1">
+                    <span className="text-[10px] uppercase text-slate-500">Alt</span>
+                    <input
+                      type="number"
+                      className="h-8 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                      value={wp.altitudeFt ?? ""}
+                      placeholder="—"
+                      onChange={(e) => onAltitudeChange(idx, e.target.value)}
+                    />
+                  </label>
+                  <div className="min-w-0 flex-1">
+                    {noteInput({
+                      value: wp.note ?? "",
+                      onChange: (v) => onNoteChange(idx, v),
+                    })}
                   </div>
                 </div>
               </li>

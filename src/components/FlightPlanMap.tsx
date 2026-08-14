@@ -2197,7 +2197,7 @@ export function FlightPlanMap({
         </div>
 
         {selectedAirspace ? (
-          <div className="absolute right-14 top-2 z-[525] w-[min(100%-1rem,24rem)]">
+          <div className="absolute right-14 top-2 z-[525] w-[min(15rem,calc(100%-1rem))]">
             <AirspaceInfoPanel
               info={selectedAirspace.info}
               onClose={() => setSelectedAirspace(null)}

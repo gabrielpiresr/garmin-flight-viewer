@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
+import { Tabs } from "../ui/Tabs";
 
 export type PlanejamentoSectionId =
   | "map"
   | "route"
-  | "profile"
   | "view3d"
   | "alternates"
   | "airspace"
@@ -43,14 +43,6 @@ function IconRoute() {
         clipRule="evenodd"
       />
       <path d="M3 11.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75zM12 7.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75z" />
-    </svg>
-  );
-}
-
-function IconProfile() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M15.5 2A1.5 1.5 0 0014 3.5v13a1.5 1.5 0 001.5 1.5h1a1.5 1.5 0 001.5-1.5v-13A1.5 1.5 0 0016.5 2h-1zM9.5 6A1.5 1.5 0 008 7.5v9A1.5 1.5 0 009.5 18h1a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0010.5 6h-1zM3.5 10A1.5 1.5 0 002 11.5v5A1.5 1.5 0 003.5 18h1A1.5 1.5 0 006 16.5v-5A1.5 1.5 0 004.5 10h-1z" />
     </svg>
   );
 }
@@ -100,7 +92,6 @@ function IconBriefing() {
 const SECTION_ICONS: Record<PlanejamentoSectionId, ReactNode> = {
   map: <IconMap />,
   route: <IconRoute />,
-  profile: <IconProfile />,
   view3d: <IconView3d />,
   alternates: <IconAlternates />,
   airspace: <IconAirspace />,
@@ -115,14 +106,7 @@ export const PLANEJAMENTO_SECTIONS: ReadonlyArray<{
   requiresRoute?: boolean;
 }> = [
   { id: "map", label: "Mapa", shortLabel: "Mapa", hint: "Mapa 2D e montagem da rota" },
-  { id: "route", label: "Rota", shortLabel: "Rota", hint: "Pontos, proas, distâncias e altitudes" },
-  {
-    id: "profile",
-    label: "Perfil vertical",
-    shortLabel: "Perfil",
-    hint: "Perfil de altitude ao longo da rota",
-    requiresRoute: true,
-  },
+  { id: "route", label: "Rota", shortLabel: "Rota", hint: "Pontos, perfil, proas, distâncias e altitudes" },
   {
     id: "view3d",
     label: "Vista 3D",
@@ -130,26 +114,126 @@ export const PLANEJAMENTO_SECTIONS: ReadonlyArray<{
     hint: "Terreno, corredores e espaços em 3D",
     requiresRoute: true,
   },
-  { id: "alternates", label: "Alternativos", shortLabel: "Alt.", hint: "Aeródromos alternativos da rota" },
   {
     id: "airspace",
-    label: "Espaço aéreo",
+    label: "Espaços aéreos",
     shortLabel: "Espaço",
     hint: "Espaços atravessados na altitude planejada",
     requiresRoute: true,
   },
-  { id: "briefing", label: "Briefing", shortLabel: "Brief", hint: "Resumo, checklist e documentos" },
+  { id: "alternates", label: "Alternativas", shortLabel: "Alt.", hint: "Aeródromos alternativos da rota" },
+  { id: "briefing", label: "Briefings", shortLabel: "Brief", hint: "Resumo, checklist e documentos" },
 ];
 
 const SECTION_TITLE: Record<PlanejamentoSectionId, string> = {
   map: "Mapa",
   route: "Rota",
-  profile: "Perfil vertical",
   view3d: "Vista 3D",
-  alternates: "Alternativos",
-  airspace: "Espaço aéreo",
-  briefing: "Briefing",
+  alternates: "Alternativas",
+  airspace: "Espaços aéreos",
+  briefing: "Briefings",
 };
+
+export function PlanejamentoBackIcon() {
+  return <IconBack />;
+}
+
+type EditorTabsProps = {
+  active: PlanejamentoSectionId;
+  hasRoute: boolean;
+  onSelect: (id: PlanejamentoSectionId) => void;
+};
+
+export function PlanejamentoEditorTabs({ active, hasRoute, onSelect }: EditorTabsProps) {
+  return (
+    <Tabs
+      items={PLANEJAMENTO_SECTIONS.map((section) => ({
+        id: section.id,
+        label: section.label,
+        icon: SECTION_ICONS[section.id],
+        disabled: Boolean(section.requiresRoute && !hasRoute),
+        disabledTooltip: section.requiresRoute && !hasRoute ? "Monte a rota com pelo menos 2 pontos" : section.hint,
+      }))}
+      value={active}
+      onChange={onSelect}
+      ariaLabel="Seções do planejamento"
+      accent="cyan"
+    />
+  );
+}
+
+export function PlanejamentoHoverButton({
+  icon,
+  label,
+  onClick,
+  disabled,
+  title,
+  variant = "secondary",
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  variant?: "primary" | "secondary";
+}) {
+  const tone =
+    variant === "primary"
+      ? "border-emerald-500/40 bg-emerald-600 text-white hover:bg-emerald-500"
+      : "border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500 hover:bg-slate-800 hover:text-white";
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={title ?? label}
+      aria-label={label}
+      onClick={onClick}
+      className={`group inline-flex h-9 max-w-full shrink-0 cursor-pointer items-center overflow-hidden rounded-lg border px-2.5 text-sm font-semibold transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-50 ${tone}`}
+    >
+      <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
+      <span className="grid grid-cols-[0fr] transition-[grid-template-columns] duration-300 ease-out group-hover:grid-cols-[1fr] group-focus-visible:grid-cols-[1fr]">
+        <span className="min-w-0 overflow-hidden">
+          <span className="block whitespace-nowrap pl-0 opacity-0 transition-all duration-300 ease-out group-hover:pl-1.5 group-hover:opacity-100 group-focus-visible:pl-1.5 group-focus-visible:opacity-100">
+            {label}
+          </span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+export function IconPlusSmall() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+    </svg>
+  );
+}
+
+export function IconSaveSmall() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M3 3.5A1.5 1.5 0 014.5 2h7.086a1.5 1.5 0 011.06.44l3.914 3.914a1.5 1.5 0 01.44 1.06V16.5A1.5 1.5 0 0115.5 18h-11A1.5 1.5 0 013 16.5v-13zM5 4v4.75c0 .69.56 1.25 1.25 1.25h4.5c.69 0 1.25-.56 1.25-1.25V4H5zm0 8.5v3h10v-3H5z" />
+    </svg>
+  );
+}
+
+export function IconSaveAsSmall() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M3 3.5A1.5 1.5 0 014.5 2h7.086a1.5 1.5 0 011.06.44l3.914 3.914a1.5 1.5 0 01.44 1.06V16.5A1.5 1.5 0 0115.5 18h-11A1.5 1.5 0 013 16.5v-13zM5 4v4.75c0 .69.56 1.25 1.25 1.25h4.5c.69 0 1.25-.56 1.25-1.25V4H5z" />
+      <path d="M14.75 11.25a.75.75 0 00-1.5 0v1.5h-1.5a.75.75 0 000 1.5h1.5v1.5a.75.75 0 001.5 0v-1.5h1.5a.75.75 0 000-1.5h-1.5v-1.5z" />
+    </svg>
+  );
+}
+
+export function IconFolderSmall() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M3.75 3A1.75 1.75 0 002 4.75v10.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0018 15.25v-8.5A1.75 1.75 0 0016.25 5h-5.586a.25.25 0 01-.177-.073l-1.414-1.414A1.75 1.75 0 007.836 3H3.75z" />
+    </svg>
+  );
+}
 
 type HeaderProps = {
   section: PlanejamentoSectionId;

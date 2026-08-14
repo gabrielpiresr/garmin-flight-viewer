@@ -32114,13 +32114,18 @@ module.exports = async ({ req, res, log, error }) => {
             .map((code) => aiswebService.normalizeIcao(code))
             .filter((code) => code && code.length === 4),
         ),
-      ].slice(0, 8);
+      ].slice(0, 40);
       if (!icaoCodes.length) {
         throw Object.assign(new Error("Informe ao menos um ICAO válido."), { status: 400 });
       }
-      const mets = await Promise.all(
-        icaoCodes.map(async (icao) => aiswebService.fetchMet(icao, { bypassCache: true })),
-      );
+      const mets = [];
+      const concurrency = 8;
+      for (let i = 0; i < icaoCodes.length; i += concurrency) {
+        const chunk = icaoCodes.slice(i, i + concurrency);
+        mets.push(
+          ...(await Promise.all(chunk.map((icao) => aiswebService.fetchMet(icao)))),
+        );
+      }
       return jsonResponse(res, 200, { mets });
     }
 

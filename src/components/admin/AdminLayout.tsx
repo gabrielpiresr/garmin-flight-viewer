@@ -847,6 +847,7 @@ export function AdminLayout() {
   const openedDisparosTabs = useOpenedTabs(disparosTab);
   const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "rules"));
   const [atualizacoesTab, setAtualizacoesTab] = useState<AtualizacoesSubTab>(() => resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
+  const [planejamentoEditorOpen, setPlanejamentoEditorOpen] = useState(false);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
   const pageTitle = resolveAdminPageTitle(
@@ -1246,7 +1247,10 @@ export function AdminLayout() {
           {openedSections.has("planejamento") && (
             <div hidden={section !== "planejamento"}>
               <LazyTab>
-                <PlanejamentoTab onLeave={() => openSection("home")} />
+                <PlanejamentoTab
+                  onLeave={() => openSection("home")}
+                  onCompactEditorChange={setPlanejamentoEditorOpen}
+                />
               </LazyTab>
             </div>
           )}
@@ -1275,7 +1279,7 @@ export function AdminLayout() {
 
         <nav
           className={`fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden ${
-            section === "planejamento" ? "hidden" : ""
+            section === "planejamento" && planejamentoEditorOpen ? "hidden" : ""
           }`}
         >
           <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">

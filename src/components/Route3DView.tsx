@@ -14,7 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import * as THREE from "three";
-import type { AiswebAirportBundle } from "../types/aisweb";
+import type { AiswebAirportBundle, AiswebMetarTaf } from "../types/aisweb";
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
 import { loadAirspaceVolumesInBbox, type AirspaceVolume } from "../lib/airspaceIntersect";
 import type { Aerodrome } from "../lib/aerodromesDb";
@@ -44,8 +44,25 @@ import {
   type Route3dAircraftPose,
 } from "../lib/route3d";
 import { fetchSatelliteCanvas, fetchTerrainGrid, sampleGridHeightM, type TerrainGrid } from "../lib/terrainTiles";
+import { fetchAiswebMetBatch } from "../lib/aiswebDb";
+import { OPEN_METEO_ATTRIBUTION, fetchOpenMeteoRouteForecast, type OpenMeteoRoutePoint } from "../lib/openMeteoDb";
+import {
+  buildMetarCloudStations3d,
+  buildRouteCloudSamples3d,
+  collectMetarIcaos,
+  coverPctToOktas,
+  metarAirportBundle,
+  resolveMetarStationFixes,
+  sampleRouteCloudPoints,
+  type MetarCloudHit,
+  type MetarCloudStation3d,
+  type MetarFlightRule,
+  type RouteCloudSample3d,
+} from "../lib/route3dWeather";
 import { AerodromeMapPopupContent } from "./AerodromePlanningModals";
+import { AiswebMeteorologyPanel } from "./AiswebMeteorologyPanel";
 import { AirspaceInfoPanel } from "./AirspaceInfoPanel";
+import { Route3DWeatherLayers } from "./Route3DWeatherLayers";
 
 type Props = {
   waypoints: FlightPlanWaypoint[];
@@ -54,6 +71,8 @@ type Props = {
   corridors?: Array<LegCorridorInfo | null>;
   airspaceVolumes?: AirspaceVolume[];
   aerodromes?: Aerodrome[];
+  /** ICAOs alternates do plano — entram no lote METAR 3D. */
+  alternates?: string[];
   onAerodromeDetails?: (bundle: AiswebAirportBundle) => void;
   /** `section` = full-height compact chrome + layers sheet; `embedded` = desktop stack bar. */
   variant?: "embedded" | "section";
@@ -108,13 +127,17 @@ type LayerToggles = {
   route: boolean;
   corridors: boolean;
   airspaces: boolean;
+  metar: boolean;
+  routeClouds: boolean;
 };
 
 type SceneSelection =
   | { kind: "aerodrome"; icao: string; name: string }
   | { kind: "airspace"; info: AirspaceInfo }
   | { kind: "corridor"; name: string; altMin: number | null; altMax: number | null }
-  | { kind: "waypoint"; label: string; lat: number; lng: number; markerKind: string };
+  | { kind: "waypoint"; label: string; lat: number; lng: number; markerKind: string }
+  | { kind: "metar"; hit: MetarCloudHit }
+  | { kind: "routeCloud"; sample: RouteCloudSample3d };
 
 type MapToolPanel3d = "basemap" | "layers" | null;
 
@@ -162,6 +185,9 @@ class CanvasErrorBoundary extends Component<
       return (
         <p className="grid h-full place-items-center px-6 text-center text-[12px] text-amber-200">
           A vista 3D encontrou um erro e foi interrompida. Use Resetar câmera ou recarregue a aba.
+          {this.state.error.message ? (
+            <span className="mt-2 block text-[10px] text-slate-400">{this.state.error.message}</span>
+          ) : null}
         </p>
       );
     }
@@ -186,7 +212,13 @@ const DEFAULT_TOGGLES: LayerToggles = {
   route: true,
   corridors: true,
   airspaces: true,
+  metar: true,
+  routeClouds: true,
 };
+
+const EMPTY_METAR_STATIONS: MetarCloudStation3d[] = [];
+const EMPTY_ROUTE_CLOUDS: RouteCloudSample3d[] = [];
+const EMPTY_ALTERNATES: string[] = [];
 
 const AIRSPACE_OFF_BY_DEFAULT = new Set<AirspaceVolume["type"]>(["FIR", "FIS"]);
 const CORRIDOR_COLOR = "#a16207";
@@ -428,15 +460,12 @@ function TerrainZoom({
   useEffect(() => {
     const canvas = gl.domElement;
     const root = canvas.parentElement ?? canvas;
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    const applyZoomAt = (clientX: number, clientY: number, zoomIn: boolean, notches: number) => {
       if (!controls) return;
       const rect = canvas.getBoundingClientRect();
       _ndc.set(
-        ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-        -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+        ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
       );
       _zoomRay.setFromCamera(_ndc, camera);
       let hit: THREE.Vector3 | null = null;
@@ -450,9 +479,7 @@ function TerrainZoom({
       const minDist = 50;
       const maxDist = Math.max(spanM * 8, 40_000);
       const dist = camera.position.distanceTo(hit);
-      const notches = Math.min(2, Math.abs(event.deltaY) / 120);
       const k = 1 - Math.pow(0.92, Math.max(0.05, notches));
-      const zoomIn = event.deltaY < 0;
 
       if (zoomIn) {
         camera.position.lerp(hit, k);
@@ -477,8 +504,59 @@ function TerrainZoom({
       }
       controls.update();
     };
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const notches = Math.min(2, Math.abs(event.deltaY) / 120);
+      applyZoomAt(event.clientX, event.clientY, event.deltaY < 0, notches);
+    };
+
+    let pinchDist = 0;
+    const readPinch = (touches: TouchList) => {
+      const a = touches.item(0);
+      const b = touches.item(1);
+      if (!a || !b) return null;
+      return {
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        x: (a.clientX + b.clientX) / 2,
+        y: (a.clientY + b.clientY) / 2,
+      };
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      const pinch = event.touches.length >= 2 ? readPinch(event.touches) : null;
+      pinchDist = pinch?.dist ?? 0;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length < 2 || pinchDist <= 0) return;
+      const pinch = readPinch(event.touches);
+      if (!pinch) return;
+      event.preventDefault();
+      const ratio = pinch.dist / pinchDist;
+      if (Math.abs(ratio - 1) > 0.008) {
+        const notches = Math.min(2.4, Math.abs(Math.log2(ratio)) * 4);
+        applyZoomAt(pinch.x, pinch.y, ratio > 1, notches);
+      }
+      pinchDist = pinch.dist;
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      const pinch = event.touches.length >= 2 ? readPinch(event.touches) : null;
+      pinchDist = pinch?.dist ?? 0;
+    };
+
     root.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => root.removeEventListener("wheel", onWheel, { capture: true });
+    root.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
+    root.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+    root.addEventListener("touchend", onTouchEnd, { capture: true });
+    root.addEventListener("touchcancel", onTouchEnd, { capture: true });
+    return () => {
+      root.removeEventListener("wheel", onWheel, { capture: true });
+      root.removeEventListener("touchstart", onTouchStart, { capture: true });
+      root.removeEventListener("touchmove", onTouchMove, { capture: true });
+      root.removeEventListener("touchend", onTouchEnd, { capture: true });
+      root.removeEventListener("touchcancel", onTouchEnd, { capture: true });
+    };
   }, [camera, controls, exaggeration, gl, origin, spanM, terrain]);
   return null;
 }
@@ -529,9 +607,15 @@ const TerrainMesh = forwardRef<
   return (
     <mesh ref={ref} geometry={geom} raycast={() => {}}>
       {satelliteTexture ? (
-        <meshBasicMaterial map={satelliteTexture} toneMapped={false} side={THREE.DoubleSide} />
+        <meshStandardMaterial
+          map={satelliteTexture}
+          roughness={0.9}
+          metalness={0}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+        />
       ) : (
-        <meshStandardMaterial vertexColors roughness={0.92} metalness={0} side={THREE.DoubleSide} />
+        <meshStandardMaterial vertexColors roughness={0.8} metalness={0} side={THREE.DoubleSide} />
       )}
     </mesh>
   );
@@ -690,6 +774,9 @@ function SceneContent({
   currentAircraftRef,
   labelsPaused,
   interactionPaused,
+  metarStations,
+  routeCloudSamples,
+  skipRouteCloudMid,
 }: {
   waypoints: FlightPlanWaypoint[];
   performance?: RoutePerformanceProfile | null;
@@ -712,6 +799,9 @@ function SceneContent({
   currentAircraftRef?: Props["currentAircraftRef"];
   labelsPaused: boolean;
   interactionPaused: boolean;
+  metarStations: MetarCloudStation3d[];
+  routeCloudSamples: RouteCloudSample3d[];
+  skipRouteCloudMid: boolean;
 }) {
   const gl = useThree((s) => s.gl);
   const hover = pointerCursor(gl);
@@ -743,26 +833,73 @@ function SceneContent({
   }, [path.length, routeSegmentColors]);
   const markers = useMemo(() => {
     const all = buildRoute3dMarkers(waypoints, performance?.phaseMarkers ?? null, origin, exaggeration);
-    if (markerMode === "all") return all;
-    return all.filter((marker) => marker.kind === "origin" || marker.kind === "destination");
+    const withoutAirports = all.filter((marker) => {
+      if (marker.kind === "toc" || marker.kind === "tod") return true;
+      return !/^[A-Z]{4}$/.test(marker.label.trim().toUpperCase());
+    });
+    if (markerMode === "all") return withoutAirports;
+    return withoutAirports.filter((marker) => marker.kind === "origin" || marker.kind === "destination");
   }, [exaggeration, markerMode, origin, performance?.phaseMarkers, waypoints]);
   const markerRadius = Math.min(220, Math.max(28, spanM * 0.00105));
   const labelScale = Math.max(420, Math.min(1800, spanM * 0.0055));
-  const routeIcaos = useMemo(() => {
-    const set = new Set<string>();
-    for (const wp of waypoints) {
-      const code = wp.label.trim().toUpperCase();
-      if (/^[A-Z0-9]{4}$/.test(code)) set.add(code);
+  const aerodromeMarkers = useMemo(() => {
+    const byIcao = new Map<string, { icao: string; name: string; lat: number; lng: number }>();
+    for (const ad of visibleAerodromes) {
+      if (ad.latitudeGeoPoint == null || ad.longitudeGeoPoint == null) continue;
+      const icao = ad.icao.trim().toUpperCase();
+      if (!/^[A-Z]{4}$/.test(icao)) continue;
+      byIcao.set(icao, {
+        icao,
+        name: ad.name,
+        lat: ad.latitudeGeoPoint,
+        lng: ad.longitudeGeoPoint,
+      });
     }
-    return set;
-  }, [waypoints]);
+    for (const wp of waypoints) {
+      const icao = wp.label.trim().toUpperCase();
+      if (!/^[A-Z]{4}$/.test(icao) || byIcao.has(icao)) continue;
+      byIcao.set(icao, { icao, name: wp.label, lat: wp.lat, lng: wp.lng });
+    }
+    return [...byIcao.values()];
+  }, [visibleAerodromes, waypoints]);
+  const labelOccluders = useMemo(() => {
+    const out: Array<{ x: number; y: number; z: number; r: number }> = [];
+    for (const station of metarStations) {
+      for (const inst of station.instances) {
+        if (inst.kind === "ring" || inst.kind === "ceiling") continue;
+        out.push({
+          x: inst.x,
+          y: inst.y,
+          z: inst.z,
+          r: Math.max(inst.sx, inst.sz, inst.sy) * 0.55,
+        });
+        if (out.length >= 160) return out;
+      }
+    }
+    for (const sample of routeCloudSamples) {
+      const bands = sample.bands.filter((band) => coverPctToOktas(band.coverPct) > 0);
+      if (!bands.length) continue;
+      const lower = Math.min(...bands.map((b) => b.lowerFt));
+      const upper = Math.max(...bands.map((b) => b.upperFt));
+      const y = (altFtToY(lower, exaggeration) + altFtToY(upper, exaggeration)) / 2;
+      out.push({
+        x: sample.x,
+        y,
+        z: sample.z,
+        r: (sample.lane === "center" ? 3.6 : 2.2) * 1852,
+      });
+      if (out.length >= 160) return out;
+    }
+    return out;
+  }, [exaggeration, metarStations, routeCloudSamples]);
 
   return (
     <>
       <color attach="background" args={["#0b1220"]} />
-      <ambientLight intensity={0.55} />
-      <hemisphereLight args={["#94a3b8", "#3f2e1a", 0.45]} />
-      <directionalLight position={[spanM * 0.4, spanM * 0.8, spanM * 0.2]} intensity={1.15} />
+      <ambientLight intensity={0.5} />
+      <hemisphereLight args={["#94a3b8", "#3f2e1a", 0.42]} />
+      <directionalLight position={[spanM * 0.45, spanM * 0.9, spanM * 0.18]} intensity={1.28} />
+      <directionalLight position={[-spanM * 0.35, spanM * 0.45, -spanM * 0.3]} intensity={0.22} />
       <CameraRig spanM={spanM} resetNonce={resetNonce} />
       <OrbitGuard spanM={spanM} terrain={terrain} origin={origin} exaggeration={exaggeration} />
       <TerrainZoom terrain={terrain} origin={origin} exaggeration={exaggeration} spanM={spanM} />
@@ -965,39 +1102,45 @@ function SceneContent({
           ))
         : null}
 
-      {visibleAerodromes.map((ad) => {
-        if (!ad.latitudeGeoPoint || !ad.longitudeGeoPoint) return null;
-        const icao = ad.icao.trim().toUpperCase();
-        if (routeIcaos.has(icao)) return null;
-        const enu = lngLatToEnu(ad.latitudeGeoPoint, ad.longitudeGeoPoint, origin);
-        const ground = terrain ? sampleGridHeightM(terrain, ad.latitudeGeoPoint, ad.longitudeGeoPoint) : 0;
+      {aerodromeMarkers.map((ad) => {
+        const enu = lngLatToEnu(ad.lat, ad.lng, origin);
+        const ground = terrain ? sampleGridHeightM(terrain, ad.lat, ad.lng) : 0;
         const size = Math.min(220, Math.max(50, spanM * 0.00085));
-        const y = ground * exaggeration + size * 0.55;
+        const y = ground * exaggeration + size * 0.35;
         return (
-          <group key={ad.id} position={[enu.x, y, enu.z]}>
+          <group key={`ad-${ad.icao}`} position={[enu.x, y, enu.z]}>
             <mesh
               onClick={(event) => {
                 event.stopPropagation();
-                onSelect({ kind: "aerodrome", icao: icao || ad.name, name: ad.name });
+                onSelect({ kind: "aerodrome", icao: ad.icao, name: ad.name });
               }}
               onPointerOver={hover.onPointerOver}
               onPointerOut={hover.onPointerOut}
             >
-              <coneGeometry args={[size * 0.38, size, 4]} />
-              <meshStandardMaterial color="#fbbf24" roughness={0.45} />
+              <sphereGeometry args={[Math.max(size * 0.9, 80), 12, 12]} />
+              <meshBasicMaterial color="#a78bfa" transparent opacity={0.01} depthTest={false} depthWrite={false} />
             </mesh>
             {!labelsPaused ? (
-            <WorldLabel
-              position={[0, size * 0.95, 0]}
-              worldScale={labelScale * 0.85}
-              maxDistance={spanM * 0.7}
-              terrain={toggles.terrain ? terrain : null}
-              origin={origin}
-              exaggeration={exaggeration}
-              className="whitespace-nowrap rounded bg-slate-950/80 px-1.5 py-0.5 font-semibold text-amber-100 shadow"
-            >
-              {icao || ad.name}
-            </WorldLabel>
+              <WorldLabel
+                position={[0, size * 0.55, 0]}
+                worldScale={labelScale * 0.72}
+                maxDistance={spanM * 0.7}
+                terrain={toggles.terrain ? terrain : null}
+                origin={origin}
+                exaggeration={exaggeration}
+                occlude
+                occluders={labelOccluders}
+                onClick={() => onSelect({ kind: "aerodrome", icao: ad.icao, name: ad.name })}
+                className="flex flex-col items-center gap-px"
+              >
+                <AerodromeLocationIcon size={22} />
+                <span
+                  className="rounded px-[3px] py-px font-mono text-[11px] font-bold tracking-wide text-violet-100"
+                  style={{ background: "rgba(15,23,42,.8)" }}
+                >
+                  {ad.icao}
+                </span>
+              </WorldLabel>
             ) : null}
           </group>
         );
@@ -1047,8 +1190,62 @@ function SceneContent({
           </mesh>
         );
       })}
+
+      <Route3DWeatherLayers
+        metarStations={metarStations}
+        routeSamples={routeCloudSamples}
+        showMetar={toggles.metar}
+        showRouteClouds={toggles.routeClouds}
+        skipMid={skipRouteCloudMid}
+        exaggeration={exaggeration}
+        onSelectMetar={(hit) => onSelect({ kind: "metar", hit })}
+        onSelectRouteCloud={(sample) => onSelect({ kind: "routeCloud", sample })}
+      />
     </>
   );
+}
+
+function AerodromeLocationIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+      style={{ display: "block", filter: "drop-shadow(0 1px 1px rgba(0,0,0,.55))" }}
+    >
+      <path
+        fill="#a78bfa"
+        d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"
+      />
+    </svg>
+  );
+}
+
+function rayHitsSphere(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  maxT: number,
+  cx: number,
+  cy: number,
+  cz: number,
+  r: number,
+): boolean {
+  const fx = ox - cx;
+  const fy = oy - cy;
+  const fz = oz - cz;
+  const b = fx * dx + fy * dy + fz * dz;
+  const c = fx * fx + fy * fy + fz * fz - r * r;
+  if (c > 0 && b > 0) return false;
+  const disc = b * b - c;
+  if (disc < 0) return false;
+  const t = -b - Math.sqrt(disc);
+  return t > 8 && t < maxT - 20;
 }
 
 function WorldLabel({
@@ -1060,6 +1257,9 @@ function WorldLabel({
   terrain,
   origin,
   exaggeration,
+  occlude,
+  occluders,
+  onClick,
 }: {
   children: ReactNode;
   position?: [number, number, number];
@@ -1069,6 +1269,9 @@ function WorldLabel({
   terrain?: TerrainGrid | null;
   origin?: EnuOrigin;
   exaggeration?: number;
+  occlude?: boolean;
+  occluders?: Array<{ x: number; y: number; z: number; r: number }>;
+  onClick?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const anchor = useRef<THREE.Group>(null);
@@ -1083,13 +1286,55 @@ function WorldLabel({
       _from.copy(camera.position);
       hide = lineHitsTerrain(_from, _to, terrain, origin, exaggeration);
     }
+    if (!hide && occlude && occluders?.length) {
+      _from.copy(camera.position);
+      const maxT = dist;
+      if (maxT > 30) {
+        const inv = 1 / maxT;
+        const dx = (_to.x - _from.x) * inv;
+        const dy = (_to.y - _from.y) * inv;
+        const dz = (_to.z - _from.z) * inv;
+        for (let i = 0; i < occluders.length; i++) {
+          const s = occluders[i]!;
+          if (rayHitsSphere(_from.x, _from.y, _from.z, dx, dy, dz, maxT, s.x, s.y, s.z, s.r)) {
+            hide = true;
+            break;
+          }
+        }
+      }
+    }
     const next = hide ? "hidden" : "visible";
     if (el.style.visibility !== next) el.style.visibility = next;
   });
   return (
     <group ref={anchor} position={position}>
-      <Html center transform sprite occlude={false} scale={worldScale} style={{ pointerEvents: "none" }}>
-        <div ref={wrapRef} className={className} style={{ fontSize: 16, lineHeight: 1.25, fontWeight: 700 }}>
+      <Html
+        center
+        transform
+        sprite
+        occlude={false}
+        scale={worldScale}
+        zIndexRange={[12, 0]}
+        style={{ pointerEvents: onClick ? "auto" : "none", zIndex: 8 }}
+      >
+        <div
+          ref={wrapRef}
+          className={className}
+          style={{
+            fontSize: 16,
+            lineHeight: 1.25,
+            fontWeight: 700,
+            cursor: onClick ? "pointer" : undefined,
+          }}
+          onClick={
+            onClick
+              ? (event) => {
+                  event.stopPropagation();
+                  onClick();
+                }
+              : undefined
+          }
+        >
           {children}
         </div>
       </Html>
@@ -1110,6 +1355,24 @@ function waypointKindLabel(kind: string): string {
     default:
       return "Ponto";
   }
+}
+
+function formatWxTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  if (/^\d{6}Z$/i.test(value)) return value.toUpperCase();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.toISOString().slice(11, 16)}Z`;
+}
+
+function flightRuleBadge(rule: MetarFlightRule): { label: string; className: string } {
+  if (rule === "ifr") {
+    return { label: "IFR", className: "bg-red-500/20 text-red-300 ring-red-500/50" };
+  }
+  if (rule === "vfr") {
+    return { label: "VFR", className: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/50" };
+  }
+  return { label: "s/ METAR", className: "bg-slate-500/20 text-slate-300 ring-slate-500/40" };
 }
 
 function ToggleChip({
@@ -1174,6 +1437,7 @@ export function Route3DView({
   corridors = EMPTY_CORRIDORS,
   airspaceVolumes = EMPTY_VOLUMES,
   aerodromes = EMPTY_AERODROMES,
+  alternates = EMPTY_ALTERNATES,
   onAerodromeDetails,
   variant = "embedded",
   className = "",
@@ -1208,6 +1472,12 @@ export function Route3DView({
   const [areaCorridors, setAreaCorridors] = useState<LegCorridorInfo[]>([]);
   const [areaLoading, setAreaLoading] = useState(false);
   const [selection, setSelection] = useState<SceneSelection | null>(null);
+  const [mets, setMets] = useState<AiswebMetarTaf[]>([]);
+  const [routeForecast, setRouteForecast] = useState<OpenMeteoRoutePoint[]>([]);
+  const [metarLoading, setMetarLoading] = useState(false);
+  const [routeWxLoading, setRouteWxLoading] = useState(false);
+  const [metarError, setMetarError] = useState<string | null>(null);
+  const [routeWxError, setRouteWxError] = useState<string | null>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const [enabledAreaLayerKinds, setEnabledAreaLayerKinds] = useState<Set<"rea" | "reh">>(
     () => new Set(areaLayerKinds),
@@ -1272,6 +1542,107 @@ export function Route3DView({
     return inBox.slice(0, 48);
   }, [aerodromes, terrain]);
 
+  const metarIcaos = useMemo(
+    () => collectMetarIcaos(waypoints, alternates, visibleAerodromes),
+    [alternates, visibleAerodromes, waypoints],
+  );
+  const metarFixes = useMemo(
+    () => resolveMetarStationFixes(metarIcaos, waypoints, aerodromes),
+    [aerodromes, metarIcaos, waypoints],
+  );
+  const metarStations = useMemo(() => {
+    if (!origin || !toggles.metar || !metarFixes.length) return EMPTY_METAR_STATIONS;
+    return buildMetarCloudStations3d({
+      mets,
+      fixes: metarFixes,
+      origin,
+      exaggeration,
+      terrain,
+    });
+  }, [exaggeration, metarFixes, mets, origin, terrain, toggles.metar]);
+  const routeSamplePoints = useMemo(
+    () => sampleRouteCloudPoints(waypoints, liteTerrain || navigationOptimized),
+    [liteTerrain, navigationOptimized, waypoints],
+  );
+  const routeCloudSamples = useMemo(() => {
+    if (!origin || !toggles.routeClouds || !routeForecast.length) return EMPTY_ROUTE_CLOUDS;
+    return buildRouteCloudSamples3d({
+      forecast: routeForecast,
+      origin,
+      terrain,
+      points: routeSamplePoints,
+    });
+  }, [origin, routeForecast, routeSamplePoints, terrain, toggles.routeClouds]);
+  const routeSampleKey = useMemo(
+    () => routeSamplePoints.map((p) => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`).join("|"),
+    [routeSamplePoints],
+  );
+
+  useEffect(() => {
+    if (!toggles.metar || !metarIcaos.length) {
+      setMets([]);
+      setMetarError(null);
+      setMetarLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setMetarLoading(true);
+    setMetarError(null);
+    const timer = window.setTimeout(() => {
+      void fetchAiswebMetBatch(metarIcaos)
+        .then((list) => {
+          if (cancelled) return;
+          setMets(list);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setMets([]);
+          setMetarError(err instanceof Error ? err.message : "Falha ao carregar METAR");
+        })
+        .finally(() => {
+          if (!cancelled) setMetarLoading(false);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [metarIcaos, toggles.metar]);
+
+  useEffect(() => {
+    if (!toggles.routeClouds || waypoints.length < 2 || !routeSampleKey) {
+      setRouteForecast([]);
+      setRouteWxError(null);
+      setRouteWxLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setRouteWxLoading(true);
+    setRouteWxError(null);
+    const timer = window.setTimeout(() => {
+      const pts = routeSamplePoints;
+      void fetchOpenMeteoRouteForecast(pts, { signal: controller.signal })
+        .then((list) => {
+          if (cancelled) return;
+          setRouteForecast(list);
+        })
+        .catch((err) => {
+          if (cancelled || controller.signal.aborted) return;
+          setRouteForecast([]);
+          setRouteWxError(err instanceof Error ? err.message : "Falha ao carregar nuvens");
+        })
+        .finally(() => {
+          if (!cancelled) setRouteWxLoading(false);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [routeSampleKey, routeSamplePoints, toggles.routeClouds, waypoints]);
+
   useEffect(() => {
     if (waypoints.length < 2) {
       setTerrain(null);
@@ -1293,7 +1664,14 @@ export function Route3DView({
               maxZoom: 11,
               targetCells: 160,
             }
-          : { signal: controller.signal },
+          : {
+              signal: controller.signal,
+              padDeg: 1.15,
+              maxTiles: 80,
+              maxSatTiles: 48,
+              maxZoom: 13,
+              targetCells: 512,
+            },
       )
         .then((grid) => {
           if (cancelled) return;
@@ -1333,7 +1711,7 @@ export function Route3DView({
       terrain,
       liteTerrain
         ? { signal: controller.signal, maxSatTiles: 12, maxZoom: 11 }
-        : { signal: controller.signal },
+        : { signal: controller.signal, maxSatTiles: 48, maxZoom: 13 },
     )
       .then((canvas) => {
         if (cancelled) return;
@@ -1347,7 +1725,7 @@ export function Route3DView({
         }
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 4;
+        tex.anisotropy = liteTerrain ? 4 : 8;
         tex.flipY = true;
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -1496,8 +1874,12 @@ export function Route3DView({
       {terrainLoading ? <span className="text-cyan-300/80">Carregando relevo…</span> : null}
       {satLoading ? <span className="text-cyan-300/80">Carregando satélite…</span> : null}
       {areaLoading ? <span className="text-cyan-300/80">Carregando espaços da área…</span> : null}
+      {metarLoading ? <span className="text-cyan-300/80">Carregando METAR…</span> : null}
+      {routeWxLoading ? <span className="text-cyan-300/80">Carregando nuvens…</span> : null}
       {terrainError ? <span className="text-amber-300/90">{terrainError}</span> : null}
       {satError ? <span className="text-amber-300/90">{satError}</span> : null}
+      {metarError ? <span className="text-amber-300/90">{metarError}</span> : null}
+      {routeWxError ? <span className="text-amber-300/90">{routeWxError}</span> : null}
       <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
         Exagero
         <input
@@ -1530,6 +1912,15 @@ export function Route3DView({
       </ToggleChip>
       <ToggleChip active={toggles.route} onClick={() => setToggles((t) => ({ ...t, route: !t.route }))}>
         Rota
+      </ToggleChip>
+      <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
+        METAR
+      </ToggleChip>
+      <ToggleChip
+        active={toggles.routeClouds}
+        onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
+      >
+        Nuvens rota
       </ToggleChip>
       <ToggleChip
         active={toggles.corridors}
@@ -1595,6 +1986,8 @@ export function Route3DView({
           <div className="flex flex-wrap items-center gap-2">
             {terrainLoading ? <span className="text-[10px] text-cyan-300/80">Relevo…</span> : null}
             {satLoading ? <span className="text-[10px] text-cyan-300/80">Satélite…</span> : null}
+            {metarLoading ? <span className="text-[10px] text-cyan-300/80">METAR…</span> : null}
+            {routeWxLoading ? <span className="text-[10px] text-cyan-300/80">Nuvens…</span> : null}
             <button
               type="button"
               className="rounded-lg border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100"
@@ -1767,6 +2160,8 @@ export function Route3DView({
                         {([
                           ["terrain", "Terreno"],
                           ["route", "Rota"],
+                          ["metar", "METAR"],
+                          ["routeClouds", "Nuvens rota"],
                         ] as const).map(([key, label]) => (
                           <button
                             key={key}
@@ -1861,20 +2256,33 @@ export function Route3DView({
                 routeSegmentColors={routeSegmentColors}
                 currentAircraft={currentAircraft}
                 currentAircraftRef={currentAircraftRef}
-                labelsPaused={Boolean(selection || mapToolPanel)}
+                labelsPaused={Boolean(mapToolPanel)}
                 interactionPaused={false}
+                metarStations={metarStations}
+                routeCloudSamples={routeCloudSamples}
+                skipRouteCloudMid={liteTerrain || navigationOptimized}
               />
             </Canvas>
             </CanvasErrorBoundary>
             {selection ? (
               <div
-                className={`pointer-events-none absolute top-2 z-30 max-h-[calc(100%-1rem)] overflow-y-auto ${
+                className={`pointer-events-none absolute top-2 z-50 max-h-[calc(100%-1rem)] overflow-y-auto ${
                   mapToolPanel ? "right-[18.75rem]" : "right-16"
+                } ${
+                  selection.kind === "metar"
+                    ? "w-[min(44rem,calc(100%-5rem))]"
+                    : selection.kind === "airspace"
+                      ? "w-[min(15rem,calc(100%-5rem))]"
+                      : ""
                 }`}
               >
                 <div className="pointer-events-auto">
                   {selection.kind === "airspace" ? (
-                    <AirspaceInfoPanel info={selection.info} onClose={() => setSelection(null)} />
+                    <AirspaceInfoPanel
+                      info={selection.info}
+                      onClose={() => setSelection(null)}
+                      className="w-full"
+                    />
                   ) : selection.kind === "aerodrome" ? (
                     <div className="w-[min(100%,20rem)] overflow-hidden rounded-2xl border border-slate-600/80 bg-white p-2 shadow-2xl">
                       <div className="mb-1 flex justify-end">
@@ -1896,6 +2304,82 @@ export function Route3DView({
                         }}
                       />
                     </div>
+                  ) : selection.kind === "metar" ? (
+                    <aside className="flex w-full flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50">
+                      <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">METAR</p>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                            <p className="truncate font-mono text-sm font-bold tracking-wide text-slate-100">
+                              {selection.hit.icao}
+                            </p>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${
+                                flightRuleBadge(selection.hit.flightRule).className
+                              }`}
+                            >
+                              {flightRuleBadge(selection.hit.flightRule).label}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                          onClick={() => setSelection(null)}
+                          aria-label="Fechar"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div className="@container max-h-[min(70vh,36rem)] overflow-y-auto px-3 py-3">
+                        <AiswebMeteorologyPanel airport={metarAirportBundle(selection.hit)} />
+                      </div>
+                    </aside>
+                  ) : selection.kind === "routeCloud" ? (
+                    <aside className="flex w-[min(100%,20rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50">
+                      <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">Nuvens na rota</p>
+                          <p className="truncate font-mono text-sm font-bold tracking-wide text-slate-100">
+                            {formatCompactAviationCoord(selection.sample.lat, selection.sample.lng)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                          onClick={() => setSelection(null)}
+                          aria-label="Fechar"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div className="space-y-2 px-3 py-2.5 text-[12px] text-slate-200">
+                        {selection.sample.bands
+                          .filter((band) => coverPctToOktas(band.coverPct) > 0)
+                          .map((band) => (
+                            <div key={band.hPa}>
+                              <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+                                {band.hPa} hPa · {Math.round(band.heightFt).toLocaleString("pt-BR")} ft
+                              </p>
+                              <p>
+                                {coverPctToOktas(band.coverPct)}/8 · {Math.round(band.coverPct)}%
+                              </p>
+                            </div>
+                          ))}
+                        {!selection.sample.bands.some((band) => coverPctToOktas(band.coverPct) > 0) ? (
+                          <p className="text-slate-500">Sem cobertura significativa neste ponto.</p>
+                        ) : null}
+                        <div>
+                          <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">Precipitação</p>
+                          <p>{selection.sample.precipMm.toFixed(1)} mm</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">Modelo</p>
+                          <p className="font-mono">{formatWxTime(selection.sample.time)}</p>
+                        </div>
+                        <p className="text-[10px] text-slate-500">{OPEN_METEO_ATTRIBUTION}</p>
+                      </div>
+                    </aside>
                   ) : (
                     <aside className="flex w-[min(100%,20rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950 shadow-2xl shadow-black/50">
                       <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-3 py-2">
@@ -1948,6 +2432,11 @@ export function Route3DView({
               >
                 Camadas
               </button>
+            ) : null}
+            {toggles.routeClouds ? (
+              <p className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md bg-slate-950/70 px-2 py-1 text-[10px] text-slate-400">
+                Previsão {OPEN_METEO_ATTRIBUTION}
+              </p>
             ) : null}
           </>
         )}
@@ -2008,6 +2497,15 @@ export function Route3DView({
                 </ToggleChip>
                 <ToggleChip active={toggles.route} onClick={() => setToggles((t) => ({ ...t, route: !t.route }))}>
                   Rota
+                </ToggleChip>
+                <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
+                  METAR
+                </ToggleChip>
+                <ToggleChip
+                  active={toggles.routeClouds}
+                  onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
+                >
+                  Nuvens rota
                 </ToggleChip>
                 <ToggleChip
                   active={toggles.corridors}
