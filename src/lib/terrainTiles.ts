@@ -19,6 +19,16 @@ const TARGET_CELLS = 400;
 const TILE_SIZE = 256;
 /** ~160 NM de margem em cada lado. */
 const PAD_DEG = 2.6;
+const DEFAULT_MAX_ZOOM = 12;
+
+export type TerrainFetchOptions = {
+  signal?: AbortSignal;
+  padDeg?: number;
+  maxTiles?: number;
+  maxSatTiles?: number;
+  maxZoom?: number;
+  targetCells?: number;
+};
 
 function tileUrl(z: number, x: number, y: number): string {
   if (import.meta.env.DEV) return `/terrain-proxy/${z}/${x}/${y}.png`;
@@ -41,15 +51,17 @@ function terrariumHeight(r: number, g: number, b: number): number {
 function chooseZoom(
   bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
   maxTiles = MAX_TILES,
+  maxZoom = DEFAULT_MAX_ZOOM,
 ): number {
-  for (let z = 12; z >= 6; z--) {
+  const startZ = Math.min(19, Math.max(6, Math.round(maxZoom)));
+  for (let z = startZ; z >= 0; z--) {
     const nw = latLngToTile(bbox.maxLat, bbox.minLng, z);
     const se = latLngToTile(bbox.minLat, bbox.maxLng, z);
     const cols = Math.abs(se.x - nw.x) + 1;
     const rows = Math.abs(se.y - nw.y) + 1;
-    if (cols * rows <= maxTiles) return z;
+    if (Number.isFinite(cols) && Number.isFinite(rows) && cols * rows <= maxTiles) return z;
   }
-  return 6;
+  return 0;
 }
 
 async function loadTileImageData(z: number, x: number, y: number, signal?: AbortSignal): Promise<ImageData | null> {
@@ -130,19 +142,37 @@ function sampleHeight(
   return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
 }
 
-export async function fetchTerrainGrid(
-  waypoints: Array<{ lat: number; lng: number }>,
-  options?: { signal?: AbortSignal },
-): Promise<TerrainGrid | null> {
-  const bbox = routeBoundingBox(waypoints, PAD_DEG);
-  if (!bbox) return null;
-  const z = chooseZoom(bbox);
+function tileWindow(
+  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+  z: number,
+  maxTiles: number,
+): { minX: number; maxX: number; minY: number; maxY: number } | null {
   const nw = latLngToTile(bbox.maxLat, bbox.minLng, z);
   const se = latLngToTile(bbox.minLat, bbox.maxLng, z);
   const minX = Math.min(nw.x, se.x);
   const maxX = Math.max(nw.x, se.x);
   const minY = Math.min(nw.y, se.y);
   const maxY = Math.max(nw.y, se.y);
+  if (![minX, maxX, minY, maxY].every(Number.isFinite)) return null;
+  const cols = maxX - minX + 1;
+  const rows = maxY - minY + 1;
+  if (cols < 1 || rows < 1 || cols * rows > maxTiles) return null;
+  return { minX, maxX, minY, maxY };
+}
+
+export async function fetchTerrainGrid(
+  waypoints: Array<{ lat: number; lng: number }>,
+  options?: TerrainFetchOptions,
+): Promise<TerrainGrid | null> {
+  const padDeg = options?.padDeg ?? PAD_DEG;
+  const maxTiles = options?.maxTiles ?? MAX_TILES;
+  const maxZoom = options?.maxZoom ?? DEFAULT_MAX_ZOOM;
+  const bbox = routeBoundingBox(waypoints, padDeg);
+  if (!bbox) return null;
+  const z = chooseZoom(bbox, maxTiles, maxZoom);
+  const range = tileWindow(bbox, z, maxTiles);
+  if (!range) return null;
+  const { minX, maxX, minY, maxY } = range;
 
   const tiles = new Map<string, ImageData>();
   const jobs: Array<Promise<void>> = [];
@@ -161,8 +191,10 @@ export async function fetchTerrainGrid(
   const width = Math.max(0.0001, bbox.maxLng - bbox.minLng);
   const height = Math.max(0.0001, bbox.maxLat - bbox.minLat);
   const aspect = width / height;
-  const cols = Math.max(64, Math.min(512, Math.round(TARGET_CELLS * Math.sqrt(aspect))));
-  const rows = Math.max(64, Math.min(512, Math.round(TARGET_CELLS / Math.sqrt(aspect))));
+  const targetCells = options?.targetCells ?? TARGET_CELLS;
+  const cellCap = targetCells > TARGET_CELLS ? 640 : 512;
+  const cols = Math.max(64, Math.min(cellCap, Math.round(targetCells * Math.sqrt(aspect))));
+  const rows = Math.max(64, Math.min(cellCap, Math.round(targetCells / Math.sqrt(aspect))));
   const heightsM = new Float32Array(cols * rows);
   let minM = Infinity;
   let maxM = -Infinity;
@@ -259,20 +291,22 @@ function latToTileYf(lat: number, z: number): number {
 /** Mosaic of Esri World Imagery cropped to the terrain bbox. */
 export async function fetchSatelliteCanvas(
   grid: TerrainGrid,
-  options?: { signal?: AbortSignal },
+  options?: TerrainFetchOptions,
 ): Promise<HTMLCanvasElement | null> {
   const bbox = { minLng: grid.west, minLat: grid.south, maxLng: grid.east, maxLat: grid.north };
-  const z = chooseZoom(bbox, MAX_SAT_TILES);
-  const nw = latLngToTile(bbox.maxLat, bbox.minLng, z);
-  const se = latLngToTile(bbox.minLat, bbox.maxLng, z);
-  const minX = Math.min(nw.x, se.x);
-  const maxX = Math.max(nw.x, se.x);
-  const minY = Math.min(nw.y, se.y);
-  const maxY = Math.max(nw.y, se.y);
+  const maxSatTiles = options?.maxSatTiles ?? MAX_SAT_TILES;
+  const maxZoom = options?.maxZoom ?? DEFAULT_MAX_ZOOM;
+  const z = chooseZoom(bbox, maxSatTiles, maxZoom);
+  const range = tileWindow(bbox, z, maxSatTiles);
+  if (!range) return null;
+  const { minX, maxX, minY, maxY } = range;
+  const mosaicW = (maxX - minX + 1) * TILE_SIZE;
+  const mosaicH = (maxY - minY + 1) * TILE_SIZE;
+  if (mosaicW > 8192 || mosaicH > 8192) return null;
 
   const mosaic = document.createElement("canvas");
-  mosaic.width = (maxX - minX + 1) * TILE_SIZE;
-  mosaic.height = (maxY - minY + 1) * TILE_SIZE;
+  mosaic.width = mosaicW;
+  mosaic.height = mosaicH;
   const mctx = mosaic.getContext("2d");
   if (!mctx) return null;
   mctx.fillStyle = "#1e3a5f";

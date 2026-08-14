@@ -16,6 +16,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
   "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda", "contents.ajuda-instrutor", "contents.painel",
   "aisweb",
+  "whatsapp",
   "planejamento",
   "radar",
   "solo-flight",
@@ -28,7 +29,9 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "receipts",
   "crm",
   "instructor-admission",
+  "frc",
   "flight-review",
+  "marketplace",
   "settings", "settings.regras", "settings.email", "settings.aparencia",
   "settings.badges", "settings.trilhas", "settings.exercicios", "settings.financeiro", "settings.onboarding", "settings.indique-ganhe", "settings.roles", "settings.propostas", "settings.wpp", "settings.gopro", "settings.aisweb", "settings.solo-flight",
   "atualizacoes", "atualizacoes.agendamentos",
@@ -57,12 +60,12 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
   "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "users", "fuelings", "profile", "help", "manual-instrutor",
-  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe", "solo-flight", "aisweb", "album", "painel",
+  "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe", "solo-flight", "aisweb", "whatsapp", "album", "painel", "marketplace",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
-  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "manual-instrutor", "reports", "solo-flight", "aisweb", "album", "painel",
+  "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "manual-instrutor", "reports", "solo-flight", "aisweb", "whatsapp", "album", "painel",
 ]);
 
 /** Ações habilitadas por padrão para o instrutor */
@@ -89,7 +92,7 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
   "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
-  "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "album", "painel",
+  "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "planejamento", "whatsapp", "album", "painel", "marketplace",
 ];
 
 /** Abas ativadas por padrão para o aluno */

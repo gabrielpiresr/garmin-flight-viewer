@@ -4,6 +4,7 @@ import type {
   WppConnectionSettings,
   WppDeliveryStatus,
   WppFlightReviewReadyTemplateSettings,
+  WppHub,
   WppIncomingAutoReplySettings,
   WppTransactionalTemplateSettings,
   WppTomorrowFlightReminderTemplateSettings,
@@ -19,6 +20,8 @@ type WppResponse = {
   template?: WppTemplate;
   messageId?: string;
   deliveries?: WppDeliveryStatus[];
+  hub?: WppHub;
+  watches?: WppHub["watches"];
 };
 
 let templatesCache: { value: WppTemplate[]; expiresAt: number } | null = null;
@@ -73,6 +76,7 @@ export async function saveWppNotificationTemplates(
     bookingRequestedTemplate: WppTransactionalTemplateSettings;
     soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
     soloFlightAwarenessTemplate: WppTransactionalTemplateSettings;
+    aiswebAlertTemplate: WppTransactionalTemplateSettings;
     soloFlightCoordinatorPhone: string;
     soloFlightSgsoPhone: string;
   },
@@ -181,3 +185,20 @@ export async function getWppDeliveryStatus(
   const deliveries = await listWppDeliveryStatuses({ messageId: id, limit: 1 });
   return deliveries[0] ?? null;
 }
+
+export async function getWppHub(): Promise<WppHub> {
+  const response = await execute({ action: "getWppHub" });
+  if (!response.hub) throw new Error("Dados do WhatsApp não retornados.");
+  return response.hub;
+}
+
+export async function stopMyMetarWatch(icao: string): Promise<WppHub["watches"]> {
+  const response = await execute({ action: "stopMyMetarWatch", icao });
+  return response.watches ?? [];
+}
+
+export async function ensureAiswebAlertWppTemplate(): Promise<WppTemplate | null> {
+  const response = await execute({ action: "ensureAiswebAlertWppTemplate" });
+  return response.template ?? null;
+}
+

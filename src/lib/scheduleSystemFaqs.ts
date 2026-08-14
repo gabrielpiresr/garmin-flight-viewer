@@ -179,6 +179,9 @@ export function buildSystemFaqAnswer(id: ScheduleSystemFaqId, rules: FlightSched
       if (rules.maxBookingLeadDays < 365) {
         lines.push(`O agendamento é permitido até ${rules.maxBookingLeadDays} dias no futuro.`);
       }
+      if ((rules.maxBookingLeadDaysFrc ?? rules.maxBookingLeadDays) > rules.maxBookingLeadDays) {
+        lines.push(`Integrantes do FRC podem agendar até ${rules.maxBookingLeadDaysFrc} dias no futuro.`);
+      }
       return richFromLines(lines.length ? lines : ["Não há restrição especial de antecedência configurada."]);
     }
     case "weekly-limits": {

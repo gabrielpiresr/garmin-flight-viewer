@@ -1,11 +1,45 @@
 import L from "leaflet";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { AIRSPACE_LAYER_DEFS, AIRSPACE_WFS_LAYER_DEFS, type AirspaceInfo } from "../lib/airspaceLayersDb";
 import { makeConsecutiveLegs } from "../lib/trafficPattern";
 import type { FlightPoint, TrafficPatternAnalysis } from "../types/flight";
+import { AirspaceInfoPanel } from "./AirspaceInfoPanel";
+import { AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
 import { REA_LAYER_TOGGLES, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "./ReaRoutesOverlay";
 
 type AirspaceLayerId = (typeof REA_LAYER_TOGGLES)[number]["id"];
+type MapStyle = "terrain" | "satellite" | "roads";
+
+const TILES: Record<MapStyle, { url: string; attribution: string; maxZoom: number; subdomains?: string }> = {
+  satellite: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles (c) Esri",
+    maxZoom: 19,
+  },
+  roads: {
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "(c) OpenStreetMap",
+    maxZoom: 19,
+    subdomains: "abc",
+  },
+  terrain: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles (c) Esri",
+    maxZoom: 18,
+  },
+};
+
+const AIRSPACE_LAYER_TOGGLES = AIRSPACE_LAYER_DEFS
+  .filter((d) => d.layer && d.kind)
+  .map((d) => ({
+    id: d.id,
+    label: d.label,
+    defaultOn: d.id === "ctr" || d.id === "atz",
+    color: d.color,
+  }));
+
+type FlightMapLayerId = AirspaceLayerId | (typeof AIRSPACE_LAYER_TOGGLES)[number]["id"];
 
 function calcBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const phi1 = (lat1 * Math.PI) / 180;
@@ -46,6 +80,34 @@ function cursorPlaneIcon() {
   });
 }
 
+function MapToolIconMap({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden>
+      <path d="M9 18l-6 3V6l6-3 6 3 6-3v15l-6 3-6-3z" />
+      <path d="M9 3v15M15 6v15" />
+    </svg>
+  );
+}
+
+function MapToolIconAirspace({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <circle cx="3" cy="3" r="1.65" />
+      <circle cx="9" cy="3" r="1.65" />
+      <circle cx="15" cy="3" r="1.65" />
+      <circle cx="21" cy="3" r="1.65" />
+      <circle cx="3" cy="9" r="1.65" />
+      <circle cx="21" cy="9" r="1.65" />
+      <circle cx="3" cy="15" r="1.65" />
+      <circle cx="21" cy="15" r="1.65" />
+      <circle cx="3" cy="21" r="1.65" />
+      <circle cx="9" cy="21" r="1.65" />
+      <circle cx="15" cy="21" r="1.65" />
+      <circle cx="21" cy="21" r="1.65" />
+    </svg>
+  );
+}
+
 function sampleForMarkers<T>(items: T[], count: number): T[] {
   if (items.length <= count) return items;
   const step = Math.max(1, Math.floor(items.length / count));
@@ -54,8 +116,14 @@ function sampleForMarkers<T>(items: T[], count: number): T[] {
 
 function FitBounds({ positions }: { positions: [number, number][] }) {
   const map = useMap();
+  const fittedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (positions.length < 2) return;
+    const first = positions[0]!;
+    const last = positions[positions.length - 1]!;
+    const fitKey = `${positions.length}:${first[0].toFixed(5)},${first[1].toFixed(5)}:${last[0].toFixed(5)},${last[1].toFixed(5)}`;
+    if (fittedKeyRef.current === fitKey) return;
+    fittedKeyRef.current = fitKey;
     window.requestAnimationFrame(() => {
       map.invalidateSize(false);
       map.fitBounds(L.latLngBounds(positions), { padding: [28, 28], animate: false });
@@ -261,13 +329,32 @@ type Props = {
   chartTimeBaseMs?: number | null;
   /** Segmentos coloridos por etapa (substitui legSegments quando não há padrão de circuito). */
   coloredSegments?: { color: string; startMs: number; endMs: number }[] | null;
+  /** Postpone REA/REH drawing so the GPS track can paint first. */
+  deferHeavyLayers?: boolean;
 };
 
 export const FlightMap = memo(
-  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs, coloredSegments }: Props) {
-    const [layersOn, setLayersOn] = useState<Record<AirspaceLayerId, boolean>>(() =>
-      Object.fromEntries(REA_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn])) as Record<AirspaceLayerId, boolean>,
+  function FlightMap({ points, selectedRangeT, className, hoverCallbackRef, boundsCallbackRef, trafficPattern, chartTimeBaseMs, coloredSegments, deferHeavyLayers = false }: Props) {
+    const [mapStyle, setMapStyle] = useState<MapStyle>("terrain");
+    const [toolPanel, setToolPanel] = useState<"basemap" | "layers" | null>(null);
+    const [selectedAirspace, setSelectedAirspace] = useState<{ info: AirspaceInfo; key: string } | null>(null);
+    const [layersOn, setLayersOn] = useState<Record<FlightMapLayerId, boolean>>(() =>
+      Object.fromEntries([
+        ...AIRSPACE_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn]),
+        ...REA_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn]),
+      ]) as Record<FlightMapLayerId, boolean>,
     );
+    const [heavyLayersReady, setHeavyLayersReady] = useState(!deferHeavyLayers);
+    const tiles = TILES[mapStyle];
+
+    useEffect(() => {
+      if (!deferHeavyLayers) {
+        setHeavyLayersReady(true);
+        return;
+      }
+      const timer = window.setTimeout(() => setHeavyLayersReady(true), 1_600);
+      return () => window.clearTimeout(timer);
+    }, [deferHeavyLayers]);
 
     const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
@@ -275,7 +362,19 @@ export const FlightMap = memo(
       return points.filter((p) => p.t !== null && p.t >= t0 && p.t <= t1);
     }, [points, selectedRangeT]);
 
-    const positions = useMemo(() => points.map((p) => [p.lat, p.lon] as [number, number]), [points]);
+    const positions = useMemo(
+      () =>
+        points
+          .filter(
+            (p) =>
+              Number.isFinite(p.lat) &&
+              Number.isFinite(p.lon) &&
+              Math.abs(p.lat) <= 90 &&
+              Math.abs(p.lon) <= 180,
+          )
+          .map((p) => [p.lat, p.lon] as [number, number]),
+      [points],
+    );
     const selectedPositions = useMemo(() => selectedPoints.map((p) => [p.lat, p.lon] as [number, number]), [selectedPoints]);
 
     const center = useMemo((): [number, number] => {
@@ -358,7 +457,87 @@ export const FlightMap = memo(
       <div
         className={`relative ${className ?? "h-72 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950 md:h-96"}`}
       >
-        <div className="pointer-events-none absolute left-2 top-2 z-[1000] flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5">
+        <div className="pointer-events-none absolute bottom-3 right-2 top-2 z-[1000] flex items-start justify-end gap-2">
+          {toolPanel ? (
+            <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-200">
+                  {toolPanel === "basemap" ? "Tipo de mapa" : "Espacos aereos"}
+                </p>
+                <button type="button" className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-white" onClick={() => setToolPanel(null)} aria-label="Fechar">
+                  x
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+                {toolPanel === "basemap" ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      ["terrain", "Relevo"],
+                      ["satellite", "Satelite"],
+                      ["roads", "Rodoviario"],
+                    ] as const).map(([id, label]) => {
+                      const on = mapStyle === id;
+                      return (
+                        <button key={id} type="button" onClick={() => setMapStyle(id)} className={`rounded-xl border px-2 py-3 text-center text-[11px] font-semibold transition ${on ? "border-cyan-400/70 bg-cyan-500/15 text-cyan-100" : "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500"}`}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {toolPanel === "layers" ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Espaco aereo</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {AIRSPACE_LAYER_TOGGLES.map((layer) => {
+                          const on = layersOn[layer.id] === true;
+                          return (
+                            <button key={layer.id} type="button" title={layer.label} onClick={() => setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))} className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${on ? "border-white/25 text-white" : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300"}`} style={on ? { backgroundColor: `${layer.color}55` } : undefined}>
+                              {layer.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Rotas especiais</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {REA_LAYER_TOGGLES.map((layer) => {
+                          const on = layersOn[layer.id] === true;
+                          return (
+                            <button key={layer.id} type="button" title={layer.title} onClick={() => setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))} className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${on ? "border-amber-400/50 bg-amber-500/25 text-amber-50" : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300"}`}>
+                              {layer.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          <div className="pointer-events-auto flex flex-col gap-1 rounded-2xl border border-slate-600/80 bg-slate-950/85 p-1 shadow-2xl shadow-black/40 backdrop-blur-md">
+            {([
+              { id: "basemap" as const, title: "Tipo de mapa", icon: <MapToolIconMap /> },
+              { id: "layers" as const, title: "Espacos aereos", icon: <MapToolIconAirspace /> },
+            ] as const).map((btn) => {
+              const on = toolPanel === btn.id;
+              return (
+                <button key={btn.id} type="button" title={btn.title} onClick={() => setToolPanel((prev) => (prev === btn.id ? null : btn.id))} className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition ${on ? "bg-cyan-500/30 text-cyan-100 ring-1 ring-cyan-400/50" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`}>
+                  {btn.icon}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {selectedAirspace ? (
+          <div className="absolute right-14 top-2 z-[995] w-[min(100%-1rem,24rem)]">
+            <AirspaceInfoPanel info={selectedAirspace.info} onClose={() => setSelectedAirspace(null)} />
+          </div>
+        ) : null}
+        <div className="hidden">
           <span className="rounded-md bg-slate-950/80 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 backdrop-blur-sm">
             Espaço aéreo
           </span>
@@ -382,6 +561,7 @@ export const FlightMap = memo(
           })}
         </div>
         <MapContainer
+          key={mapStyle}
           center={center}
           zoom={11}
           className="h-full w-full [&_.leaflet-control-attribution]:text-[9px]"
@@ -392,17 +572,28 @@ export const FlightMap = memo(
           preferCanvas
         >
           <TileLayer
-            attribution="Tiles &copy; Esri · REA/REH GeoAISWEB DECEA"
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
-            maxZoom={18}
+            attribution={`${tiles.attribution} · GeoAISWEB DECEA`}
+            url={tiles.url}
+            maxZoom={tiles.maxZoom}
             keepBuffer={4}
             updateWhenIdle={false}
             updateWhenZooming
             opacity={1}
+            {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
           />
+          {AIRSPACE_WFS_LAYER_DEFS.some((l) => layersOn[l.id]) ? (
+            <AirspaceLayersOverlay
+              enabledTypes={layersOn}
+              selectedKey={selectedAirspace?.key ?? null}
+              onSelect={(info, key) => {
+                if (!info || !key) setSelectedAirspace(null);
+                else setSelectedAirspace({ info, key });
+              }}
+            />
+          ) : null}
           <ReaRoutesOverlayBoundary>
-            <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} />
-            <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} />
+            <ReaRoutesOverlay kind="rea" enabled={heavyLayersReady && layersOn.rea === true} />
+            <ReaRoutesOverlay kind="reh" enabled={heavyLayersReady && layersOn.reh === true} />
           </ReaRoutesOverlayBoundary>
           <ResizeInvalidator />
           <ImperativeRouteLayers
@@ -414,7 +605,7 @@ export const FlightMap = memo(
           />
           {hoverCallbackRef && <ImperativeCursor hoverCallbackRef={hoverCallbackRef} />}
           {boundsCallbackRef && <MapBoundsTracker boundsCallbackRef={boundsCallbackRef} />}
-          <FitBounds positions={selectedPositions.length > 1 ? selectedPositions : positions} />
+          <FitBounds positions={positions} />
         </MapContainer>
       </div>
     );

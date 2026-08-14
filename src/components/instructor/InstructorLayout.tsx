@@ -39,8 +39,12 @@ const FuelingsTab = lazy(() => import("../FuelingsTab").then((module) => ({ defa
 const ContractsUserTab = lazy(() => import("../ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("../ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
+const WhatsAppHubTab = lazy(() => import("../WhatsAppHubTab").then((module) => ({ default: module.WhatsAppHubTab })));
 const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
 const PanelTab = lazy(() => import("../PanelTab").then((module) => ({ default: module.PanelTab })));
+const MarketplaceStorefront = lazy(() =>
+  import("../marketplace/MarketplaceStorefront").then((module) => ({ default: module.MarketplaceStorefront })),
+);
 
 type InstructorSection =
   | "home"
@@ -63,8 +67,10 @@ type InstructorSection =
   | "reports"
   | "solo-flight"
   | "aisweb"
+  | "whatsapp"
   | "album"
-  | "painel";
+  | "painel"
+  | "marketplace";
 
 type NavItem = {
   id: InstructorSection;
@@ -284,12 +290,32 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "whatsapp",
+    label: "WhatsApp",
+    sublabel: "Avisos, METAR e comandos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.848 2.771A49.144 49.144 0 0112 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 01-3.476.383.39.39 0 00-.297.17l-2.755 4.133a.75.75 0 01-1.248 0l-2.755-4.133a.39.39 0 00-.297-.17 48.9 48.9 0 01-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97zM6.75 8.25a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5H12a.75.75 0 000-1.5H7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "album",
     label: "Álbum",
     sublabel: "Fotos e vídeos dos voos",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "marketplace",
+    label: "Marketplace",
+    sublabel: "Produtos e serviços da escola",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M2.25 2.25a.75.75 0 000 1.5h1.386c.17 0 .318.114.362.278l2.558 9.592a3.752 3.752 0 00-2.306 3.63 3.75 3.75 0 003.75 3.75h11.25a.75.75 0 000-1.5H7.999a2.25 2.25 0 01-2.206-1.75h11.182c.847 0 1.603-.55 1.849-1.36l2.49-8.14a.75.75 0 00-.71-.97H5.615l-.5-1.875A1.875 1.875 0 003.636 2.25H2.25zM3.75 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM16.5 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" />
       </svg>
     ),
   },
@@ -301,7 +327,9 @@ const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "schedule",
   "solo-flight",
   "aisweb",
+  "whatsapp",
   "album",
+  "marketplace",
   "students",
   "users",
   "maneuvers",
@@ -340,7 +368,9 @@ const SECTION_ROUTES = [
   { id: "indique-ganhe", path: "/instrutor/indique-ganhe" },
   { id: "solo-flight", path: "/instrutor/voo-solo" },
   { id: "aisweb", path: "/instrutor/aisweb" },
+  { id: "whatsapp", path: "/instrutor/whatsapp" },
   { id: "album", path: "/instrutor/album" },
+  { id: "marketplace", path: "/instrutor/marketplace" },
 ] satisfies readonly TabRoute<InstructorSection>[];
 
 function TabLoading() {
@@ -758,10 +788,24 @@ export function InstructorLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("whatsapp") && (
+            <div hidden={section !== "whatsapp"}>
+              <LazyTab>
+                <WhatsAppHubTab />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("album") && (
             <div hidden={section !== "album"}>
               <LazyTab>
                 <MediaAlbumTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("marketplace") && (
+            <div hidden={section !== "marketplace"}>
+              <LazyTab>
+                <MarketplaceStorefront />
               </LazyTab>
             </div>
           )}

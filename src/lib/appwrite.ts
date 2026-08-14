@@ -94,6 +94,12 @@ export const TRAINING_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID as string | undefined) ?? "training_tracks";
 export const STUDENT_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID as string | undefined) ?? "student_training_tracks";
+export const FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID as string | undefined) ??
+  "flight_review_club_memberships";
+export const FLIGHT_REVIEW_CLUB_TASKS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COL_ID as string | undefined) ??
+  "flight_review_club_tasks";
 export const JOURNEY_REWARDS_COL_ID =
   (import.meta.env.VITE_APPWRITE_JOURNEY_REWARDS_COL_ID as string | undefined) ?? "journey_rewards";
 export const STUDENT_OBSERVATIONS_COL_ID =
@@ -120,6 +126,12 @@ export const SCHOOL_PRODUCTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_SCHOOL_PRODUCTS_COL_ID as string | undefined) ?? "school_products";
 export const PRODUCT_SALES_COL_ID =
   (import.meta.env.VITE_APPWRITE_PRODUCT_SALES_COL_ID as string | undefined) ?? "product_sales";
+export const MARKETPLACE_CATEGORIES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MARKETPLACE_CATEGORIES_COL_ID as string | undefined) ?? "marketplace_categories";
+export const MARKETPLACE_PRODUCTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MARKETPLACE_PRODUCTS_COL_ID as string | undefined) ?? "marketplace_products";
+export const MARKETPLACE_ORDERS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_MARKETPLACE_ORDERS_COL_ID as string | undefined) ?? "marketplace_orders";
 export const FINANCIAL_MONTHLY_CLOSINGS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FINANCIAL_MONTHLY_CLOSINGS_COL_ID as string | undefined) ?? "financial_monthly_closings";
 export const FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID =

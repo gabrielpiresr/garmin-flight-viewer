@@ -39,6 +39,7 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-flight-review", kind: "page", label: "Flight Review", group: "Conteúdos", path: "/admin/conteudos/flight-review", requiredTab: "flight-review", keywords: ["revisao de voo", "avaliacao"] },
   { id: "page-students", kind: "page", label: "Alunos", group: "Operação", path: "/admin/alunos", requiredTab: "students", keywords: ["aluno", "evolucao", "ritmo de voo", "estudante", "turma"] },
   { id: "page-users", kind: "page", label: "Usuários", group: "Operação", path: "/admin/usuarios", requiredTab: "users", keywords: ["usuario", "perfil", "permissoes", "conta", "cadastro", "membros"] },
+  { id: "page-whatsapp", kind: "page", label: "WhatsApp", group: "Operação", path: "/admin/whatsapp", requiredTab: "whatsapp", keywords: ["wpp", "zap", "metar", "avisos", "bot"] },
   { id: "page-planejamento", kind: "page", label: "Planejamento", group: "Operação", path: "/admin/planejamento", requiredTab: "planejamento", keywords: ["rota", "nexatlas", "fpl", "flight plan", "navegacao", "waypoints", "aerodromo", "rea", "briefing"] },
   { id: "page-radar", kind: "page", label: "Radar", group: "Operação", path: "/admin/radar", requiredTab: "radar", keywords: ["flightradar", "fr24", "ao vivo", "rastreamento", "frota ao vivo", "mapa radar", "acompanhar aviao"] },
   { id: "page-fleet-aircraft", kind: "page", label: "Frota · Aviões", group: "Frota", path: "/admin/frota/avioes", requiredTab: "fleet.avioes", keywords: ["aeronave", "aviao", "prefixo", "matricula"] },
@@ -49,7 +50,9 @@ const PAGE_ENTRIES: AdminSearchEntry[] = [
   { id: "page-logbook", kind: "page", label: "Diário de bordo", group: "Frota", path: "/admin/diario-de-bordo", requiredTab: "logbook", keywords: ["anac", "caderneta", "registros de voo"] },
   { id: "page-crm", kind: "page", label: "CRM", group: "Comercial & Financeiro", path: "/admin/crm", requiredTab: "crm", keywords: ["funil", "lead", "prospeccao", "pipeline", "qualificacao"] },
   { id: "page-instructor-admission", kind: "page", label: "Instrutores", group: "Comercial & Financeiro", path: "/admin/admissao-instrutores", requiredTab: "instructor-admission", keywords: ["instrutor", "admissao", "formacao", "candidato", "processo seletivo", "recrutamento", "gestao instrutores"] },
+  { id: "page-frc", kind: "page", label: "FRC", group: "Comercial & Financeiro", path: "/admin/frc", requiredTab: "frc", keywords: ["flight review club", "clube de flight review", "assinatura frc", "integrantes frc", "checklist frc", "nexatlas", "clube 360"] },
   { id: "page-receipts", kind: "page", label: "Recebimentos", group: "Comercial & Financeiro", path: "/admin/recebimentos", requiredTab: "receipts", keywords: ["pagamento", "cakto", "cobranca", "venda", "pix", "recebido", "credito"] },
+  { id: "page-marketplace", kind: "page", label: "Marketplace", group: "Comercial & Financeiro", path: "/admin/marketplace", requiredTab: "marketplace", keywords: ["loja", "store", "produto", "servico", "camisa", "estoque", "venda", "catalogo"] },
   { id: "page-dre", kind: "page", label: "DRE", group: "Comercial & Financeiro", path: "/admin/dre", requiredTab: "dre", keywords: ["financeiro", "resultado", "demonstrativo", "receita", "despesa", "lucro"] },
   { id: "page-contracts", kind: "page", label: "Contratos", group: "Comercial & Financeiro", path: "/admin/contratos", requiredTab: "contracts", keywords: ["contrato", "template", "emitidos", "minuta"] },
   { id: "page-disparos-email", kind: "page", label: "Disparos · Email MKT", group: "Comercial & Financeiro", path: "/admin/disparos/email-mkt", requiredTab: "disparos.email-mkt", keywords: ["email marketing", "campanha", "newsletter", "disparo"] },
@@ -133,7 +136,7 @@ const ACTION_ENTRIES: AdminSearchEntry[] = [
   { id: "action-import-saga", kind: "action", label: "Importar dados do SAGA", group: "Ações", path: "/admin/configuracoes/importacoes", requiredTab: "import", keywords: ["importar saga", "importacao", "trazer voos do saga", "migrar dados"] },
   { id: "action-sync-saga", kind: "action", label: "Sincronizar com o SAGA", group: "Ações", path: "/admin/atualizacoes/agendamentos", requiredTab: "atualizacoes", keywords: ["sincronizar", "atualizar dados do saga", "sync", "agendamentos do saga"] },
   { id: "action-create-badge", kind: "action", label: "Criar badge", group: "Ações", path: "/admin/configuracoes/badges", requiredTab: "settings.badges", keywords: ["nova badge", "conquista", "premiacao"] },
-  { id: "action-flight-review-club", kind: "action", label: "Configurar Flight Review Club", group: "Ações", path: "/admin/configuracoes", requiredTab: "settings.regras", scrollTo: "Flight Review Club", keywords: ["clube de flight review", "assinatura do clube", "clube"] },
+  { id: "action-flight-review-club", kind: "action", label: "Configurar Flight Review Club", group: "Ações", path: "/admin/frc", requiredTab: "frc", keywords: ["clube de flight review", "assinatura do clube", "clube", "beneficios frc", "landing frc"] },
   { id: "action-alerts-triggered", kind: "action", label: "Ver alertas disparados", group: "Ações", path: "/admin/alertas", requiredTab: "reports.alertas", scrollTo: "Alertas disparados", keywords: ["alertas disparados", "excedencias recentes", "ocorrencias"] },
 ];
 

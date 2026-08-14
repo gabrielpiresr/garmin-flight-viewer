@@ -736,7 +736,7 @@ export function FlightBriefingAiPanel({
     if (updated) setSelectedTask(updated);
   }, [report, selectedTask?.id]);
 
-  if (loading) {
+  if (loading && !report) {
     return (
       <section className="flex items-center gap-3 rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-4">
         <img src={loadingGif} alt="" className="h-10 w-10 rounded-lg border border-cyan-400/30 bg-slate-950 p-1" />
@@ -759,6 +759,15 @@ export function FlightBriefingAiPanel({
 
   return (
     <div className="space-y-4">
+      {loading ? (
+        <section className="flex items-center gap-3 rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+          <img src={loadingGif} alt="" className="h-8 w-8 rounded-lg border border-cyan-400/30 bg-slate-950 p-1" />
+          <div>
+            <p className="text-sm font-semibold text-cyan-100">IA validando autorização e enriquecendo contatos.</p>
+            <p className="mt-0.5 text-xs text-cyan-200/70">O checklist default já está visível.</p>
+          </div>
+        </section>
+      ) : null}
       {error ? (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{error}</p>
       ) : null}
@@ -778,7 +787,6 @@ export function FlightBriefingAiPanel({
       <section className="grid gap-3 @lg:grid-cols-3">
         {airportRows.map(({ icao, airport }) => {
           const tasks = tasksByIcao.get(icao) || [];
-          const aiAirport = report.airports.find((item) => item.icao === icao);
           const summary = airport
             ? airportSummaryFromBundle(airportRoleLabel(airport.role), airport.icao, airport.bundle)
             : null;
@@ -832,17 +840,6 @@ export function FlightBriefingAiPanel({
                   </div>
                 </div>
               </div>
-            ) : null}
-
-            {aiAirport ? (
-              <details className="mt-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2">
-                <summary className="cursor-pointer text-xs font-semibold text-cyan-100">Insights IA</summary>
-                <div className="mt-2 space-y-2 text-xs text-cyan-50/85">
-                  <p><span className="font-semibold">Combustível:</span> {aiAirport.fuel.detail}</p>
-                  <p><span className="font-semibold">Hangaragem:</span> {aiAirport.hangarage.detail}</p>
-                  <p><span className="font-semibold">Slot/PPR:</span> {aiAirport.slotPpr.detail}</p>
-                </div>
-              </details>
             ) : null}
 
             {airport && onAirportNoteChange ? (

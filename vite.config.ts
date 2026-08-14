@@ -49,7 +49,8 @@ export default defineConfig({
           if (
             normalizedId.includes("/node_modules/three/") ||
             normalizedId.includes("/node_modules/@react-three/") ||
-            normalizedId.includes("/node_modules/three-stdlib/")
+            normalizedId.includes("/node_modules/three-stdlib/") ||
+            normalizedId.includes("/node_modules/mp4-muxer/")
           ) {
             return "three";
           }

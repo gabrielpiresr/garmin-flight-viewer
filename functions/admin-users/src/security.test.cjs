@@ -71,7 +71,7 @@ test("authenticated users pass the central gate and keep downstream role guards"
 });
 
 test("schedule/cakto legacy guest actions remain outside this hardening pass", () => {
-  for (const action of ["notifyStudentScheduleEvent", "sagaUpsertScheduleDirect", "notifyCaktoSaleEvent"]) {
+  for (const action of ["notifyStudentScheduleEvent", "sagaUpsertScheduleDirect", "notifyCaktoSaleEvent", "runBirthdayDigestScan"]) {
     const decision = authorizeGuestAction({
       action,
       env: { ADMIN_USERS_SECURITY_MODE: "strict" },

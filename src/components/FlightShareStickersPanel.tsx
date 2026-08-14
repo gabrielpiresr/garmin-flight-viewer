@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import {
   buildCustomFlightShareSticker,
   buildFlightShareStickers,
@@ -7,6 +7,10 @@ import {
   type FlightShareData,
 } from "../lib/flightShareStickers";
 import { ShareStickersWorkspace, type ShareStickerControl } from "./ShareStickersModal";
+
+const FlightFlyoverPanel = lazy(() =>
+  import("./FlightFlyoverPanel").then((mod) => ({ default: mod.FlightFlyoverPanel })),
+);
 
 type Props = {
   shareData: FlightShareData | null;
@@ -82,6 +86,13 @@ export function FlightShareStickersPanel({ shareData, loading = false, error = n
         onReadyShowBackgroundChange={setReadyShowBackground}
         onCustomShowBackgroundChange={(checked) => updateCustomOptions({ showBackground: checked })}
         onReset={resetCustomOptions}
+        flyover={
+          shareData ? (
+            <Suspense fallback={<div className="flex min-h-[520px] items-center justify-center text-sm text-slate-400">Carregando Flyover...</div>}>
+              <FlightFlyoverPanel shareData={shareData} shareText="Confira meu voo." />
+            </Suspense>
+          ) : undefined
+        }
       />
     </div>
   );

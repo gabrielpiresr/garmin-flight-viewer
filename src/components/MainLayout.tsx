@@ -6,6 +6,7 @@ import { useOpenedTabs, useRoutedTab, type TabRoute } from "../lib/routedTabs";
 import { applySchoolTheme, getSchoolRules } from "../lib/schoolRulesDb";
 import { getReferAndEarnPublic, programConfigForRole } from "../lib/referAndEarnDb";
 import { getOnboardingPublic } from "../lib/onboardingDb";
+import { getFlightReviewClubStatus } from "../lib/caktoDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
 import { buildFlightDisplayInfo, shortName, type FlightDisplayInfo } from "../lib/flightDisplay";
 import { getEvaluationForFlight } from "../lib/flightEvaluationsDb";
@@ -23,6 +24,7 @@ import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
 import { SidebarBrand } from "./SidebarBrand";
 import { StudentTabSkeleton } from "./student/StudentExperience";
 import { FlightEvaluationModal } from "./FlightEvaluationModal";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
 import type { StudentTabKey } from "../types/rolePermissions";
 
 const AgendamentoTab = lazy(() => import("./AgendamentoTab").then((module) => ({ default: module.AgendamentoTab })));
@@ -46,13 +48,24 @@ const StudentEndorsementsTab = lazy(() => import("./StudentEndorsementsTab").the
 const ContractsUserTab = lazy(() => import("./ContractsUserTab").then((module) => ({ default: module.ContractsUserTab })));
 const ReferAndEarnTab = lazy(() => import("./ReferAndEarnTab").then((module) => ({ default: module.ReferAndEarnTab })));
 const AiswebTab = lazy(() => import("./AiswebTab").then((module) => ({ default: module.AiswebTab })));
+const WhatsAppHubTab = lazy(() => import("./WhatsAppHubTab").then((module) => ({ default: module.WhatsAppHubTab })));
 const MediaAlbumTab = lazy(() => import("./MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
 const PanelTab = lazy(() => import("./PanelTab").then((module) => ({ default: module.PanelTab })));
+const PlanejamentoTab = lazy(() =>
+  import("./admin/PlanejamentoTab").then((module) => ({ default: module.PlanejamentoTab })),
+);
+const MarketplaceStorefront = lazy(() =>
+  import("./marketplace/MarketplaceStorefront").then((module) => ({ default: module.MarketplaceStorefront })),
+);
+const FlightReviewClubPage = lazy(() =>
+  import("../pages/FlightReviewClubPage").then((module) => ({ default: module.FlightReviewClubPage })),
+);
 
-type Section = StudentTabKey;
+type StudentSection = StudentTabKey;
+type Section = StudentSection | "flight-review-club";
 
 type NavItem = {
-  id: Section;
+  id: StudentSection;
   label: string;
   sublabel: string;
   icon: ReactNode;
@@ -239,6 +252,26 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "planejamento",
+    label: "Planejamento",
+    sublabel: "Rotas, mapa e briefing",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M8.161 2.58a1.875 1.875 0 011.678 0l4.976 2.459c.09.044.19.044.28 0l4.976-2.459a1.875 1.875 0 012.429 2.43l-2.46 4.976a.375.375 0 000 .28l2.46 4.976a1.875 1.875 0 01-2.43 2.429l-4.976-2.46a.375.375 0 00-.28 0l-4.976 2.46a1.875 1.875 0 01-2.429-2.43l2.46-4.976a.375.375 0 000-.28L5.732 5.01a1.875 1.875 0 012.43-2.43z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "whatsapp",
+    label: "WhatsApp",
+    sublabel: "Avisos, METAR e comandos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.848 2.771A49.144 49.144 0 0112 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 01-3.476.383.39.39 0 00-.297.17l-2.755 4.133a.75.75 0 01-1.248 0l-2.755-4.133a.39.39 0 00-.297-.17 48.9 48.9 0 01-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97zM6.75 8.25a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5H12a.75.75 0 000-1.5H7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "endossos",
     label: "Endossos",
     sublabel: "Arquivos para voo solo",
@@ -255,6 +288,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "marketplace",
+    label: "Marketplace",
+    sublabel: "Produtos e serviços da escola",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M2.25 2.25a.75.75 0 000 1.5h1.386c.17 0 .318.114.362.278l2.558 9.592a3.752 3.752 0 00-2.306 3.63 3.75 3.75 0 003.75 3.75h11.25a.75.75 0 000-1.5H7.999a2.25 2.25 0 01-2.206-1.75h11.182c.847 0 1.603-.55 1.849-1.36l2.49-8.14a.75.75 0 00-.71-.97H5.615l-.5-1.875A1.875 1.875 0 003.636 2.25H2.25zM3.75 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM16.5 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" />
       </svg>
     ),
   },
@@ -279,21 +322,25 @@ const SECTION_ROUTES = [
   { id: "contratos", path: "/aluno/contratos" },
   { id: "indique-ganhe", path: "/aluno/indique-ganhe" },
   { id: "aisweb", path: "/aluno/aisweb" },
+  { id: "planejamento", path: "/aluno/planejamento" },
+  { id: "whatsapp", path: "/aluno/whatsapp" },
   { id: "album", path: "/aluno/album" },
+  { id: "marketplace", path: "/aluno/marketplace" },
+  { id: "flight-review-club", path: "/flight-review-club" },
 ] satisfies readonly TabRoute<Section>[];
 
-const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: Section[] }> = [
-  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb"] },
+const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: StudentSection[] }> = [
+  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb", "planejamento", "whatsapp"] },
   { label: "Evoluir", ids: ["jornada", "manobras", "painel", "manuais", "avisos", "album"] },
-  { label: "Conta", ids: ["creditos", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe"] },
+  { label: "Conta", ids: ["creditos", "marketplace", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe"] },
   { label: "Suporte", ids: ["ajuda"] },
 ];
 
-const MOBILE_PRIMARY_NAV: Section[] = ["home", "schedule", "meus-voos", "jornada"];
+const MOBILE_PRIMARY_NAV: StudentSection[] = ["home", "schedule", "meus-voos", "jornada"];
 const PENDING_EVALUATION_MAX_PROMPTS = 2;
 const PENDING_EVALUATION_PROMPT_INTERVAL_MS = 60 * 60 * 1000;
 
-function skeletonKind(section: Section): "default" | "home" | "schedule" | "credits" | "journey" {
+function skeletonKind(section: StudentSection): "default" | "home" | "schedule" | "credits" | "journey" {
   if (section === "home") return "home";
   if (section === "schedule" || section === "agendamento") return "schedule";
   if (section === "creditos" || section === "dre") return "credits";
@@ -301,8 +348,13 @@ function skeletonKind(section: Section): "default" | "home" | "schedule" | "cred
   return "default";
 }
 
-function LazyTab({ section, children }: { section: Section; children: ReactNode }) {
+function LazyTab({ section, children }: { section: StudentSection; children: ReactNode }) {
   return <Suspense fallback={<StudentTabSkeleton kind={skeletonKind(section)} />}>{children}</Suspense>;
+}
+
+function StudentSectionTab({ section, locked, children }: { section: StudentSection; locked: boolean; children: ReactNode }) {
+  if (locked) return <FlightReviewClubGate />;
+  return <LazyTab section={section}>{children}</LazyTab>;
 }
 
 function formatPendingEvaluationDate(info: FlightDisplayInfo | null, flight: SavedFlightListItem): string {
@@ -442,6 +494,7 @@ export function MainLayout() {
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
   const openedSections = useOpenedTabs(section);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
+  const [rulesLoaded, setRulesLoaded] = useState(false);
   const {
     collapsed: sidebarPinned,
     compact: sidebarCollapsed,
@@ -472,6 +525,7 @@ export function MainLayout() {
   );
   const availableNavItems = visibleNavItems.length > 0 ? visibleNavItems : [NAV_ITEMS[0]!];
   const activeNav = availableNavItems.find((item) => item.id === section) ?? availableNavItems[0]!;
+  const activeTitle = section === "flight-review-club" ? "Flight Review Club" : activeNav.label;
   const navById = useMemo(() => new Map(availableNavItems.map((item) => [item.id, item])), [availableNavItems]);
   const desktopNavGroups = useMemo(
     () =>
@@ -485,17 +539,22 @@ export function MainLayout() {
     () => MOBILE_PRIMARY_NAV.map((id) => navById.get(id)).filter((item): item is NavItem => Boolean(item)),
     [navById],
   );
-  const mobilePrimaryIds = useMemo(() => new Set(mobilePrimaryItems.map((item) => item.id)), [mobilePrimaryItems]);
+  const mobilePrimaryIds = useMemo(() => new Set<StudentSection>(mobilePrimaryItems.map((item) => item.id)), [mobilePrimaryItems]);
   const mobileMoreItems = useMemo(
     () => availableNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
     [availableNavItems, mobilePrimaryIds],
   );
-  const isMobileMoreActive = !mobilePrimaryIds.has(section);
+  const isMobileMoreActive = section === "flight-review-club" || !mobilePrimaryIds.has(section as StudentSection);
 
-  function openSection(target: Section) {
+  function openSection(target: StudentSection) {
     const targetIsAvailable = availableNavItems.some((item) => item.id === target);
     setMobileMoreOpen(false);
     setSection(targetIsAvailable ? target : activeNav.id);
+  }
+
+  function openClubSection() {
+    setMobileMoreOpen(false);
+    setSection("flight-review-club");
   }
 
   useEffect(() => {
@@ -505,11 +564,13 @@ export function MainLayout() {
         if (cancelled) return;
         setRules(next);
         applySchoolTheme(next);
+        setRulesLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setRules(DEFAULT_SCHOOL_RULES);
         applySchoolTheme(DEFAULT_SCHOOL_RULES);
+        setRulesLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -538,11 +599,16 @@ export function MainLayout() {
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
-    void listStudentTrainingTracks(user.id).then((result) => {
-      if (cancelled) return;
-      const primary = result.data?.find((t) => t.isPrimary) ?? result.data?.[0] ?? null;
-      setIsClubMember(primary?.isFlightReviewClubMember ?? false);
-    });
+    void getFlightReviewClubStatus()
+      .then((status) => {
+        if (!cancelled) setIsClubMember(status.hasAccess);
+      })
+      .catch(() => {
+        void listStudentTrainingTracks(user.id).then((result) => {
+          if (cancelled) return;
+          setIsClubMember((result.data ?? []).some((track) => track.status === "active" && track.isFlightReviewClubMember));
+        });
+      });
     return () => {
       cancelled = true;
     };
@@ -569,10 +635,14 @@ export function MainLayout() {
     // um F5 em qualquer aba volta para a home antes do menu real estar disponível.
     if (permissionsLoading) return;
     if (section === "indique-ganhe" && !referProgramLoaded) return;
+    if (section === "flight-review-club" && !rulesLoaded) return;
+    if (section === "flight-review-club" && rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu) {
+      return;
+    }
     if (!availableNavItems.some((item) => item.id === section)) {
       setSection(availableNavItems[0]!.id, { replace: true });
     }
-  }, [availableNavItems, section, permissionsLoading, referProgramLoaded]);
+  }, [availableNavItems, section, permissionsLoading, referProgramLoaded, rulesLoaded, rules.flightReviewClub.enabled, rules.flightReviewClub.showInStudentMenu]);
 
   useEffect(() => {
     if (!user?.id || user.role !== "aluno" || !rules.flightEvaluation.enabled) {
@@ -643,9 +713,8 @@ export function MainLayout() {
     });
   }
 
-  const clubLpUrl = rules.flightReviewClub.landingPageType === "external_url"
-    ? rules.flightReviewClub.externalUrl
-    : `${window.location.origin}/flight-review-club`;
+  const clubLpExternal = rules.flightReviewClub.landingPageType === "external_url";
+  const clubLpUrl = clubLpExternal ? rules.flightReviewClub.externalUrl : "/flight-review-club";
 
   const clubContextValue = {
     enabled: rules.flightReviewClub.enabled,
@@ -655,6 +724,9 @@ export function MainLayout() {
     trialFlightCount: rules.flightReviewClub.trialFlightCount,
     benefits: rules.flightReviewClub.benefits,
   };
+
+  const exclusiveStudentTabs = new Set(rules.flightReviewClub.enabled ? rules.flightReviewClub.exclusiveStudentTabs : []);
+  const isStudentTabLocked = (tab: StudentSection) => user?.role === "aluno" && exclusiveStudentTabs.has(tab) && !isClubMember;
 
   return (
     <FlightReviewClubProvider value={clubContextValue}>
@@ -728,23 +800,44 @@ export function MainLayout() {
             </div>
           ))}
           {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
-            <a
-              href={clubLpUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={sidebarCollapsed ? "Flight Review Club" : undefined}
-              aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
-              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
-            >
-              <span className="opacity-70 group-hover:opacity-100">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                  <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                </svg>
-              </span>
-              <div className={sidebarRevealClass(sidebarCollapsed)}>
-                <p className="text-sm font-medium leading-none">Flight Review Club</p>
-              </div>
-            </a>
+            clubLpExternal ? (
+              <a
+                href={clubLpUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={sidebarCollapsed ? "Flight Review Club" : undefined}
+                aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
+                className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+              >
+                <span className="opacity-70 group-hover:opacity-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <div className={sidebarRevealClass(sidebarCollapsed)}>
+                  <p className="text-sm font-medium leading-none">Flight Review Club</p>
+                </div>
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={openClubSection}
+                title={sidebarCollapsed ? "Flight Review Club" : undefined}
+                aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
+                className={`group flex w-full items-center rounded-lg border py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                  section === "flight-review-club" ? "border-amber-600/60 bg-amber-500/10 text-amber-200" : "border-transparent"
+                }`}
+              >
+                <span className={section === "flight-review-club" ? "" : "opacity-70 group-hover:opacity-100"}>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <div className={sidebarRevealClass(sidebarCollapsed)}>
+                  <p className="text-sm font-medium leading-none">Flight Review Club</p>
+                </div>
+              </button>
+            )
           ) : null}
           {onboardingInMenu ? (
             <a
@@ -791,7 +884,7 @@ export function MainLayout() {
             <PortalShellHeader
               roleLabel="Aluno"
               roleBadgeClassName="bg-sky-500/20 text-sky-400"
-              title={activeNav.label}
+              title={activeTitle}
             />
             <div className="flex items-center gap-3">
               <div className="lg:hidden">
@@ -812,7 +905,7 @@ export function MainLayout() {
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
-              <LazyTab section="home">
+              <StudentSectionTab section="home" locked={isStudentTabLocked("home")}>
                 <StudentHome
                   onOpenFlights={() => openSection("meus-voos")}
                   onOpenNotices={() => openSection("avisos")}
@@ -820,137 +913,165 @@ export function MainLayout() {
                   onOpenCredits={() => openSection("creditos")}
                   onOpenJourney={() => openSection("jornada")}
                 />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("jornada") && (
             <div hidden={section !== "jornada"}>
-              <LazyTab section="jornada">
+              <StudentSectionTab section="jornada" locked={isStudentTabLocked("jornada")}>
                 <JornadaTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("meus-voos") && (
             <div hidden={section !== "meus-voos"}>
-              <LazyTab section="meus-voos">
+              <StudentSectionTab section="meus-voos" locked={isStudentTabLocked("meus-voos")}>
                 <MeusVoosTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("agendamento") && (
             <div hidden={section !== "agendamento"}>
-              <LazyTab section="agendamento">
+              <StudentSectionTab section="agendamento" locked={isStudentTabLocked("agendamento")}>
                 <AgendamentoTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("schedule") && (
             <div hidden={section !== "schedule"}>
-              <LazyTab section="schedule">
+              <StudentSectionTab section="schedule" locked={isStudentTabLocked("schedule")}>
                 <StudentScheduleTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("creditos") && (
             <div hidden={section !== "creditos"}>
-              <LazyTab section="creditos">
+              <StudentSectionTab section="creditos" locked={isStudentTabLocked("creditos")}>
                 <CreditosSectionRouter />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("avisos") && (
             <div hidden={section !== "avisos"}>
-              <LazyTab section="avisos">
+              <StudentSectionTab section="avisos" locked={isStudentTabLocked("avisos")}>
                 <NoticeFeed className="w-full max-w-4xl" showHeader={false} />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("manuais") && (
             <div hidden={section !== "manuais"}>
-              <LazyTab section="manuais">
+              <StudentSectionTab section="manuais" locked={isStudentTabLocked("manuais")}>
                 <ManuaisTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("manobras") && (
             <div hidden={section !== "manobras"}>
-              <LazyTab section="manobras">
+              <StudentSectionTab section="manobras" locked={isStudentTabLocked("manobras")}>
                 <ManobrasTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("painel") && (
             <div hidden={section !== "painel"}>
-              <LazyTab section="painel">
+              <StudentSectionTab section="painel" locked={isStudentTabLocked("painel")}>
                 <PanelTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("perfil") && (
             <div hidden={section !== "perfil"}>
-              <LazyTab section="perfil">
+              <StudentSectionTab section="perfil" locked={isStudentTabLocked("perfil")}>
                 <AlunoProfileDashboard />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("endossos") && (
             <div hidden={section !== "endossos"}>
-              <LazyTab section="endossos">
+              <StudentSectionTab section="endossos" locked={isStudentTabLocked("endossos")}>
                 <StudentEndorsementsTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("ajuda") && (
             <div hidden={section !== "ajuda"}>
-              <LazyTab section="ajuda">
+              <StudentSectionTab section="ajuda" locked={isStudentTabLocked("ajuda")}>
                 <HelpCenterTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("dre") && (
             <div hidden={section !== "dre"}>
-              <LazyTab section="dre">
+              <StudentSectionTab section="dre" locked={isStudentTabLocked("dre")}>
                 <StudentDreTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("fuelings") && (
             <div hidden={section !== "fuelings"}>
-              <LazyTab section="fuelings">
+              <StudentSectionTab section="fuelings" locked={isStudentTabLocked("fuelings")}>
                 <FuelingsTab />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("contratos") && (
             <div hidden={section !== "contratos"}>
-              <LazyTab section="contratos">
+              <StudentSectionTab section="contratos" locked={isStudentTabLocked("contratos")}>
                 <ContractsUserTab
                   userId={user?.id ?? ""}
                   schoolId={user?.schoolId ?? ""}
                   userRole="aluno"
                 />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("indique-ganhe") && (
             <div hidden={section !== "indique-ganhe"}>
-              <LazyTab section="indique-ganhe">
+              <StudentSectionTab section="indique-ganhe" locked={isStudentTabLocked("indique-ganhe")}>
                 <ReferAndEarnTab portalRole="aluno" />
-              </LazyTab>
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("aisweb") && (
             <div hidden={section !== "aisweb"}>
-              <LazyTab section="aisweb">
+              <StudentSectionTab section="aisweb" locked={isStudentTabLocked("aisweb")}>
                 <AiswebTab />
-              </LazyTab>
+              </StudentSectionTab>
+            </div>
+          )}
+          {openedSections.has("planejamento") && (
+            <div hidden={section !== "planejamento"} className="-m-4 md:-m-6">
+              <StudentSectionTab section="planejamento" locked={isStudentTabLocked("planejamento")}>
+                <PlanejamentoTab />
+              </StudentSectionTab>
+            </div>
+          )}
+          {openedSections.has("whatsapp") && (
+            <div hidden={section !== "whatsapp"}>
+              <StudentSectionTab section="whatsapp" locked={isStudentTabLocked("whatsapp")}>
+                <WhatsAppHubTab />
+              </StudentSectionTab>
             </div>
           )}
           {openedSections.has("album") && (
             <div hidden={section !== "album"}>
-              <LazyTab section="album">
+              <StudentSectionTab section="album" locked={isStudentTabLocked("album")}>
                 <MediaAlbumTab />
-              </LazyTab>
+              </StudentSectionTab>
+            </div>
+          )}
+          {openedSections.has("marketplace") && (
+            <div hidden={section !== "marketplace"}>
+              <StudentSectionTab section="marketplace" locked={isStudentTabLocked("marketplace")}>
+                <MarketplaceStorefront />
+              </StudentSectionTab>
+            </div>
+          )}
+          {openedSections.has("flight-review-club") && (
+            <div hidden={section !== "flight-review-club"} className="-m-4 md:-m-6">
+              <Suspense fallback={<StudentTabSkeleton kind="default" />}>
+                <FlightReviewClubPage />
+              </Suspense>
             </div>
           )}
         </main>
@@ -1020,22 +1141,44 @@ export function MainLayout() {
                   </a>
                 ) : null}
                 {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
-                  <a
-                    href={clubLpUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-700/40 bg-amber-950/20 p-3 text-left text-amber-300"
-                  >
-                    <span className="shrink-0">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                        <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                      </svg>
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold">Flight Club</span>
-                      <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
-                    </span>
-                  </a>
+                  clubLpExternal ? (
+                    <a
+                      href={clubLpUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-700/40 bg-amber-950/20 p-3 text-left text-amber-300"
+                    >
+                      <span className="shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                          <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                        </svg>
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">Flight Club</span>
+                        <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
+                      </span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={openClubSection}
+                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left text-amber-300 ${
+                        section === "flight-review-club"
+                          ? "border-amber-500/70 bg-amber-500/15"
+                          : "border-amber-700/40 bg-amber-950/20"
+                      }`}
+                    >
+                      <span className="shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                          <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                        </svg>
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">Flight Club</span>
+                        <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
+                      </span>
+                    </button>
+                  )
                 ) : null}
               </div>
             </div>

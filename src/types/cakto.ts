@@ -71,6 +71,9 @@ export type FlightReviewClubCheckout = {
   paymentUrl: string;
   amount: number;
   pricingRuleId: string;
+  planId?: string;
+  planName?: string;
+  recurrencePeriodDays?: number;
   trainingTrackName: string;
   flownHours: number;
 };
@@ -79,9 +82,86 @@ export type FlightReviewClubQuote = {
   amount: number;
   discountPercent: number;
   pricingRuleId: string;
+  planId?: string;
+  planName?: string;
+  recurrencePeriodDays?: number;
+  billingMode?: "legacy_one_time" | "student_subscription";
   trainingTrackId: string;
   trainingTrackName: string;
   minHours: number;
   maxHours: number | null;
   flownHours: number;
+};
+
+export type FlightReviewClubMembership = {
+  id: string;
+  studentUserId: string;
+  source: "cakto" | "manual" | "legacy_track";
+  status: "active" | "trial" | "inactive" | "canceled" | "expired" | "paused" | "pending" | "unknown";
+  planId: string;
+  planName: string;
+  recurrenceKey: string;
+  recurrencePeriodDays: number;
+  amount: number;
+  caktoOfferId: string;
+  caktoSubscriptionId: string;
+  proposalId: string;
+  currentPeriod: number;
+  paidPaymentsQuantity: number;
+  nextPaymentDate: string | null;
+  accessUntil: string | null;
+  cancelAtPeriodEnd: boolean;
+  canceledAt: string | null;
+  endedAt: string | null;
+  lastPaymentAt: string | null;
+  updatedAt: string | null;
+};
+
+export type FlightReviewClubStatus = {
+  enabled: boolean;
+  hasAccess: boolean;
+  legacyTrackMember: boolean;
+  membership: FlightReviewClubMembership | null;
+};
+
+export type FlightReviewClubTaskStatus =
+  | "pendente"
+  | "em_andamento"
+  | "concluido"
+  | "bloqueado"
+  | "revogar"
+  | "revogado";
+
+export type FlightReviewClubTask = {
+  id: string;
+  membershipId: string;
+  studentUserId: string;
+  templateItemId: string;
+  title: string;
+  description: string;
+  status: FlightReviewClubTaskStatus;
+  assignedToUserId: string;
+  dueAt: string | null;
+  completedAt: string | null;
+  notes: string;
+  sortOrder: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type FlightReviewClubMemberRow = {
+  membership: FlightReviewClubMembership;
+  studentName: string;
+  studentEmail: string;
+  tasks: FlightReviewClubTask[];
+};
+
+export type FlightReviewClubAdminOverview = {
+  totalMembers: number;
+  activeAccess: number;
+  canceled: number;
+  pendingTasks: number;
+  completedTasks: number;
+  revocationTasks: number;
+  members: FlightReviewClubMemberRow[];
 };

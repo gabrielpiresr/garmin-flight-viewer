@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
+import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { getStudentCreditStatement } from "../lib/creditsDb";
 import { FLIGHT_CREDIT_PURCHASE_PATH, navigateToTab } from "../lib/routedTabs";
 import { loadNextMissions } from "../lib/scheduleStudentSummary";
@@ -46,6 +47,7 @@ function formatMissionDuration(minutes: number | null | undefined): string | nul
 export function StudentHome({ onOpenFlights, onOpenNotices, onOpenSchedule, onOpenCredits, onOpenJourney }: StudentHomeProps) {
   const { user, configured } = useAuth();
   const { canTab } = usePermissions();
+  const { enabled: clubEnabled, isClubMember } = useFlightReviewClub();
   const [creditBalance, setCreditBalance] = useState<number | null>(null);
   const [creditGeneratedAt, setCreditGeneratedAt] = useState("");
   const [creditLoading, setCreditLoading] = useState(true);
@@ -133,11 +135,23 @@ export function StudentHome({ onOpenFlights, onOpenNotices, onOpenSchedule, onOp
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border border-slate-700/60 bg-slate-900/45 p-4 md:p-5">
-        <StudentPageHeader
-          eyebrow="Cockpit do aluno"
-          title="Painel do aluno"
-          description={headerDescription}
-        />
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <StudentPageHeader
+            eyebrow="Cockpit do aluno"
+            title="Painel do aluno"
+            description={headerDescription}
+          />
+          {clubEnabled && isClubMember ? (
+            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-amber-300/40 bg-amber-300/10 px-3 py-1.5 text-xs font-black uppercase tracking-wide text-amber-100 shadow-sm shadow-amber-950/30">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-300 text-slate-950">
+                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M10.868 2.884c-.321-.772-1.415-.772-1.736 0L7.681 6.37l-3.766.302c-.835.067-1.173 1.107-.536 1.651l2.868 2.454-.877 3.67c-.195.813.691 1.456 1.405 1.02L10 13.497l3.225 1.97c.714.436 1.6-.207 1.405-1.02l-.877-3.67 2.868-2.454c.637-.544.299-1.584-.536-1.65l-3.766-.303-1.451-3.486z" clipRule="evenodd" />
+                </svg>
+              </span>
+              Assinante Flight Review Club
+            </span>
+          ) : null}
+        </div>
         <div className="mt-4 grid items-stretch gap-3 md:grid-cols-3">
           {missionLoading ? (
             <div className="min-h-[156px] rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">

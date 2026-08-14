@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { FlightReviewTab } from "../components/FlightReviewTab";
 import { FlightShareStickersPanel } from "../components/FlightShareStickersPanel";
 import { FlightSummaryPanel } from "../components/JourneyFlightReviewPage";
@@ -14,10 +14,15 @@ import {
   type PublicFlightReviewIntro,
   type PublicFlightReviewShare,
 } from "../lib/publicFlightReviewShare";
-import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
+import type { ParseResult } from "../lib/parseGarminCsv";
 import { buildFlightShareDataFromFlight, type FlightShareData } from "../lib/flightShareStickers";
+import CsvWorker from "../workers/csvWorker?worker";
 
-type PublicTab = "resumo" | "telemetria" | "flight-review" | "videos" | "fotos" | "figurinhas";
+const FlightRoute3DTab = lazy(() =>
+  import("../components/FlightRoute3DTab").then((mod) => ({ default: mod.FlightRoute3DTab })),
+);
+
+type PublicTab = "resumo" | "telemetria" | "rota-3d" | "flight-review" | "videos" | "fotos" | "figurinhas";
 
 type PublicTabItem = { id: PublicTab; label: string; icon: ReactNode };
 
@@ -38,6 +43,15 @@ const PUBLIC_TABS: PublicTabItem[] = [
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M3.5 3.75A.75.75 0 014.25 3h11.5a.75.75 0 010 1.5H5v10.75a.75.75 0 01-1.5 0V3.75z" />
         <path d="M7 13.5a1 1 0 100 2 1 1 0 000-2zm4-4a1 1 0 100 2 1 1 0 000-2zm4-3.5a1 1 0 100 2 1 1 0 000-2zM7.53 13.03l3-3 1.06 1.06-3 3-1.06-1.06zm4.04-2.6l2.9-3.38 1.14.98-2.9 3.38-1.14-.98z" />
+      </svg>
+    ),
+  },
+  {
+    id: "rota-3d",
+    label: "Rota 3D",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2.25l7 3.5v8.5l-7 3.5-7-3.5v-8.5l7-3.5zm0 1.68L5.24 6.31 10 8.69l4.76-2.38L10 3.93zM4.5 7.52v5.8l4.75 2.37v-5.8L4.5 7.52zm6.25 8.17l4.75-2.37v-5.8l-4.75 2.37v5.8z" />
       </svg>
     ),
   },
@@ -80,7 +94,7 @@ const PUBLIC_TABS: PublicTabItem[] = [
   },
 ];
 
-const PUBLIC_VISIBLE_TABS: PublicTabItem[] = ["resumo", "fotos", "figurinhas", "telemetria", "flight-review"]
+const PUBLIC_VISIBLE_TABS: PublicTabItem[] = ["resumo", "fotos", "figurinhas", "telemetria", "rota-3d", "flight-review"]
   .map((id) => PUBLIC_TABS.find((tab) => tab.id === id))
   .filter((tab): tab is PublicTabItem => Boolean(tab));
 
@@ -131,6 +145,15 @@ export function PublicFlightReviewPage() {
   const [stickerShareData, setStickerShareData] = useState<FlightShareData | null>(null);
   const [stickersLoading, setStickersLoading] = useState(false);
   const [stickersError, setStickersError] = useState<string | null>(null);
+  const route3dSourceName = useMemo(() => {
+    if (!share) return null;
+    try {
+      const decoded = decodeFlightRecord(share.flight.csv_text);
+      return decoded.telemetryFiles?.[0]?.name ?? share.flight.source_filename;
+    } catch {
+      return share.flight.source_filename;
+    }
+  }, [share]);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,16 +207,39 @@ export function PublicFlightReviewPage() {
     }
     let cancelled = false;
     setTelemetryParsing(true);
+    const worker = new CsvWorker();
     const timeoutId = window.setTimeout(() => {
       try {
         const decoded = decodeFlightRecord(share.flight.csv_text);
         const telemetryText = decoded.meta ? decoded.telemetryCsv : share.flight.csv_text;
-        const parsed = telemetryText.trim() ? parseGarminCsv(telemetryText) : null;
-        if (!cancelled) setParsedTelemetry(parsed);
+        if (!telemetryText.trim()) {
+          if (!cancelled) {
+            setParsedTelemetry(null);
+            setTelemetryReady(true);
+            setTelemetryParsing(false);
+          }
+          worker.terminate();
+          return;
+        }
+        worker.onmessage = (event: MessageEvent<{ ok: boolean; result?: ParseResult; error?: string }>) => {
+          worker.terminate();
+          if (cancelled) return;
+          setParsedTelemetry(event.data.ok ? event.data.result ?? null : null);
+          setTelemetryReady(true);
+          setTelemetryParsing(false);
+        };
+        worker.onerror = () => {
+          worker.terminate();
+          if (cancelled) return;
+          setParsedTelemetry(null);
+          setTelemetryReady(true);
+          setTelemetryParsing(false);
+        };
+        worker.postMessage(telemetryText);
       } catch {
-        if (!cancelled) setParsedTelemetry(null);
-      } finally {
+        worker.terminate();
         if (!cancelled) {
+          setParsedTelemetry(null);
           setTelemetryReady(true);
           setTelemetryParsing(false);
         }
@@ -202,6 +248,7 @@ export function PublicFlightReviewPage() {
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
+      worker.terminate();
     };
   }, [share, telemetryParsing, telemetryReady]);
 
@@ -350,7 +397,19 @@ export function PublicFlightReviewPage() {
             {!share || telemetryParsing || !telemetryReady ? (
               <TabLoadingState label="Carregando telemetria..." />
             ) : (
-              <TelemetriaTab parsedResult={parsedTelemetry ?? undefined} publicMode />
+              <TelemetriaTab parsedResult={parsedTelemetry ?? undefined} publicMode active={activeTab === "telemetria"} />
+            )}
+          </section>
+        ) : null}
+
+        {activeTab === "rota-3d" ? (
+          <section>
+            {!share || telemetryParsing || !telemetryReady ? (
+              <TabLoadingState label="Carregando rota 3D..." />
+            ) : (
+              <Suspense fallback={<TabLoadingState label="Carregando rota 3D..." />}>
+                <FlightRoute3DTab parsedResult={parsedTelemetry} sourceName={route3dSourceName} publicMode />
+              </Suspense>
             )}
           </section>
         ) : null}

@@ -19,6 +19,7 @@ export type WppConnectionSettings = {
   lastTestAt: string | null;
   lastError: string | null;
   updatedAt: string | null;
+  aiswebAlertTemplate: WppTransactionalTemplateSettings;
 };
 
 export type WppFlightReviewReadyTemplateSettings = {
@@ -94,6 +95,7 @@ export type WppConnectionInput = {
   bookingRequestedTemplate?: WppTransactionalTemplateSettings;
   soloFlightApprovalTemplate?: WppTransactionalTemplateSettings;
   soloFlightAwarenessTemplate?: WppTransactionalTemplateSettings;
+  aiswebAlertTemplate?: WppTransactionalTemplateSettings;
   soloFlightCoordinatorPhone?: string;
   soloFlightSgsoPhone?: string;
   incomingAutoReply?: WppIncomingAutoReplySettings;
@@ -175,3 +177,36 @@ export type WppDeliveryStatus = {
     details: string;
   }>;
 };
+
+export type WppHubCommand = {
+  title: string;
+  example: string;
+  description: string;
+};
+
+export type WppHubWatch = {
+  icao: string;
+  hours: number;
+  expiresAt: string | null;
+  simplified: boolean;
+};
+
+export type WppHubTrial = {
+  unlimited: boolean;
+  usedCount: number;
+  limit: number;
+  remaining: number;
+  expired: boolean;
+  hasPhone: boolean;
+  subscribeUrl: string;
+};
+
+export type WppHub = {
+  displayPhoneNumber: string | null;
+  waMeUrl: string | null;
+  businessName: string | null;
+  commands: WppHubCommand[];
+  watches: WppHubWatch[];
+  trial: WppHubTrial;
+};
+

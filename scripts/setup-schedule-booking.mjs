@@ -202,6 +202,7 @@ async function updateRules() {
     autoDebitCancellationPenalty: false,
     minBookingLeadDays: 0,
     maxBookingLeadDays: 365,
+    maxBookingLeadDaysFrc: body.schedule?.maxBookingLeadDays ?? 365,
     ...(body.schedule || {}),
   };
   const data = { key: "schoolRules", settings_json: JSON.stringify(body) };

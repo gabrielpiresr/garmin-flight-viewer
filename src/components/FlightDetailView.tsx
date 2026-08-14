@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ParseResult } from "../lib/parseGarminCsv";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
@@ -19,7 +19,11 @@ import { VideosTab } from "./VideosTab";
 import { PhotosTab } from "./PhotosTab";
 import { Tabs } from "./ui/Tabs";
 
-export type FlightDetailSubTab = "telemetria" | "videos" | "fotos" | "ficha" | "aluno" | "auditoria" | "flight-review";
+const FlightRoute3DTab = lazy(() =>
+  import("./FlightRoute3DTab").then((mod) => ({ default: mod.FlightRoute3DTab })),
+);
+
+export type FlightDetailSubTab = "telemetria" | "rota-3d" | "videos" | "fotos" | "ficha" | "aluno" | "auditoria" | "flight-review";
 type SubTab = FlightDetailSubTab;
 
 type SubTabConfig = { id: SubTab; label: string; icon: ReactNode };
@@ -39,6 +43,14 @@ const SUB_TAB_CONFIG: Record<SubTab, Omit<SubTabConfig, "id">> = {
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M3.5 3.75A.75.75 0 014.25 3h11.5a.75.75 0 010 1.5H5v10.75a.75.75 0 01-1.5 0V3.75z" />
         <path d="M7 13.5a1 1 0 100 2 1 1 0 000-2zm4-4a1 1 0 100 2 1 1 0 000-2zm4-3.5a1 1 0 100 2 1 1 0 000-2zM7.53 13.03l3-3 1.06 1.06-3 3-1.06-1.06zm4.04-2.6l2.9-3.38 1.14.98-2.9 3.38-1.14-.98z" />
+      </svg>
+    ),
+  },
+  "rota-3d": {
+    label: "Rota 3D",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2.25l7 3.5v8.5l-7 3.5-7-3.5v-8.5l7-3.5zm0 1.68L5.24 6.31 10 8.69l4.76-2.38L10 3.93zM4.5 7.52v5.8l4.75 2.37v-5.8L4.5 7.52zm6.25 8.17l4.75-2.37v-5.8l-4.75 2.37v5.8z" />
       </svg>
     ),
   },
@@ -181,6 +193,7 @@ export function FlightDetailView({
     const tabs: SubTabConfig[] = [
       buildTab("ficha"),
       buildTab("telemetria"),
+      buildTab("rota-3d"),
     ];
     if (flightId) tabs.push(buildTab("flight-review"));
     tabs.push(buildTab("videos"));
@@ -425,7 +438,21 @@ export function FlightDetailView({
 
         {visitedSubTabs.has("telemetria") ? (
           <div hidden={activeSubTab !== "telemetria"} className="min-h-0 min-w-0">
-            <TelemetriaTab flightId={flightId} parsedResult={parsedResult} clubLocked={gatedByClub} />
+            <TelemetriaTab flightId={flightId} parsedResult={parsedResult} clubLocked={gatedByClub} active={activeSubTab === "telemetria"} />
+          </div>
+        ) : null}
+
+        {activeSubTab === "rota-3d" ? (
+          <div className="min-h-0 min-w-0">
+            <Suspense
+              fallback={
+                <section className="grid min-h-[24rem] place-items-center rounded-xl border border-slate-800 bg-slate-950/60 text-sm text-slate-400">
+                  Carregando rota 3D...
+                </section>
+              }
+            >
+              <FlightRoute3DTab flightId={flightId} parsedResult={parsedResult} clubLocked={gatedByClub} />
+            </Suspense>
           </div>
         ) : null}
 

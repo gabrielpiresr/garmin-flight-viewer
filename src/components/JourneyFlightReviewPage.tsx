@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
@@ -12,7 +12,11 @@ import { TelemetriaTab } from "./TelemetriaTab";
 import { VideosTab } from "./VideosTab";
 import { Tabs } from "./ui/Tabs";
 
-type JourneyFlightReviewTab = "resumo" | "telemetria" | "flight-review" | "videos" | "fotos";
+const FlightRoute3DTab = lazy(() =>
+  import("./FlightRoute3DTab").then((mod) => ({ default: mod.FlightRoute3DTab })),
+);
+
+type JourneyFlightReviewTab = "resumo" | "telemetria" | "rota-3d" | "flight-review" | "videos" | "fotos";
 
 type Props = {
   flightId: string;
@@ -24,6 +28,7 @@ type Props = {
 const REVIEW_TABS: Array<{ id: JourneyFlightReviewTab; label: string; icon?: ReactNode }> = [
   { id: "resumo", label: "Inicial" },
   { id: "telemetria", label: "Telemetria" },
+  { id: "rota-3d", label: "Rota 3D" },
   { id: "flight-review", label: "Flight Review" },
   { id: "videos", label: "Vídeos" },
   { id: "fotos", label: "Fotos" },
@@ -202,6 +207,11 @@ export function JourneyFlightReviewPage({ flightId, missionName, onBack }: Props
         <>
           {activeTab === "resumo" ? <FlightSummaryPanel flight={flight} missionName={missionName} /> : null}
           {activeTab === "telemetria" ? <TelemetriaTab flightId={flightId} clubLocked={gatedByClub} /> : null}
+          {activeTab === "rota-3d" ? (
+            <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl bg-slate-800/30" />}>
+              <FlightRoute3DTab flightId={flightId} clubLocked={gatedByClub} />
+            </Suspense>
+          ) : null}
           {activeTab === "flight-review" ? <FlightReviewTab flightId={flightId} clubLocked={gatedByClub} /> : null}
           {activeTab === "videos" ? <VideosTab flightId={flightId} clubLocked={gatedByClub} /> : null}
           {activeTab === "fotos" ? <PhotosTab flightId={flightId} clubLocked={gatedByClub} /> : null}

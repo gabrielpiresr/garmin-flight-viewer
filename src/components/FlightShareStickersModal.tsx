@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   buildFlightShareStickers,
   buildCustomFlightShareSticker,
   DEFAULT_CUSTOM_STICKER_OPTIONS,
+  getCachedFlightShareData,
   loadFlightShareData,
   type CustomStickerOptions,
   type FlightShareData,
 } from "../lib/flightShareStickers";
 import { ShareStickersModal, type ShareStickerControl } from "./ShareStickersModal";
+
+const FlightFlyoverPanel = lazy(() =>
+  import("./FlightFlyoverPanel").then((mod) => ({ default: mod.FlightFlyoverPanel })),
+);
 
 type Props = {
   flightId: string;
@@ -15,12 +20,19 @@ type Props = {
 };
 
 export function FlightShareStickersModal({ flightId, onClose }: Props) {
-  const [shareData, setShareData] = useState<FlightShareData | null>(null);
+  const [shareData, setShareData] = useState<FlightShareData | null>(() => getCachedFlightShareData(flightId));
   const [error, setError] = useState<string | null>(null);
   const [readyShowBackground, setReadyShowBackground] = useState(true);
   const [customOptions, setCustomOptions] = useState<CustomStickerOptions>(DEFAULT_CUSTOM_STICKER_OPTIONS);
 
   useEffect(() => {
+    const cached = getCachedFlightShareData(flightId);
+    if (cached) {
+      setShareData(cached);
+      setError(null);
+      return;
+    }
+
     let cancelled = false;
     setShareData(null);
     setError(null);
@@ -107,6 +119,13 @@ export function FlightShareStickersModal({ flightId, onClose }: Props) {
       onCustomShowBackgroundChange={(checked) => updateCustomOptions({ showBackground: checked })}
       onReset={resetCustomOptions}
       onClose={onClose}
+      flyover={
+        shareData ? (
+          <Suspense fallback={<div className="flex min-h-[520px] items-center justify-center text-sm text-slate-400">Carregando Flyover...</div>}>
+            <FlightFlyoverPanel shareData={shareData} shareText="Confira meu voo." />
+          </Suspense>
+        ) : undefined
+      }
     />
   );
 }

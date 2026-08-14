@@ -8,9 +8,12 @@ const { Resend } = require("resend");
 const webpush = require("web-push");
 const pdfParse = require("pdf-parse");
 const { createStudentAutomationService } = require("./studentAutomations");
+const birthdayDigest = require("./birthdayDigest");
 const { buildLeadStatusMove, toStatusSettingFromDoc } = require("./crmStatusMove");
 const { authorizeGuestAction, getSecurityMode, shouldLogGuestAction } = require("./security");
 const aiswebService = require("./aisweb");
+const briefingAiPrompts = require("./briefingAiPrompts");
+const { decodeNotamSchedule, decodeNotamValidity } = require("./notamScheduleDecode");
 const flightRadarService = require("./flightRadar");
 const routeElevationService = require("./routeElevation");
 const wppMetar = require("./wppMetar");
@@ -82,6 +85,9 @@ const INSTRUCTOR_PREFS_COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_PREFS_COL
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID;
 const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
 const SCHOOL_PRODUCTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_PRODUCTS_COLLECTION_ID || process.env.APPWRITE_SCHOOL_PRODUCTS_COL_ID || "school_products";
+const MARKETPLACE_PRODUCTS_COLLECTION_ID = process.env.APPWRITE_MARKETPLACE_PRODUCTS_COLLECTION_ID || process.env.APPWRITE_MARKETPLACE_PRODUCTS_COL_ID || "marketplace_products";
+const MARKETPLACE_ORDERS_COLLECTION_ID = process.env.APPWRITE_MARKETPLACE_ORDERS_COLLECTION_ID || process.env.APPWRITE_MARKETPLACE_ORDERS_COL_ID || "marketplace_orders";
+const MARKETPLACE_CATEGORIES_COLLECTION_ID = process.env.APPWRITE_MARKETPLACE_CATEGORIES_COLLECTION_ID || process.env.APPWRITE_MARKETPLACE_CATEGORIES_COL_ID || "marketplace_categories";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || process.env.APPWRITE_SCHOOL_COSTS_COL_ID || "school_costs";
 const INSTRUCTOR_COSTS_COLLECTION_ID =
   process.env.APPWRITE_INSTRUCTOR_COSTS_COLLECTION_ID || process.env.APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
@@ -117,6 +123,14 @@ const TRAINING_TRACKS_COLLECTION_ID =
   process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || process.env.APPWRITE_TRAINING_TRACKS_COL_ID;
 const STUDENT_TRACKS_COLLECTION_ID =
   process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID;
+const FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID ||
+  "flight_review_club_memberships";
+const FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID =
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COL_ID ||
+  "flight_review_club_tasks";
 const STUDENT_OBSERVATIONS_COLLECTION_ID =
   process.env.APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID ||
   process.env.APPWRITE_STUDENT_OBSERVATIONS_COL_ID ||
@@ -14629,6 +14643,9 @@ const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const CAKTO_SETTINGS_KEY = "cakto";
 const WPP_SETTINGS_KEY = "wpp";
+const WPP_METAR_TRIAL_PREFIX = "wppMetarTrial:";
+const WPP_METAR_TRIAL_LIMIT = 10;
+const WPP_AISWEB_ALERT_TEMPLATE_NAME = "alerta_aisweb";
 const DEFAULT_WPP_INCOMING_AUTO_REPLY_MESSAGE =
   "Oi{{nickname_suffix}}! Este bot envia mensagens automaticas e tambem responde alguns pedidos por este canal.";
 const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
@@ -14705,8 +14722,37 @@ const WPP_INCOMING_ACTIONS = new Set([
 ]);
 const FLIGHT_CREDIT_SALES_SETTINGS_KEY = "flightCreditSales";
 const NOTIFICATION_CHANNELS = ["email", "push"];
-const STUDENT_PORTAL_TABS = ["home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "ajuda", "perfil"];
-const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published", "cakto.sale_approved"];
+const STUDENT_PORTAL_TABS = [
+  "home",
+  "jornada",
+  "meus-voos",
+  "agendamento",
+  "schedule",
+  "creditos",
+  "avisos",
+  "manuais",
+  "manobras",
+  "ajuda",
+  "endossos",
+  "perfil",
+  "indique-ganhe",
+  "aisweb",
+  "planejamento",
+  "whatsapp",
+  "album",
+  "painel",
+  "dre",
+  "fuelings",
+  "contratos",
+];
+const FRC_PLAN_DEFAULTS = [
+  { id: "monthly", label: "Mensal", description: "Cobrança mensal recorrente.", recurrencePeriodDays: 30 },
+  { id: "quarterly", label: "Trimestral", description: "Cobrança a cada 3 meses.", recurrencePeriodDays: 90 },
+  { id: "semiannual", label: "Semestral", description: "Cobrança a cada 6 meses.", recurrencePeriodDays: 180 },
+  { id: "annual", label: "Anual", description: "Cobrança anual recorrente.", recurrencePeriodDays: 365 },
+];
+const FRC_ACTIVE_STATUSES = new Set(["active", "trial"]);
+const NOTIFICATION_EVENT_TYPES = ["flight.scheduled", "flight.updated", "flight.reopened", "flight.cancelled", "flight.reminder_24h", "weeklyPlan.submitted", "notice.published", "schedule.published", "cakto.sale_approved", "marketplace.order_paid"];
 const ADMIN_DOC_PERMS = [
   sdk.Permission.read(sdk.Role.label("admin")),
   sdk.Permission.update(sdk.Role.label("admin")),
@@ -15632,7 +15678,7 @@ function pickEmailAppBase(brand) {
   // Prefer a stable production host over leftover Vercel preview / localhost values.
   if (brandBase && !brandTransient) return brandBase;
   if (appBase && !appTransient) return appBase;
-  return brandBase || appBase;
+  return "https://app.epeac.com.br";
 }
 
 function resolveActionUrl(value, brand) {
@@ -15706,7 +15752,7 @@ function defaultEmailBrandSettings() {
 
 function defaultSchoolRules() {
   return {
-    studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, true])),
+    studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, !["planejamento", "whatsapp"].includes(tab)])),
     theme: {
       primaryColor: "#10b981",
       accentColor: "#38bdf8",
@@ -15746,6 +15792,7 @@ function defaultSchoolRules() {
       autoDebitCancellationPenalty: false,
       minBookingLeadDays: 0,
       maxBookingLeadDays: 365,
+      maxBookingLeadDaysFrc: 365,
       studentHiddenAircraftIdents: [],
       studentWaitlistAircraftIdents: [],
       maintenanceAlertEnabled: false,
@@ -15756,21 +15803,74 @@ function defaultSchoolRules() {
       NOTIFICATION_EVENT_TYPES.map((eventType) => [eventType, { enabled: true, customNotice: "" }]),
     ),
     flightReviewClub: {
-      enabled: false,
+      enabled: true,
       landingPageType: "internal_public_page",
       externalUrl: "",
       showInStudentMenu: false,
-      benefits: [],
+      billingMode: "both",
+      caktoSubscriptionProductId: "",
+      benefits: [
+        "Análise da telemetria de cada voo.",
+        "Link público para compartilhamento do voo.",
+        "Curso de Segurança de Voo EAD.",
+        "Camiseta da escola + crachá exclusivo na primeira assinatura.",
+        "Acesso gratuito ao NexAtlas (etapa manual).",
+        "Acesso gratuito ao Clube 360 (etapa manual).",
+        "Descontos no Marketplace da epeac.",
+        "Pelo menos 1 webinar por mês exclusivo para integrantes.",
+        "Agendamento antecipado para voos com até 30 dias de antecedência.",
+        "Planejamento de voo e rotas.",
+        "Figurinhas e animações dos voos.",
+        "Jornada gamificada com histórico detalhado.",
+        "Vídeos com fonia e fotos dos voos.",
+      ],
       ctaSubscriptionUrl: "",
       adhesionTermUrl: "",
-      trialFlightCount: 0,
+      trialFlightCount: 100,
       lpHeroTitle: "Flight Review Club",
-      lpHeroSubtitle: "Revise seus voos com telemetria, videos, fotos e dados reais para evoluir com mais clareza em cada etapa da formacao.",
+      lpHeroSubtitle: "Assine o pacote premium para revisar cada voo com telemetria, vídeos, fotos, planejamento, benefícios manuais e vantagens exclusivas da escola.",
       lpCoverImageUrl: "",
       lpCtaLabel: "Assinar o Flight Review Club",
-      lpValueProps: [],
-      lpBenefitItems: [],
+      lpValueProps: [
+        "Revise seus voos com dados reais e chegue mais preparado para a próxima aula.",
+        "Tenha acesso aos materiais, descontos e ferramentas que ajudam a manter o ritmo da formação.",
+        "Acompanhe sua jornada com histórico, figurinhas e registros visuais dos seus voos.",
+      ],
+      lpBenefitItems: [
+        { text: "Análise da telemetria de cada voo", imageUrl: "" },
+        { text: "Link público para compartilhamento do voo", imageUrl: "" },
+        { text: "Curso de Segurança de Voo EAD", imageUrl: "" },
+        { text: "Camiseta da escola + crachá exclusivo na primeira assinatura", imageUrl: "" },
+        { text: "Acesso gratuito ao NexAtlas (etapa manual)", imageUrl: "" },
+        { text: "Acesso gratuito ao Clube 360 (etapa manual)", imageUrl: "" },
+        { text: "Descontos no Marketplace da epeac", imageUrl: "" },
+        { text: "Pelo menos 1 webinar por mês exclusivo para integrantes", imageUrl: "" },
+        { text: "Agendamento antecipado para voos com até 30 dias de antecedência", imageUrl: "" },
+        { text: "Planejamento de voo e rotas", imageUrl: "" },
+        { text: "Figurinhas e animações dos voos", imageUrl: "" },
+        { text: "Jornada gamificada com histórico detalhado", imageUrl: "" },
+        { text: "Vídeos com fonia e fotos dos voos", imageUrl: "" },
+      ],
+      lpScreenshotItems: [
+        { title: "Telemetria e Flight Review", description: "Dados, manobras e pontos de melhoria do voo em uma revisão visual.", imageUrl: "" },
+        { title: "Link público do voo", description: "Compartilhe a experiência com uma página pública do Flight Review.", imageUrl: "" },
+        { title: "Planejamento e AISWEB", description: "Rotas, aeródromos, meteorologia e materiais para preparar a próxima navegação.", imageUrl: "" },
+        { title: "Jornada e figurinhas", description: "Histórico gamificado, marcos da formação e cards para celebrar evolução.", imageUrl: "" },
+        { title: "Álbum, vídeos e fotos", description: "Acervo de vídeos com fonia, fotos e registros completos dos voos.", imageUrl: "" },
+        { title: "Marketplace e vantagens", description: "Descontos e benefícios comerciais exclusivos para integrantes.", imageUrl: "" },
+      ],
+      checklistTemplate: [
+        { id: "nexatlas", title: "Liberar NexAtlas", description: "Criar ou liberar o acesso gratuito do aluno ao NexAtlas.", enabled: true },
+        { id: "clube-360", title: "Liberar Clube 360", description: "Criar ou liberar o acesso gratuito do aluno ao Clube 360.", enabled: true },
+        { id: "curso-ead", title: "Enviar Curso EAD", description: "Enviar instruções de acesso ao Curso de Segurança de Voo EAD.", enabled: true },
+        { id: "camiseta", title: "Entregar camiseta", description: "Separar e registrar a entrega da camiseta da escola.", enabled: true },
+        { id: "cracha", title: "Entregar crachá", description: "Emitir e registrar a entrega do crachá exclusivo.", enabled: true },
+        { id: "webinars", title: "Incluir em lista de webinars", description: "Adicionar o integrante na lista de comunicação dos webinars exclusivos.", enabled: true },
+        { id: "marketplace", title: "Conferir desconto marketplace", description: "Conferir se os descontos FRC aparecem corretamente no marketplace.", enabled: true },
+      ],
       pricingRules: [],
+      subscriptionPlans: FRC_PLAN_DEFAULTS.map((plan) => ({ ...plan, amount: 0, enabled: false })),
+      exclusiveStudentTabs: [],
     },
     soloFlight: DEFAULT_SOLO_FLIGHT_RULES,
   };
@@ -16106,6 +16206,10 @@ function publicSchoolRules(settings, updatedAt) {
       autoDebitCancellationPenalty: Boolean(settings?.schedule?.autoDebitCancellationPenalty),
       minBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.minBookingLeadDays) || 0)),
       maxBookingLeadDays: Math.max(0, Math.round(Number(settings?.schedule?.maxBookingLeadDays ?? 365))),
+      maxBookingLeadDaysFrc: Math.max(
+        0,
+        Math.round(Number(settings?.schedule?.maxBookingLeadDaysFrc ?? settings?.schedule?.maxBookingLeadDays ?? 365)),
+      ),
       studentHiddenAircraftIdents: Array.isArray(settings?.schedule?.studentHiddenAircraftIdents)
         ? [...new Set(settings.schedule.studentHiddenAircraftIdents.map((value) => cleanString(value).toUpperCase()).filter(Boolean))]
         : [],
@@ -16138,6 +16242,10 @@ function publicSchoolRules(settings, updatedAt) {
         : "internal_public_page",
       externalUrl: cleanString(settings?.flightReviewClub?.externalUrl).slice(0, 2048),
       showInStudentMenu: Boolean(settings?.flightReviewClub?.showInStudentMenu ?? false),
+      billingMode: ["legacy_one_time", "student_subscription", "both"].includes(settings?.flightReviewClub?.billingMode)
+        ? settings.flightReviewClub.billingMode
+        : defaults.flightReviewClub.billingMode,
+      caktoSubscriptionProductId: cleanString(settings?.flightReviewClub?.caktoSubscriptionProductId).slice(0, 128),
       benefits: Array.isArray(settings?.flightReviewClub?.benefits)
         ? settings.flightReviewClub.benefits.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 20)
         : [],
@@ -16159,7 +16267,28 @@ function publicSchoolRules(settings, updatedAt) {
             }))
             .filter((item) => item.text)
             .slice(0, 20)
-        : [],
+        : defaults.flightReviewClub.lpBenefitItems,
+      lpScreenshotItems: Array.isArray(settings?.flightReviewClub?.lpScreenshotItems)
+        ? settings.flightReviewClub.lpScreenshotItems
+            .map((item) => ({
+              title: cleanString(item?.title).slice(0, 120),
+              description: cleanString(item?.description).slice(0, 400),
+              imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
+            }))
+            .filter((item) => item.title)
+            .slice(0, 12)
+        : defaults.flightReviewClub.lpScreenshotItems,
+      checklistTemplate: Array.isArray(settings?.flightReviewClub?.checklistTemplate)
+        ? settings.flightReviewClub.checklistTemplate
+            .map((item, index) => ({
+              id: (cleanString(item?.id) || `frc-task-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64),
+              title: cleanString(item?.title).slice(0, 140),
+              description: cleanString(item?.description).slice(0, 500),
+              enabled: item?.enabled !== false,
+            }))
+            .filter((item) => item.id && item.title)
+            .slice(0, 30)
+        : defaults.flightReviewClub.checklistTemplate,
       pricingRules: Array.isArray(settings?.flightReviewClub?.pricingRules)
         ? settings.flightReviewClub.pricingRules
             .map((rule, index) => {
@@ -16181,6 +16310,23 @@ function publicSchoolRules(settings, updatedAt) {
             })
             .filter((rule) => rule.trainingTrackId && rule.amount > 0)
             .slice(0, 50)
+        : [],
+      subscriptionPlans: FRC_PLAN_DEFAULTS.map((defaultPlan) => {
+        const rawPlan = Array.isArray(settings?.flightReviewClub?.subscriptionPlans)
+          ? settings.flightReviewClub.subscriptionPlans.find((plan) => cleanString(plan?.id) === defaultPlan.id)
+          : null;
+        const amount = Number(rawPlan?.amount);
+        return {
+          id: defaultPlan.id,
+          label: cleanString(rawPlan?.label).slice(0, 80) || defaultPlan.label,
+          description: cleanString(rawPlan?.description).slice(0, 240) || defaultPlan.description,
+          recurrencePeriodDays: defaultPlan.recurrencePeriodDays,
+          amount: Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0,
+          enabled: Boolean(rawPlan?.enabled ?? false),
+        };
+      }),
+      exclusiveStudentTabs: Array.isArray(settings?.flightReviewClub?.exclusiveStudentTabs)
+        ? [...new Set(settings.flightReviewClub.exclusiveStudentTabs.map((tab) => cleanString(tab)).filter((tab) => STUDENT_PORTAL_TABS.includes(tab)))]
         : [],
     },
     flightEvaluation: (() => {
@@ -16329,6 +16475,7 @@ function defaultWppSettings() {
     bookingRequestedTemplate: defaultWppBookingRequestedTemplate(),
     soloFlightApprovalTemplate: defaultWppSoloFlightApprovalTemplate(),
     soloFlightAwarenessTemplate: defaultWppSoloFlightAwarenessTemplate(),
+    aiswebAlertTemplate: defaultWppAiswebAlertTemplate(),
     soloFlightCoordinatorPhone: "",
     soloFlightSgsoPhone: "",
     incomingAutoReply: defaultWppIncomingAutoReplySettings(),
@@ -16387,6 +16534,15 @@ function defaultWppBookingRequestedTemplate() {
     templateName: "solicitacao_agendamento_voo",
     language: "pt_BR",
     bodyParameters: DEFAULT_WPP_BOOKING_REQUESTED_PARAMETERS,
+  };
+}
+
+function defaultWppAiswebAlertTemplate() {
+  return {
+    enabled: true,
+    templateName: WPP_AISWEB_ALERT_TEMPLATE_NAME,
+    language: "pt_BR",
+    bodyParameters: ["kind", "icao", "identifier", "summary", "validity"],
   };
 }
 
@@ -16489,6 +16645,7 @@ function publicWppSettings(settings, updatedAt) {
     bookingRequestedTemplate: sanitizeWppTransactionalTemplate(safe.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
     soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(safe.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
     soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(safe.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+    aiswebAlertTemplate: sanitizeWppTransactionalTemplate(safe.aiswebAlertTemplate, defaultWppAiswebAlertTemplate()),
     soloFlightCoordinatorPhone: normalizeWppRecipientPhone(safe.soloFlightCoordinatorPhone),
     soloFlightSgsoPhone: normalizeWppRecipientPhone(safe.soloFlightSgsoPhone),
     incomingAutoReply: sanitizeWppIncomingAutoReply(safe.incomingAutoReply || {
@@ -16520,6 +16677,7 @@ async function loadWppSettings() {
       bookingRequestedTemplate: sanitizeWppTransactionalTemplate(settings.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
       soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(settings.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
       soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(settings.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+      aiswebAlertTemplate: sanitizeWppTransactionalTemplate(settings.aiswebAlertTemplate, defaultWppAiswebAlertTemplate()),
       soloFlightCoordinatorPhone: normalizeWppRecipientPhone(settings.soloFlightCoordinatorPhone),
       soloFlightSgsoPhone: normalizeWppRecipientPhone(settings.soloFlightSgsoPhone),
       incomingAutoReply: sanitizeWppIncomingAutoReply(settings.incomingAutoReply || {
@@ -16571,6 +16729,9 @@ async function saveWppSettings(input) {
     soloFlightAwarenessTemplate: raw.soloFlightAwarenessTemplate
       ? sanitizeWppTransactionalTemplate(raw.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate())
       : sanitizeWppTransactionalTemplate(current.soloFlightAwarenessTemplate, defaultWppSoloFlightAwarenessTemplate()),
+    aiswebAlertTemplate: raw.aiswebAlertTemplate
+      ? sanitizeWppTransactionalTemplate(raw.aiswebAlertTemplate, defaultWppAiswebAlertTemplate())
+      : sanitizeWppTransactionalTemplate(current.aiswebAlertTemplate, defaultWppAiswebAlertTemplate()),
     soloFlightCoordinatorPhone: normalizeWppRecipientPhone(raw.soloFlightCoordinatorPhone || current.soloFlightCoordinatorPhone),
     soloFlightSgsoPhone: normalizeWppRecipientPhone(raw.soloFlightSgsoPhone || current.soloFlightSgsoPhone),
     incomingAutoReply: sanitizeWppIncomingAutoReply(raw.incomingAutoReply, {
@@ -16612,6 +16773,10 @@ async function saveWppNotificationTemplates(input) {
     soloFlightAwarenessTemplate: sanitizeWppTransactionalTemplate(
       input?.soloFlightAwarenessTemplate || current.soloFlightAwarenessTemplate,
       defaultWppSoloFlightAwarenessTemplate(),
+    ),
+    aiswebAlertTemplate: sanitizeWppTransactionalTemplate(
+      input?.aiswebAlertTemplate || current.aiswebAlertTemplate,
+      defaultWppAiswebAlertTemplate(),
     ),
     soloFlightCoordinatorPhone: normalizeWppRecipientPhone(input?.soloFlightCoordinatorPhone || current.soloFlightCoordinatorPhone),
     soloFlightSgsoPhone: normalizeWppRecipientPhone(input?.soloFlightSgsoPhone || current.soloFlightSgsoPhone),
@@ -18253,6 +18418,46 @@ async function ensureSoloFlightWppTemplates() {
   return result;
 }
 
+async function ensureAiswebAlertWppTemplate() {
+  const templates = await listWppTemplates().catch(() => []);
+  const byName = new Map(templates.map((template) => [cleanString(template.name), template]));
+  const existing = byName.get(WPP_AISWEB_ALERT_TEMPLATE_NAME);
+  if (existing && cleanString(existing.status).toUpperCase() !== "REJECTED") {
+    return existing;
+  }
+  if (existing) {
+    await deleteWppTemplate(WPP_AISWEB_ALERT_TEMPLATE_NAME).catch(() => null);
+  }
+  const origin = (cleanString(APP_URL) || "https://app.epeac.com.br").replace(/\/+$/, "");
+  return createWppTemplate({
+    name: WPP_AISWEB_ALERT_TEMPLATE_NAME,
+    category: "UTILITY",
+    language: "pt_BR",
+    headerText: "Alerta AISWEB",
+    bodyText:
+      "*{{1}}* para *{{2}}*\n\n" +
+      "{{3}}\n\n" +
+      "{{4}}\n\n" +
+      "Valido: {{5}}",
+    footerText: "Mensagem automatica",
+    bodyExamples: [
+      "NOTAM",
+      "SBSP",
+      "A1234/26",
+      "RWY 17L/35R CLSD DUE TO WORK IN PROGRESS.",
+      "14/08 12:00 - 21/08 23:59",
+    ],
+    buttons: [
+      {
+        type: "URL",
+        text: "Abrir no app",
+        url: `${origin}/{{1}}`,
+        example: ["aluno/aisweb"],
+      },
+    ],
+  });
+}
+
 function isWppWebhookVerification(req) {
   return Boolean(reqQueryValue(req, "hub.mode") || reqQueryValue(req, "hub.challenge") || reqQueryValue(req, "hub.verify_token"));
 }
@@ -18671,6 +18876,266 @@ async function findWppStudentByPhone(phone) {
     nickname: "",
     phone: cleanString(leadMatches[0].lead.phone),
   };
+}
+
+const WPP_HUB_COMMANDS = [
+  { title: "METAR e TAF", example: "Metar SBSP", description: "Consulta o boletim atual. Também vale o nome da cidade, por exemplo Metar Congonhas." },
+  { title: "Detalhes do aeródromo", example: "Detalhes SBSP", description: "Operação, frequências, pistas e carta. Disponível sem limite para assinantes do Flight Review Club." },
+  { title: "NOTAMs", example: "Notam SBSP", description: "Últimos NOTAMs publicados para o aeródromo." },
+  { title: "Acompanhar METAR", example: "Acompanhar SBSP 4h", description: "Recebe cada METAR/TAF novo por 2, 4 ou 8 horas. Pode ativar vários aeródromos." },
+  { title: "Parar alerta", example: "Parar acompanhamento", description: "Encerra o(s) acompanhamento(s) ativo(s). Também dá para parar por aqui nesta tela." },
+  { title: "Próximo voo e créditos", example: "Meus créditos", description: "O bot também responde saldo de horas, próximo voo, stickers do último voo e agendamento, conforme as regras da escola." },
+];
+
+function wppMetarTrialKey(phone) {
+  const digits = normalizeWppRecipientPhone(phone);
+  return digits ? `${WPP_METAR_TRIAL_PREFIX}${digits}` : "";
+}
+
+function publicAppOrigin() {
+  return (cleanString(APP_URL) || "https://app.epeac.com.br").replace(/\/+$/, "");
+}
+
+function wppWaMeUrl(displayPhone) {
+  const digits = cleanString(displayPhone).replace(/\D/g, "");
+  if (!digits) return null;
+  return `https://wa.me/${digits}?text=${encodeURIComponent("Oi")}`;
+}
+
+function wppTemplateParameterOrDash(value, max = 900) {
+  const text = cleanString(value).replace(/\s+/g, " ").trim().slice(0, max);
+  return text || "—";
+}
+
+async function resolveFrcSubscribeUrl() {
+  const { publicSettings } = await loadSchoolRules().catch(() => ({ publicSettings: null }));
+  const club = publicSettings?.flightReviewClub || {};
+  const custom = cleanString(club.ctaSubscriptionUrl || club.externalUrl);
+  if (custom) return custom;
+  return `${publicAppOrigin()}/flight-review-club`;
+}
+
+async function isWppMetarTrialExempt(profile, userId) {
+  const portal = await resolveProfilePortal(profile).catch(() => "");
+  if (portal === "admin" || portal === "instrutor") return true;
+  const targetUserId = cleanString(userId || profile?.user_id);
+  if (!targetUserId) return false;
+  const status = await getFlightReviewClubStatus(targetUserId, targetUserId).catch(() => null);
+  return Boolean(status?.hasAccess);
+}
+
+async function loadWppMetarTrial(phone) {
+  const key = wppMetarTrialKey(phone);
+  if (!key) return { phone: "", usedCount: 0, expiredNotifiedAt: "", userId: "" };
+  const doc = await getSettingDoc(key).catch(() => null);
+  const raw = doc ? parseJsonObject(doc.settings_json, {}) : {};
+  return {
+    phone: normalizeWppRecipientPhone(phone),
+    usedCount: Math.max(0, Math.round(Number(raw.usedCount) || 0)),
+    expiredNotifiedAt: cleanString(raw.expiredNotifiedAt),
+    userId: cleanString(raw.userId),
+  };
+}
+
+async function saveWppMetarTrial(trial) {
+  const key = wppMetarTrialKey(trial?.phone);
+  if (!key) return null;
+  return upsertPlatformSettingDoc(key, {
+    phone: normalizeWppRecipientPhone(trial.phone),
+    usedCount: Math.max(0, Math.round(Number(trial.usedCount) || 0)),
+    expiredNotifiedAt: cleanString(trial.expiredNotifiedAt),
+    userId: cleanString(trial.userId),
+    updatedAt: nowIso(),
+  });
+}
+
+async function incrementWppMetarTrial(phone, userId) {
+  const current = await loadWppMetarTrial(phone);
+  current.usedCount += 1;
+  if (userId) current.userId = cleanString(userId);
+  await saveWppMetarTrial(current);
+  return current;
+}
+
+async function sendWppMetarTrialExpiredMessage(settings, phone, { force = false } = {}) {
+  const trial = await loadWppMetarTrial(phone);
+  if (!force && trial.expiredNotifiedAt) return { status: "already_notified" };
+  const url = await resolveFrcSubscribeUrl();
+  const body = [
+    "Seu trial de METAR no WhatsApp expirou (10 mensagens).",
+    "",
+    "Para continuar recebendo METAR, TAF e detalhes de aeródromo, assine o Flight Review Club:",
+    url,
+  ].join("\n");
+  try {
+    await sendWppTextMessage(settings, { to: phone, body });
+    trial.expiredNotifiedAt = nowIso();
+    await saveWppMetarTrial(trial);
+    return { status: "sent" };
+  } catch (err) {
+    trial.expiredNotifiedAt = nowIso();
+    await saveWppMetarTrial(trial).catch(() => null);
+    return { status: "failed", reason: cleanString(err?.message) };
+  }
+}
+
+async function assertWppMetarTrialOrReply(settings, phone, profile, userId, { notifyExpired = true, clearWatches = false } = {}) {
+  const targetUserId = cleanString(userId || profile?.user_id);
+  if (await isWppMetarTrialExempt(profile, targetUserId)) {
+    return { allowed: true, unlimited: true, usedCount: 0, remaining: null };
+  }
+  const trial = await loadWppMetarTrial(phone);
+  if (trial.usedCount >= WPP_METAR_TRIAL_LIMIT) {
+    if (clearWatches) {
+      await aiswebService.clearMetarWatch(aiswebMetarWatchDeps(), normalizeWppRecipientPhone(phone)).catch(() => null);
+    }
+    if (notifyExpired) {
+      await sendWppMetarTrialExpiredMessage(settings, phone, { force: !clearWatches });
+    }
+    return {
+      allowed: false,
+      unlimited: false,
+      usedCount: trial.usedCount,
+      remaining: 0,
+      expired: true,
+    };
+  }
+  return {
+    allowed: true,
+    unlimited: false,
+    usedCount: trial.usedCount,
+    remaining: Math.max(0, WPP_METAR_TRIAL_LIMIT - trial.usedCount),
+    expired: false,
+  };
+}
+
+async function listMetarWatchesForProfilePhone(phone) {
+  const variants = [...wppPhoneMatchKeys(phone).keys()].sort((a, b) => b.length - a.length);
+  const seen = new Set();
+  const out = [];
+  for (const digits of variants) {
+    const watches = await aiswebService.listMetarWatchesForPhone(aiswebMetarWatchDeps(), digits).catch(() => []);
+    for (const watch of watches) {
+      if (!watch?.icao || seen.has(watch.icao)) continue;
+      seen.add(watch.icao);
+      out.push(watch);
+    }
+  }
+  return out;
+}
+
+function publicWppHubWatch(watch) {
+  return {
+    icao: cleanString(watch?.icao),
+    hours: Number(watch?.hours) || 0,
+    expiresAt: cleanString(watch?.expiresAt) || null,
+    simplified: watch?.simplified === true,
+  };
+}
+
+async function getWppHub(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const phone = cleanString(profile?.phone);
+  const [{ settings }, subscribeUrl, unlimited] = await Promise.all([
+    loadWppSettings().catch(() => ({ settings: defaultWppSettings() })),
+    resolveFrcSubscribeUrl(),
+    isWppMetarTrialExempt(profile, actorUserId),
+  ]);
+  const watches = phone ? await listMetarWatchesForProfilePhone(phone) : [];
+  const trial = phone ? await loadWppMetarTrial(phone) : { usedCount: 0, expiredNotifiedAt: "" };
+  const usedCount = trial.usedCount || 0;
+  const expired = !unlimited && usedCount >= WPP_METAR_TRIAL_LIMIT;
+  return {
+    displayPhoneNumber: cleanString(settings?.displayPhoneNumber) || null,
+    waMeUrl: wppWaMeUrl(settings?.displayPhoneNumber),
+    businessName: cleanString(settings?.verifiedName || settings?.businessName) || null,
+    commands: WPP_HUB_COMMANDS,
+    watches: watches.map(publicWppHubWatch),
+    trial: {
+      unlimited,
+      usedCount,
+      limit: WPP_METAR_TRIAL_LIMIT,
+      remaining: unlimited ? WPP_METAR_TRIAL_LIMIT : Math.max(0, WPP_METAR_TRIAL_LIMIT - usedCount),
+      expired,
+      hasPhone: Boolean(normalizeWppRecipientPhone(phone)),
+      subscribeUrl,
+    },
+  };
+}
+
+async function stopMyMetarWatch(actorUserId, icaoCode) {
+  if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const phone = cleanString(profile?.phone);
+  if (!normalizeWppRecipientPhone(phone)) {
+    throw Object.assign(new Error("Cadastre um telefone no perfil para gerenciar alertas."), { status: 400 });
+  }
+  const icao = aiswebService.normalizeIcao(icaoCode);
+  if (!icao || icao.length !== 4) {
+    throw Object.assign(new Error("Informe o ICAO do alerta."), { status: 400 });
+  }
+  const watches = await listMetarWatchesForProfilePhone(phone);
+  const match = watches.find((item) => item.icao === icao);
+  const targetPhone = match?.phone || normalizeWppRecipientPhone(phone);
+  await aiswebService.clearMetarWatch(aiswebMetarWatchDeps(), targetPhone, icao);
+  const remaining = await listMetarWatchesForProfilePhone(phone);
+  return remaining.map(publicWppHubWatch);
+}
+
+function formatAiswebAlertValidity(item) {
+  const from = cleanString(item?.validFrom || item?.issuedAt);
+  const to = cleanString(item?.validTo);
+  const fmt = (value) => {
+    const date = Date.parse(value);
+    if (!Number.isFinite(date)) return cleanString(value);
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(date));
+  };
+  if (from && to) return `${fmt(from)} - ${fmt(to)}`;
+  return fmt(from || to) || "—";
+}
+
+function formatAiswebAlertWppParameters(kind, item) {
+  const icao = wppTemplateParameterOrDash(item?.icao, 8);
+  const identifier = wppTemplateParameterOrDash(item?.number || item?.id || item?.title, 60);
+  const summary = wppTemplateParameterOrDash(item?.text || item?.title, 700);
+  return [
+    wppTemplateParameterOrDash(kind, 40),
+    icao,
+    identifier,
+    summary,
+    wppTemplateParameterOrDash(formatAiswebAlertValidity(item), 80),
+  ];
+}
+
+async function sendAiswebAlertWpp(userId, kind, item) {
+  const profile = await getProfileByUserId(userId).catch(() => null);
+  const phone = normalizeWppRecipientPhone(profile?.phone);
+  if (!phone) return { status: "skipped", reason: "no_phone" };
+  const { settings } = await loadWppSettings().catch(() => ({ settings: null }));
+  if (!settings?.phoneNumberId || !settings?.apiKey) return { status: "skipped", reason: "wpp_unconfigured" };
+  const config = sanitizeWppTransactionalTemplate(settings.aiswebAlertTemplate, defaultWppAiswebAlertTemplate());
+  if (!config.enabled || !config.templateName) return { status: "skipped", reason: "disabled" };
+  await ensureAiswebAlertWppTemplate().catch(() => null);
+  const path = (await resolveAiswebPortalPath(userId)).replace(/^\//, "") || "aluno/aisweb";
+  try {
+    await sendWppTemplateMessage({
+      to: phone,
+      templateName: config.templateName,
+      language: config.language || "pt_BR",
+      bodyParameters: formatAiswebAlertWppParameters(kind, item),
+      buttonUrlParameters: [path],
+    });
+    return { status: "sent" };
+  } catch (err) {
+    return { status: "failed", reason: cleanString(err?.message).slice(0, 240) };
+  }
 }
 
 async function createFlightPublicShareForWpp(flightId) {
@@ -19154,6 +19619,11 @@ async function sendWppMetarConditions(settings, incoming, icaoCode) {
 
   const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
   const nickname = wppProfileDisplayNickname(profile);
+  const trial = await assertWppMetarTrialOrReply(settings, incoming.from, profile, profile?.user_id, {
+    notifyExpired: true,
+    clearWatches: false,
+  });
+  if (!trial.allowed) return "trial_expired";
 
   const [airport, aiswebSettings] = await Promise.all([
     aiswebService.fetchAirportBundle(icao),
@@ -19197,6 +19667,9 @@ async function sendWppMetarConditions(settings, incoming, icaoCode) {
     nickname,
   });
   await sendWppTextMessage(settings, { to: incoming.from, body });
+  if (!trial.unlimited) {
+    await incrementWppMetarTrial(incoming.from, profile?.user_id).catch(() => null);
+  }
 
   let imageStatus = "no_images";
   try {
@@ -19352,6 +19825,11 @@ async function sendWppMetarWatchStartAction(settings, incoming, icaoCode, hoursV
   const phone = normalizeWppRecipientPhone(incoming.from);
   const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
   const nickname = wppProfileDisplayNickname(profile);
+  const trial = await assertWppMetarTrialOrReply(settings, phone, profile, profile?.user_id, {
+    notifyExpired: true,
+    clearWatches: true,
+  });
+  if (!trial.allowed) return "trial_expired";
   const met = await aiswebService.fetchMet(icao, { bypassCache: true });
   const startedAt = nowIso();
   const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
@@ -19633,6 +20111,14 @@ async function handleWppFlightRadarWatchCommand(settings, incoming, command) {
 
 async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks, analysis, changed, rotaer = null) {
   const icao = watch.icao;
+  const profile = watch.userId ? await getProfileByUserId(watch.userId).catch(() => null) : null;
+  const trial = await assertWppMetarTrialOrReply(settings, watch.phone, profile, watch.userId, {
+    notifyExpired: true,
+    clearWatches: true,
+  });
+  if (!trial.allowed) {
+    throw Object.assign(new Error("trial_expired"), { code: "trial_expired" });
+  }
   const lat = rotaer?.lat;
   const lng = rotaer?.lng;
   const metarBody = wppMetar.formatWppMetarMessage({
@@ -19655,6 +20141,9 @@ async function sendWppMetarWatchUpdate(settings, watch, met, airportName, checks
         metarBody,
       ].join("\n");
   await sendWppTextMessage(settings, { to: watch.phone, body: body.slice(0, 4096) });
+  if (!trial.unlimited) {
+    await incrementWppMetarTrial(watch.phone, watch.userId).catch(() => null);
+  }
 
   if (watch.simplified === true) {
     return;
@@ -19797,6 +20286,11 @@ async function sendWppAirportDetailsAction(settings, incoming, icaoCode) {
 
   const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
   const nickname = wppProfileDisplayNickname(profile);
+  const trial = await assertWppMetarTrialOrReply(settings, incoming.from, profile, profile?.user_id, {
+    notifyExpired: true,
+    clearWatches: false,
+  });
+  if (!trial.allowed) return "trial_expired";
   const airport = await aiswebService.fetchAirportBundle(icao);
 
   if (airport?.rotaer?.error && !airport?.rotaer?.name && !(airport?.rotaer?.runways || []).length) {
@@ -19810,6 +20304,9 @@ async function sendWppAirportDetailsAction(settings, incoming, icaoCode) {
   const messages = wppMetar.formatWppAirportDetailsMessages({ icao, airport, nickname });
   if (messages[0]) {
     await sendWppTextMessage(settings, { to: incoming.from, body: messages[0].slice(0, 4096) });
+    if (!trial.unlimited) {
+      await incrementWppMetarTrial(incoming.from, profile?.user_id).catch(() => null);
+    }
   }
 
   try {
@@ -20057,7 +20554,13 @@ function formatWppJourneyMissionLine(nextMission) {
 }
 
 function publicAppUrl(pathname = "/") {
-  const origin = cleanString(APP_URL).replace(/\/+$/, "") || "https://app.epeac.com.br";
+  const fallback = "https://app.epeac.com.br";
+  let origin = cleanString(APP_URL).replace(/\/+$/, "") || fallback;
+  try {
+    if (isTransientAppHost(new URL(origin).hostname)) origin = fallback;
+  } catch {
+    origin = fallback;
+  }
   const path = cleanString(pathname).startsWith("/") ? cleanString(pathname) : `/${cleanString(pathname)}`;
   return `${origin}${path}`;
 }
@@ -21381,6 +21884,26 @@ function buildNotificationMessage(event, flight) {
       url,
     };
   }
+  if (type === "marketplace.order_paid") {
+    const productName = cleanString(data.productName) || cleanString(data.productLabel) || "produto";
+    const amountLabel = formatMoneyLabel(data.amount, data.currency || "BRL");
+    const variantLabel = cleanString(data.variantLabel);
+    const orderId = cleanString(data.orderId);
+    return {
+      eyebrow: "Marketplace",
+      title: "Compra confirmada",
+      intro: "Seu pagamento foi confirmado.",
+      body: `Sua compra de ${productName}${variantLabel ? ` (${variantLabel})` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""} foi confirmada.`,
+      details: [
+        ["Produto", productName],
+        ...(variantLabel ? [["Variante", variantLabel]] : []),
+        ...(amountLabel ? [["Valor", amountLabel]] : []),
+        ...(orderId ? [["Pedido", orderId]] : []),
+      ],
+      ctaLabel: "Abrir plataforma",
+      url,
+    };
+  }
   if (type === "crm.lead_registered") {
     const name = cleanString(data.name) || "Novo lead";
     const email = cleanString(data.email) || "";
@@ -21716,7 +22239,75 @@ async function notifyCaktoSaleToAdmins(sale) {
     eventType: "cakto.sale_approved",
     dedupeKey,
     recipientUserIds: adminIds,
+    channels: ["email", "push"],
     data: safeSale,
+  });
+}
+
+async function notifyCaktoSaleEmailToStudent(sale) {
+  const safeSale = sale && typeof sale === "object" ? sale : {};
+  const studentUserId = cleanString(safeSale.studentUserId);
+  if (!studentUserId) return { status: "skipped", reason: "missing_student" };
+  const receiptId = cleanString(safeSale.receiptId);
+  const dedupeKey = `email.cakto.sale_approved:${receiptId || sha256Hex(JSON.stringify(safeSale))}:${studentUserId}`;
+  if (await alreadyDelivered(dedupeKey, "email", studentUserId)) {
+    return { status: "skipped", reason: "already_delivered", studentUserId };
+  }
+  const [{ settings }, { publicSettings: brand }, profile, user] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+    getProfileByUserId(studentUserId).catch(() => null),
+    users.get({ userId: studentUserId }).catch(() => null),
+  ]);
+  const email = cleanString(user?.email) || cleanString(safeSale.customerEmail);
+  const name = cleanString(profile?.full_name) || cleanString(user?.name) || cleanString(safeSale.customerName) || "Aluno";
+  const productLabel = cleanString(safeSale.productLabel) || "Flight Review Club";
+  const amountLabel = formatMoneyLabel(safeSale.amount, safeSale.currency);
+  const message = {
+    eyebrow: "Compra confirmada",
+    title: "Flight Review Club ativo",
+    intro: "Seu pagamento foi confirmado.",
+    body: `${name}, sua compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""} foi aprovada e seu acesso ao Flight Review Club esta ativo.`,
+    details: [
+      ["Produto", productLabel],
+      ...(amountLabel ? [["Valor", amountLabel]] : []),
+      ...(cleanString(safeSale.orderId) ? [["Pedido", cleanString(safeSale.orderId)]] : []),
+    ],
+    ctaLabel: "Abrir Flight Review Club",
+    url: "/flight-review-club",
+  };
+  try {
+    const result = await sendEmailToUser(settings, brand, { email, name }, message);
+    await logDelivery("cakto.sale_approved", dedupeKey, "email", studentUserId, result.status, result.providerMessageId, result.reason);
+    return { status: result.status, studentUserId, providerMessageId: result.providerMessageId };
+  } catch (err) {
+    const messageError = cleanString(err?.message).slice(0, 512) || "Falha ao enviar email.";
+    await logDelivery("cakto.sale_approved", dedupeKey, "email", studentUserId, "failed", null, messageError);
+    return { status: "failed", studentUserId, reason: messageError };
+  }
+}
+
+async function notifyMarketplaceOrderPaid(sale) {
+  const safeSale = sale && typeof sale === "object" ? sale : {};
+  const buyerUserId = cleanString(safeSale.buyerUserId);
+  const orderId = cleanString(safeSale.orderId);
+  const receiptId = cleanString(safeSale.receiptId);
+  if (!buyerUserId) return [];
+  return dispatchNotificationEvent("system", {
+    eventType: "marketplace.order_paid",
+    dedupeKey: `marketplace.order_paid:${orderId || "unknown"}:${receiptId || sha256Hex(JSON.stringify(safeSale))}`,
+    recipientUserIds: [buyerUserId],
+    channels: ["email"],
+    data: {
+      ...safeSale,
+      productName: cleanString(safeSale.productName) || cleanString(safeSale.productLabel),
+      productLabel: cleanString(safeSale.productLabel) || cleanString(safeSale.productName),
+      amount: safeSale.amount,
+      currency: cleanString(safeSale.currency) || "BRL",
+      orderId,
+      receiptId,
+      variantLabel: cleanString(safeSale.variantLabel),
+    },
   });
 }
 
@@ -22891,29 +23482,39 @@ async function getPublicProposal(payload = {}) {
   return mapCaktoProposal(proposal);
 }
 
-async function createCaktoOfferForProposal(doc) {
+async function createCaktoOfferForProposal(doc, options = {}) {
   const { token, settings } = await getCaktoAccessToken();
-  if (!settings.productId) throw Object.assign(new Error("Produto padrão da Cakto não configurado."), { status: 400 });
+  const productId = cleanString(options.productId) || settings.productId;
+  if (!productId) throw Object.assign(new Error("Produto da Cakto nao configurado."), { status: 400 });
   const price = proposalPaymentTotal(doc);
+  const offerType = options.type === "subscription" ? "subscription" : "unique";
+  const offerPayload = {
+    name: cleanString(options.name) || `Orcamento - ${cleanString(doc.lead_name) || doc.$id}`,
+    price,
+    product: productId,
+    type: offerType,
+    status: "active",
+    units: 1,
+    trial_days: Math.max(0, Math.round(Number(options.trialDays) || 0)),
+    max_retries: Math.max(0, Math.round(Number(options.maxRetries) || 3)),
+    retry_interval: Math.max(1, Math.round(Number(options.retryInterval) || 1)),
+  };
+  if (offerType === "subscription") {
+    offerPayload.recurrence_period = Math.max(1, Math.round(Number(options.recurrencePeriodDays) || 30));
+    offerPayload.quantity_recurrences = Number.isFinite(Number(options.quantityRecurrences))
+      ? Math.round(Number(options.quantityRecurrences))
+      : -1;
+  } else {
+    offerPayload.intervalType = cleanString(options.intervalType) || "lifetime";
+    offerPayload.interval = Math.max(1, Math.round(Number(options.interval) || 1));
+  }
   const response = await fetch("https://api.cakto.com.br/public_api/offers/", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      name: `Orçamento - ${cleanString(doc.lead_name) || doc.$id}`,
-      price,
-      product: settings.productId,
-      type: "unique",
-      status: "active",
-      units: 1,
-      intervalType: "lifetime",
-      interval: 1,
-      trial_days: 0,
-      max_retries: 3,
-      retry_interval: 1,
-    }),
+    body: JSON.stringify(offerPayload),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.id) {
@@ -23091,7 +23692,632 @@ function selectFlightReviewClubPricingRule(rules, trackId, flownHours) {
     }) || null;
 }
 
-async function quoteFlightReviewClubCheckout(actorUserId) {
+function flightReviewClubMembershipPermissions(studentUserId) {
+  return [
+    sdk.Permission.read(sdk.Role.user(studentUserId)),
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+  ];
+}
+
+function normalizeFlightReviewClubMembershipStatus(value) {
+  const status = cleanString(value).toLowerCase();
+  if (["active", "trial", "inactive", "canceled", "expired", "paused", "pending"].includes(status)) return status;
+  return status || "unknown";
+}
+
+function mapFlightReviewClubMembership(doc) {
+  if (!doc) return null;
+  return {
+    id: cleanString(doc.$id),
+    studentUserId: cleanString(doc.student_user_id),
+    source: cleanString(doc.source) || "cakto",
+    status: normalizeFlightReviewClubMembershipStatus(doc.status),
+    planId: cleanString(doc.plan_id),
+    planName: cleanString(doc.plan_name),
+    recurrenceKey: cleanString(doc.recurrence_key),
+    recurrencePeriodDays: Math.max(0, Math.round(Number(doc.recurrence_period_days) || 0)),
+    amount: Math.round((Number(doc.amount) || 0) * 100) / 100,
+    caktoOfferId: cleanString(doc.cakto_offer_id),
+    caktoSubscriptionId: cleanString(doc.cakto_subscription_id),
+    proposalId: cleanString(doc.proposal_id),
+    currentPeriod: Math.max(0, Math.round(Number(doc.current_period) || 0)),
+    paidPaymentsQuantity: Math.max(0, Math.round(Number(doc.paid_payments_quantity) || 0)),
+    nextPaymentDate: cleanString(doc.next_payment_date) || null,
+    accessUntil: cleanString(doc.access_until) || cleanString(doc.next_payment_date) || null,
+    cancelAtPeriodEnd:
+      doc.cancel_at_period_end === true ||
+      (cleanString(doc.status) === "canceled" && Boolean(cleanString(doc.access_until) || cleanString(doc.next_payment_date))),
+    canceledAt: cleanString(doc.canceled_at) || null,
+    endedAt: cleanString(doc.ended_at) || null,
+    lastPaymentAt: cleanString(doc.last_payment_at) || null,
+    updatedAt: cleanString(doc.updated_at) || cleanString(doc.$updatedAt) || null,
+  };
+}
+
+function extractCaktoSubscriptionSnapshot(payload = {}) {
+  const raw = payload && typeof payload === "object" ? payload : {};
+  const subscription =
+    raw.subscription && typeof raw.subscription === "object"
+      ? raw.subscription
+      : raw.data && typeof raw.data === "object"
+        ? raw.data
+        : raw;
+  const status = normalizeFlightReviewClubMembershipStatus(subscription.status);
+  const nextPaymentDate = cleanString(
+    subscription.next_payment_date ||
+    subscription.nextPaymentDate ||
+    subscription.next_charge_at ||
+    subscription.nextChargeAt ||
+    "",
+  );
+  const recurrencePeriodDays = Math.max(0, Math.round(Number(
+    subscription.recurrence_period ||
+    subscription.recurrencePeriod ||
+    0,
+  ) || 0));
+  return {
+    status,
+    currentPeriod: Math.max(0, Math.round(Number(subscription.current_period || subscription.currentPeriod || 0) || 0)),
+    recurrencePeriodDays,
+    paidPaymentsQuantity: Math.max(0, Math.round(Number(
+      subscription.paid_payments_quantity ||
+      subscription.paidPaymentsQuantity ||
+      0,
+    ) || 0)),
+    nextPaymentDate,
+    canceledAt: cleanString(subscription.canceledAt || subscription.canceled_at || "") || null,
+    updatedAt: cleanString(subscription.updatedAt || subscription.updated_at || "") || null,
+  };
+}
+
+function estimateFlightReviewClubNextPaymentDate(membership, remote = null) {
+  const existing = cleanString(remote?.nextPaymentDate || membership?.nextPaymentDate);
+  if (existing) return existing;
+  const periodDays = Math.max(0, Math.round(Number(
+    remote?.recurrencePeriodDays ||
+    membership?.recurrencePeriodDays ||
+    0,
+  ) || 0));
+  if (!periodDays || ["canceled", "expired", "inactive"].includes(cleanString(remote?.status || membership?.status))) return "";
+  const base = cleanString(
+    membership?.lastPaymentAt ||
+    remote?.updatedAt ||
+    membership?.updatedAt ||
+    "",
+  );
+  if (!base) return "";
+  const date = new Date(base);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + periodDays);
+  return date.toISOString();
+}
+
+function flightReviewClubAccessUntil(membership) {
+  return cleanString(membership?.accessUntil || membership?.access_until || membership?.nextPaymentDate || membership?.next_payment_date);
+}
+
+function flightReviewClubAccessUntilMs(membership) {
+  const value = flightReviewClubAccessUntil(membership);
+  if (!value) return 0;
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59:59.999Z` : value;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function hasFlightReviewClubMembershipAccess(membership) {
+  const status = normalizeFlightReviewClubMembershipStatus(membership?.status);
+  if (FRC_ACTIVE_STATUSES.has(status)) return true;
+  if (status === "canceled" && flightReviewClubAccessUntilMs(membership) >= Date.now()) return true;
+  return false;
+}
+
+function flightReviewClubMembershipUpdatedMs(membership) {
+  const value = cleanString(membership?.updatedAt || membership?.updated_at);
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function flightReviewClubMembershipRank(membership) {
+  if (!membership) return 0;
+  if (hasFlightReviewClubMembershipAccess(membership)) return 100;
+  const status = normalizeFlightReviewClubMembershipStatus(membership.status);
+  if (status === "pending") return 40;
+  if (status === "canceled") return 30;
+  if (status === "paused") return 20;
+  if (status === "expired" || status === "inactive") return 10;
+  return 1;
+}
+
+function selectPreferredFlightReviewClubMembership(memberships) {
+  return [...(Array.isArray(memberships) ? memberships : [])]
+    .filter(Boolean)
+    .sort((a, b) => {
+      const rankDiff = flightReviewClubMembershipRank(b) - flightReviewClubMembershipRank(a);
+      if (rankDiff !== 0) return rankDiff;
+      return flightReviewClubMembershipUpdatedMs(b) - flightReviewClubMembershipUpdatedMs(a);
+    })[0] || null;
+}
+
+async function fetchCaktoSubscription(subscriptionId) {
+  const safeId = cleanString(subscriptionId);
+  if (!safeId) return null;
+  const { token } = await getCaktoAccessToken();
+  const response = await fetch(`https://api.cakto.com.br/public_api/subscriptions/${encodeURIComponent(safeId)}/`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const rawMessage = cleanString(body.detail || body.message || body.error);
+    throw Object.assign(new Error(rawMessage || "Falha ao consultar assinatura na Cakto."), { status: response.status || 400 });
+  }
+  return extractCaktoSubscriptionSnapshot(body);
+}
+
+async function refreshFlightReviewClubMembershipFromCakto(membership) {
+  if (!membership?.id || !membership.caktoSubscriptionId || !["active", "trial", "pending"].includes(membership.status)) {
+    return membership;
+  }
+  const remote = await fetchCaktoSubscription(membership.caktoSubscriptionId).catch(() => null);
+  const nextPaymentDate = estimateFlightReviewClubNextPaymentDate(membership, remote);
+  if (!remote && cleanString(membership.nextPaymentDate) === cleanString(nextPaymentDate)) return membership;
+  const now = nowIso();
+  const patch = {
+    updated_at: now,
+  };
+  if (remote?.status && remote.status !== "unknown") patch.status = remote.status;
+  if (remote?.currentPeriod > 0) patch.current_period = remote.currentPeriod;
+  if (remote?.recurrencePeriodDays > 0) patch.recurrence_period_days = remote.recurrencePeriodDays;
+  if (remote?.paidPaymentsQuantity > 0) patch.paid_payments_quantity = remote.paidPaymentsQuantity;
+  if (nextPaymentDate) patch.next_payment_date = nextPaymentDate;
+  if (nextPaymentDate) patch.access_until = nextPaymentDate;
+  if (remote?.canceledAt) {
+    patch.canceled_at = remote.canceledAt;
+  }
+  const updated = await databases.updateDocument(
+    DATABASE_ID,
+    FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+    membership.id,
+    patch,
+  );
+  return mapFlightReviewClubMembership(updated);
+}
+
+async function listStudentFlightReviewClubMemberships(studentUserId) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId || !FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID) return [];
+  return listAllDocuments(FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeUserId]),
+    sdk.Query.limit(100),
+  ]).catch(() => []);
+}
+
+async function listAllFlightReviewClubMembershipDocs() {
+  if (!FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID) return [];
+  return listAllDocuments(FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.limit(5000),
+  ]).catch(() => []);
+}
+
+async function getCurrentStudentFlightReviewClubMembership(studentUserId) {
+  const memberships = await listStudentFlightReviewClubMemberships(studentUserId);
+  const sorted = memberships
+    .map(mapFlightReviewClubMembership)
+    .filter(Boolean)
+    .sort((a, b) => cleanString(b.updatedAt).localeCompare(cleanString(a.updatedAt)));
+  return sorted.find((item) => hasFlightReviewClubMembershipAccess(item)) || sorted[0] || null;
+}
+
+async function listStudentTrainingAssignmentsRaw(studentUserId) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId || !STUDENT_TRACKS_COLLECTION_ID) return [];
+  return listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeUserId]),
+    sdk.Query.limit(100),
+  ]).catch(() => []);
+}
+
+async function studentHasLegacyFlightReviewClub(studentUserId) {
+  const rows = await listStudentTrainingAssignmentsRaw(studentUserId);
+  return rows.some((row) => row.status === "active" && row.is_flight_review_club_member === true);
+}
+
+async function getFlightReviewClubStatus(actorUserId, targetUserId = "") {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const studentUserId = cleanString(targetUserId) || actorUserId;
+  if (studentUserId !== actorUserId) await requireAdmin(actorUserId);
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  if (!club.enabled) {
+    return { enabled: false, hasAccess: false, legacyTrackMember: false, membership: null };
+  }
+  const [legacyTrackMember, membership] = await Promise.all([
+    studentHasLegacyFlightReviewClub(studentUserId),
+    getCurrentStudentFlightReviewClubMembership(studentUserId),
+  ]);
+  const refreshedMembership = await refreshFlightReviewClubMembershipFromCakto(membership);
+  return {
+    enabled: true,
+    hasAccess: legacyTrackMember || hasFlightReviewClubMembershipAccess(refreshedMembership),
+    legacyTrackMember,
+    membership: refreshedMembership,
+  };
+}
+
+const FRC_TASK_STATUSES = new Set(["pendente", "em_andamento", "concluido", "bloqueado", "revogar", "revogado"]);
+
+function normalizeFlightReviewClubTaskStatus(value) {
+  const status = cleanString(value).toLowerCase();
+  return FRC_TASK_STATUSES.has(status) ? status : "pendente";
+}
+
+function flightReviewClubTaskPermissions(studentUserId) {
+  return [
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.user(studentUserId)),
+  ];
+}
+
+function mapFlightReviewClubTask(doc) {
+  if (!doc) return null;
+  return {
+    id: cleanString(doc.$id),
+    membershipId: cleanString(doc.membership_id),
+    studentUserId: cleanString(doc.student_user_id),
+    templateItemId: cleanString(doc.template_item_id),
+    title: cleanString(doc.title),
+    description: cleanString(doc.description),
+    status: normalizeFlightReviewClubTaskStatus(doc.status),
+    assignedToUserId: cleanString(doc.assigned_to_user_id),
+    dueAt: cleanString(doc.due_at) || null,
+    completedAt: cleanString(doc.completed_at) || null,
+    notes: cleanString(doc.notes),
+    sortOrder: Math.max(0, Math.round(Number(doc.sort_order) || 0)),
+    createdAt: cleanString(doc.created_at) || cleanString(doc.$createdAt) || null,
+    updatedAt: cleanString(doc.updated_at) || cleanString(doc.$updatedAt) || null,
+  };
+}
+
+function enabledFlightReviewClubChecklistTemplate(rules) {
+  const defaults = defaultSchoolRules().flightReviewClub.checklistTemplate;
+  const template = Array.isArray(rules?.flightReviewClub?.checklistTemplate)
+    ? rules.flightReviewClub.checklistTemplate
+    : defaults;
+  return template
+    .map((item, index) => ({
+      id: (cleanString(item?.id) || `frc-task-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64),
+      title: cleanString(item?.title).slice(0, 140),
+      description: cleanString(item?.description).slice(0, 500),
+      enabled: item?.enabled !== false,
+      sortOrder: index,
+    }))
+    .filter((item) => item.enabled && item.id && item.title)
+    .slice(0, 30);
+}
+
+async function listFlightReviewClubTasksForMembership(membershipId) {
+  const safeMembershipId = cleanString(membershipId);
+  if (!safeMembershipId || !FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID) return [];
+  const docs = await listAllDocuments(FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("membership_id", [safeMembershipId]),
+    sdk.Query.limit(100),
+  ]).catch(() => []);
+  return docs.map(mapFlightReviewClubTask).filter(Boolean).sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+}
+
+async function ensureFlightReviewClubTasksForMembership(membership, rules = null) {
+  if (!membership?.id || !FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID) return [];
+  const current = await listFlightReviewClubTasksForMembership(membership.id);
+  const existing = new Set(current.map((task) => task.templateItemId));
+  const now = nowIso();
+  const template = enabledFlightReviewClubChecklistTemplate(rules || (await loadSchoolRules()).publicSettings);
+  for (const item of template) {
+    if (existing.has(item.id)) continue;
+    const taskId = `frct_${sha256(`${membership.id}:${item.id}`).slice(0, 31)}`;
+    try {
+      await databases.createDocument(
+        DATABASE_ID,
+        FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID,
+        taskId,
+        {
+          school_id: SCHOOL_ID,
+          membership_id: membership.id,
+          student_user_id: membership.studentUserId,
+          template_item_id: item.id,
+          title: item.title,
+          description: item.description,
+          status: "pendente",
+          assigned_to_user_id: "",
+          due_at: "",
+          completed_at: "",
+          notes: "",
+          history_json: JSON.stringify([{ at: now, event: "created_from_template" }]).slice(0, 8192),
+          sort_order: item.sortOrder,
+          created_at: now,
+          updated_at: now,
+        },
+        flightReviewClubTaskPermissions(membership.studentUserId),
+      );
+    } catch (err) {
+      if (Number(err?.code) === 404) return current;
+      if (Number(err?.code) !== 409) throw err;
+    }
+  }
+  return listFlightReviewClubTasksForMembership(membership.id);
+}
+
+async function flightReviewClubMemberRow(membership, rules = null) {
+  const [profile, authUser, tasks] = await Promise.all([
+    getProfileByUserId(membership.studentUserId).catch(() => null),
+    users.get({ userId: membership.studentUserId }).catch(() => null),
+    ensureFlightReviewClubTasksForMembership(membership, rules).catch(() => []),
+  ]);
+  return {
+    membership,
+    studentName: cleanString(profile?.full_name) || cleanString(authUser?.name) || cleanString(authUser?.email) || membership.studentUserId,
+    studentEmail: cleanString(profile?.email) || cleanString(authUser?.email),
+    tasks,
+  };
+}
+
+async function listAdminFlightReviewClubMembers(actorUserId, search = "") {
+  await requireAdmin(actorUserId);
+  const membershipsByStudent = new Map();
+  for (const membership of (await listAllFlightReviewClubMembershipDocs())
+    .map(mapFlightReviewClubMembership)
+    .filter(Boolean)) {
+    const studentUserId = cleanString(membership.studentUserId);
+    if (!studentUserId) continue;
+    const current = membershipsByStudent.get(studentUserId) || [];
+    current.push(membership);
+    membershipsByStudent.set(studentUserId, current);
+  }
+  const memberships = [...membershipsByStudent.values()]
+    .map(selectPreferredFlightReviewClubMembership)
+    .filter(Boolean);
+  const { publicSettings } = await loadSchoolRules();
+  const rows = [];
+  for (const membership of memberships) rows.push(await flightReviewClubMemberRow(membership, publicSettings));
+  const needle = normalizeSearch(cleanString(search));
+  return rows
+    .filter((row) => {
+      if (!needle) return true;
+      return normalizeSearch(`${row.studentName} ${row.studentEmail} ${row.membership.planName} ${row.membership.status}`).includes(needle);
+    })
+    .sort((a, b) => cleanString(b.membership.updatedAt).localeCompare(cleanString(a.membership.updatedAt)));
+}
+
+async function getAdminFlightReviewClubOverview(actorUserId) {
+  const members = await listAdminFlightReviewClubMembers(actorUserId, "");
+  const allTasks = members.flatMap((row) => row.tasks);
+  return {
+    totalMembers: members.length,
+    activeAccess: members.filter((row) => hasFlightReviewClubMembershipAccess(row.membership)).length,
+    canceled: members.filter((row) => row.membership.status === "canceled").length,
+    pendingTasks: allTasks.filter((task) => task.status === "pendente" || task.status === "em_andamento" || task.status === "bloqueado").length,
+    completedTasks: allTasks.filter((task) => task.status === "concluido").length,
+    revocationTasks: allTasks.filter((task) => task.status === "revogar").length,
+    members,
+  };
+}
+
+async function updateFlightReviewClubTask(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  const taskId = cleanString(input.taskId);
+  if (!taskId || !FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID) {
+    throw Object.assign(new Error("Tarefa FRC invalida."), { status: 400 });
+  }
+  const current = await databases.getDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID, taskId);
+  const now = nowIso();
+  const nextStatus = input.status === undefined ? normalizeFlightReviewClubTaskStatus(current.status) : normalizeFlightReviewClubTaskStatus(input.status);
+  const history = parseJsonArray(current.history_json).slice(-30);
+  history.push({ at: now, actorUserId, event: "updated", status: nextStatus });
+  const patch = {
+    status: nextStatus,
+    updated_at: now,
+    history_json: JSON.stringify(history).slice(0, 8192),
+  };
+  if (input.assignedToUserId !== undefined) patch.assigned_to_user_id = cleanString(input.assignedToUserId).slice(0, 64);
+  if (input.dueAt !== undefined) patch.due_at = cleanString(input.dueAt).slice(0, 64);
+  if (input.notes !== undefined) patch.notes = cleanString(input.notes).slice(0, 2048);
+  if (input.completedAt !== undefined) patch.completed_at = cleanString(input.completedAt).slice(0, 64);
+  else if (nextStatus === "concluido" && !cleanString(current.completed_at)) patch.completed_at = now;
+  else if (nextStatus !== "concluido" && cleanString(current.completed_at)) patch.completed_at = "";
+  const updated = await databases.updateDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID, taskId, patch);
+  return mapFlightReviewClubTask(updated);
+}
+
+async function ensureAdminFlightReviewClubMemberTasks(actorUserId, membershipId) {
+  await requireAdmin(actorUserId);
+  const membership = await databases.getDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, cleanString(membershipId));
+  const row = await flightReviewClubMemberRow(mapFlightReviewClubMembership(membership), (await loadSchoolRules()).publicSettings);
+  return [row];
+}
+
+async function resolveFlightReviewClubManualTarget(rawTarget) {
+  const target = cleanString(rawTarget);
+  if (!target) throw Object.assign(new Error("Informe o ID ou e-mail do aluno."), { status: 400 });
+  if (target.includes("@")) {
+    const authUser = await findAuthUserByEmail(target);
+    if (!authUser?.$id) throw Object.assign(new Error("Aluno nao encontrado pelo e-mail informado."), { status: 404 });
+    return cleanString(authUser.$id);
+  }
+  const authUser = await users.get({ userId: target }).catch(() => null);
+  if (!authUser?.$id) throw Object.assign(new Error("Aluno nao encontrado pelo ID informado."), { status: 404 });
+  return cleanString(authUser.$id);
+}
+
+function normalizeManualFlightReviewClubAccessUntil(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T23:59:59.999Z` : raw;
+  if (Number.isNaN(Date.parse(iso))) {
+    throw Object.assign(new Error("Data de acesso manual invalida."), { status: 400 });
+  }
+  return raw;
+}
+
+function manualFlightReviewClubMembershipId(studentUserId) {
+  return `frcm_${sha256(`${SCHOOL_ID}:${studentUserId}:manual`).slice(0, 27)}`;
+}
+
+async function upsertManualFlightReviewClubMembership(studentUserId, patch) {
+  const membershipId = manualFlightReviewClubMembershipId(studentUserId);
+  const current = await databases
+    .getDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, membershipId)
+    .catch(() => null);
+  if (current) {
+    const updated = await databases.updateDocument(
+      DATABASE_ID,
+      FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+      membershipId,
+      patch,
+    );
+    return mapFlightReviewClubMembership(updated);
+  }
+  const now = nowIso();
+  const created = await databases.createDocument(
+    DATABASE_ID,
+    FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+    membershipId,
+    {
+      school_id: SCHOOL_ID,
+      student_user_id: studentUserId,
+      source: "manual",
+      status: cleanString(patch.status) || "active",
+      plan_id: cleanString(patch.plan_id) || "manual",
+      plan_name: cleanString(patch.plan_name) || "Acesso manual",
+      recurrence_key: cleanString(patch.recurrence_key) || "manual",
+      recurrence_period_days: Math.max(0, Math.round(Number(patch.recurrence_period_days) || 0)),
+      amount: Math.round((Number(patch.amount) || 0) * 100) / 100,
+      cakto_offer_id: "",
+      cakto_subscription_id: "",
+      proposal_id: "",
+      current_period: 0,
+      paid_payments_quantity: 0,
+      next_payment_date: cleanString(patch.next_payment_date),
+      access_until: cleanString(patch.access_until),
+      cancel_at_period_end: patch.cancel_at_period_end === true,
+      canceled_at: cleanString(patch.canceled_at),
+      ended_at: cleanString(patch.ended_at),
+      last_payment_at: cleanString(patch.last_payment_at),
+      created_at: now,
+      updated_at: cleanString(patch.updated_at) || now,
+    },
+    flightReviewClubMembershipPermissions(studentUserId),
+  );
+  return mapFlightReviewClubMembership(created);
+}
+
+async function forceFlightReviewClubAccess(actorUserId, input = {}) {
+  await requireAdmin(actorUserId);
+  if (!FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de assinaturas FRC nao configurada."), { status: 500 });
+  }
+  const mode = cleanString(input.mode).toLowerCase();
+  if (!["grant", "revoke"].includes(mode)) {
+    throw Object.assign(new Error("Acao FRC invalida."), { status: 400 });
+  }
+  const studentUserId = await resolveFlightReviewClubManualTarget(input.studentUserId || input.target);
+  const now = nowIso();
+  const rules = (await loadSchoolRules()).publicSettings;
+  if (mode === "grant") {
+    const accessUntil = normalizeManualFlightReviewClubAccessUntil(input.accessUntil);
+    const membership = await upsertManualFlightReviewClubMembership(studentUserId, {
+      status: "active",
+      plan_id: "manual",
+      plan_name: "Acesso manual",
+      recurrence_key: "manual",
+      recurrence_period_days: 0,
+      amount: 0,
+      next_payment_date: accessUntil,
+      access_until: accessUntil,
+      cancel_at_period_end: false,
+      canceled_at: "",
+      ended_at: "",
+      last_payment_at: now,
+      updated_at: now,
+    });
+    await ensureFlightReviewClubTasksForMembership(membership, rules).catch(() => []);
+    return [await flightReviewClubMemberRow(membership, rules)];
+  }
+
+  const existingDocs = await listStudentFlightReviewClubMemberships(studentUserId);
+  const updatedMemberships = [];
+  for (const doc of existingDocs) {
+    const updated = await databases.updateDocument(
+      DATABASE_ID,
+      FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+      doc.$id,
+      {
+        status: "expired",
+        access_until: now,
+        next_payment_date: cleanString(doc.next_payment_date),
+        cancel_at_period_end: false,
+        canceled_at: cleanString(doc.canceled_at) || now,
+        ended_at: now,
+        updated_at: now,
+      },
+    );
+    updatedMemberships.push(mapFlightReviewClubMembership(updated));
+  }
+  if (updatedMemberships.length === 0) {
+    const membership = await upsertManualFlightReviewClubMembership(studentUserId, {
+      status: "expired",
+      plan_id: "manual",
+      plan_name: "Acesso manual",
+      recurrence_key: "manual",
+      access_until: now,
+      next_payment_date: "",
+      cancel_at_period_end: false,
+      canceled_at: now,
+      ended_at: now,
+      updated_at: now,
+    });
+    updatedMemberships.push(membership);
+  }
+  return Promise.all(updatedMemberships.filter(Boolean).map((membership) => flightReviewClubMemberRow(membership, rules)));
+}
+
+function selectFlightReviewClubSubscriptionPlan(club, planId = "") {
+  const plans = Array.isArray(club?.subscriptionPlans) ? club.subscriptionPlans : [];
+  const activePlans = plans
+    .filter((plan) => plan?.enabled === true && Number(plan.amount) > 0)
+    .map((plan) => ({
+      id: cleanString(plan.id),
+      label: cleanString(plan.label) || cleanString(plan.id),
+      description: cleanString(plan.description),
+      recurrencePeriodDays: Math.max(1, Math.round(Number(plan.recurrencePeriodDays) || 30)),
+      amount: Math.round((Number(plan.amount) || 0) * 100) / 100,
+      enabled: true,
+    }))
+    .filter((plan) => plan.id);
+  const requested = cleanString(planId);
+  return activePlans.find((plan) => plan.id === requested) || activePlans[0] || null;
+}
+
+function shouldUseFlightReviewClubSubscription(club, payload = {}) {
+  const mode = cleanString(payload.mode);
+  if (mode === "legacy_one_time") return false;
+  if (mode === "student_subscription") return true;
+  if (cleanString(payload.planId)) return true;
+  if (club?.billingMode === "student_subscription") return true;
+  if (club?.billingMode === "legacy_one_time") return false;
+  return Boolean(cleanString(club?.caktoSubscriptionProductId) && selectFlightReviewClubSubscriptionPlan(club));
+}
+
+async function quoteLegacyFlightReviewClubCheckout(actorUserId) {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const role = await getActorRole(actorUserId);
   if (role !== "aluno") {
@@ -23100,11 +24326,10 @@ async function quoteFlightReviewClubCheckout(actorUserId) {
   const { publicSettings: rules } = await loadSchoolRules();
   const club = rules.flightReviewClub || {};
   if (!club.enabled) throw Object.assign(new Error("Flight Review Club nao esta ativo."), { status: 403 });
+  const status = await getFlightReviewClubStatus(actorUserId);
+  if (status.hasAccess) throw Object.assign(new Error("Voce ja esta ativo no Flight Review Club."), { status: 409 });
   const assignment = await getPrimaryStudentTrainingAssignment(actorUserId);
   if (!assignment) throw Object.assign(new Error("Aluno sem trilha ativa para calcular o preco do Flight Review Club."), { status: 422 });
-  if (assignment.is_flight_review_club_member === true) {
-    throw Object.assign(new Error("Voce ja esta ativo no Flight Review Club."), { status: 409 });
-  }
   const flownHours = await getStudentFlownHours(actorUserId);
   const pricingRule = selectFlightReviewClubPricingRule(club.pricingRules, assignment.track_id, flownHours);
   if (!pricingRule) {
@@ -23124,7 +24349,50 @@ async function quoteFlightReviewClubCheckout(actorUserId) {
     maxHours: pricingRule.maxHours ?? null,
     flownHours,
     assignmentId: cleanString(assignment.$id),
+    billingMode: "legacy_one_time",
   };
+}
+
+async function quoteSubscriptionFlightReviewClubCheckout(actorUserId, payload = {}) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role !== "aluno") {
+    throw Object.assign(new Error("A assinatura do Flight Review Club esta disponivel apenas para alunos."), { status: 403 });
+  }
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  if (!club.enabled) throw Object.assign(new Error("Flight Review Club nao esta ativo."), { status: 403 });
+  if (!cleanString(club.caktoSubscriptionProductId)) {
+    throw Object.assign(new Error("Produto recorrente da Cakto nao configurado para o Flight Review Club."), { status: 422 });
+  }
+  const status = await getFlightReviewClubStatus(actorUserId);
+  if (status.hasAccess) throw Object.assign(new Error("Voce ja esta ativo no Flight Review Club."), { status: 409 });
+  const plan = selectFlightReviewClubSubscriptionPlan(club, payload.planId);
+  if (!plan) throw Object.assign(new Error("Nenhum plano recorrente do Flight Review Club esta ativo."), { status: 404 });
+  return {
+    amount: plan.amount,
+    discountPercent: 0,
+    pricingRuleId: "",
+    trainingTrackId: "",
+    trainingTrackName: "",
+    minHours: 0,
+    maxHours: null,
+    flownHours: 0,
+    assignmentId: "",
+    planId: plan.id,
+    planName: plan.label,
+    recurrencePeriodDays: plan.recurrencePeriodDays,
+    billingMode: "student_subscription",
+  };
+}
+
+async function quoteFlightReviewClubCheckout(actorUserId, payload = {}) {
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  if (shouldUseFlightReviewClubSubscription(club, payload)) {
+    return quoteSubscriptionFlightReviewClubCheckout(actorUserId, payload);
+  }
+  return quoteLegacyFlightReviewClubCheckout(actorUserId);
 }
 
 function defaultWppSoloFlightApprovalTemplate() {
@@ -23145,8 +24413,8 @@ function defaultWppSoloFlightAwarenessTemplate() {
   };
 }
 
-async function createFlightReviewClubCheckout(actorUserId) {
-  const quote = await quoteFlightReviewClubCheckout(actorUserId);
+async function createLegacyFlightReviewClubCheckout(actorUserId) {
+  const quote = await quoteLegacyFlightReviewClubCheckout(actorUserId);
   const actor = await users.get({ userId: actorUserId });
   const profile = await getProfileByUserId(actorUserId).catch(() => null);
   const amount = quote.amount;
@@ -23166,6 +24434,8 @@ async function createFlightReviewClubCheckout(actorUserId) {
       total_value: amount,
       products_json: JSON.stringify({
         kind: "flight_review_club_subscription",
+        billingMode: "legacy_one_time",
+        binding: "training_track",
         studentUserId: actorUserId,
         assignmentId: quote.assignmentId,
         membershipId,
@@ -23215,6 +24485,143 @@ async function createFlightReviewClubCheckout(actorUserId) {
     });
     throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
   }
+}
+
+async function createSubscriptionFlightReviewClubCheckout(actorUserId, payload = {}) {
+  const quote = await quoteSubscriptionFlightReviewClubCheckout(actorUserId, payload);
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  const actor = await users.get({ userId: actorUserId });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const amount = quote.amount;
+  const proposalId = sdk.ID.unique();
+  const membershipId = `frc_${crypto.createHash("sha256").update(proposalId).digest("hex").slice(0, 28)}`;
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    proposalId,
+    {
+      school_id: SCHOOL_ID,
+      lead_id: actorUserId,
+      lead_name: cleanString(profile?.full_name) || cleanString(actor.name) || "Aluno",
+      lead_email: cleanString(actor.email),
+      hours: 0,
+      hour_price: 0,
+      total_value: amount,
+      products_json: JSON.stringify({
+        kind: "flight_review_club_subscription",
+        billingMode: "student_subscription",
+        binding: "student",
+        studentUserId: actorUserId,
+        membershipId,
+        plan: {
+          id: quote.planId,
+          label: quote.planName,
+          amount,
+          recurrencePeriodDays: quote.recurrencePeriodDays,
+        },
+        products: [],
+      }),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCaktoOfferForProposal(doc, {
+      type: "subscription",
+      productId: club.caktoSubscriptionProductId,
+      recurrencePeriodDays: quote.recurrencePeriodDays,
+      quantityRecurrences: -1,
+      name: `Flight Review Club - ${quote.planName}`,
+    });
+    const updated = await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    });
+    return {
+      proposalId: updated.$id,
+      paymentUrl: payment.paymentUrl,
+      amount,
+      pricingRuleId: "",
+      trainingTrackName: "",
+      flownHours: 0,
+      planId: quote.planId,
+      planName: quote.planName,
+      recurrencePeriodDays: quote.recurrencePeriodDays,
+    };
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+  }
+}
+
+async function createFlightReviewClubCheckout(actorUserId, payload = {}) {
+  const { publicSettings: rules } = await loadSchoolRules();
+  const club = rules.flightReviewClub || {};
+  if (shouldUseFlightReviewClubSubscription(club, payload)) {
+    return createSubscriptionFlightReviewClubCheckout(actorUserId, payload);
+  }
+  return createLegacyFlightReviewClubCheckout(actorUserId);
+}
+
+async function cancelFlightReviewClubSubscription(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  const role = await getActorRole(actorUserId);
+  if (role !== "aluno") {
+    throw Object.assign(new Error("Cancelamento disponivel apenas para alunos."), { status: 403 });
+  }
+  const membership = await getCurrentStudentFlightReviewClubMembership(actorUserId);
+  if (!membership || !FRC_ACTIVE_STATUSES.has(membership.status)) {
+    throw Object.assign(new Error("Nenhuma assinatura ativa do Flight Review Club encontrada."), { status: 404 });
+  }
+  if (!membership.caktoSubscriptionId) {
+    throw Object.assign(new Error("Assinatura sem identificador da Cakto. Procure a administracao."), { status: 422 });
+  }
+  const { token } = await getCaktoAccessToken();
+  const response = await fetch(`https://api.cakto.com.br/public_api/subscriptions/${encodeURIComponent(membership.caktoSubscriptionId)}/cancel/`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const rawMessage = cleanString(body.detail || body.message || body.error);
+    const lower = rawMessage.toLowerCase();
+    if (response.status === 401 || response.status === 403 || lower.includes("permiss")) {
+      throw Object.assign(
+        new Error("A Cakto recusou o cancelamento por permissao. Atualize o token/credencial com escopo write subscriptions e tente novamente."),
+        { status: 403 },
+      );
+    }
+    throw Object.assign(new Error(rawMessage || "Falha ao cancelar assinatura na Cakto."), { status: 400 });
+  }
+  const now = nowIso();
+  const accessUntil = cleanString(membership.nextPaymentDate) ||
+    estimateFlightReviewClubNextPaymentDate(membership, null) ||
+    now;
+  await databases.updateDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, membership.id, {
+    status: "canceled",
+    canceled_at: now,
+    access_until: accessUntil,
+    updated_at: now,
+  });
+  return getFlightReviewClubStatus(actorUserId);
 }
 
 async function listStaffCreditPurchaseStudents(search = "") {
@@ -23572,6 +24979,201 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   }
 }
 
+function extractCaktoOfferIdFromUrl(paymentUrl) {
+  const raw = cleanString(paymentUrl);
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (!url.hostname.toLowerCase().includes("cakto")) return "";
+    const parts = url.pathname.split("/").filter(Boolean);
+    return parts[parts.length - 1] || "";
+  } catch {
+    const match = raw.match(/cakto\.com\.br\/([A-Za-z0-9_-]+)/i);
+    return match?.[1] || "";
+  }
+}
+
+function parseMarketplaceJsonArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  const text = cleanString(raw);
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function loadMarketplaceSettingsDoc() {
+  const doc = await getSettingDoc("marketplace");
+  const defaults = { enabled: false, storeTitle: "Marketplace", storeSubtitle: "Produtos e serviços da escola" };
+  if (!doc) return { settings: defaults, doc: null };
+  const parsed = parseJsonObject(doc.settings_json, defaults);
+  return {
+    settings: {
+      enabled: parsed.enabled === true,
+      storeTitle: cleanString(parsed.storeTitle) || defaults.storeTitle,
+      storeSubtitle: cleanString(parsed.storeSubtitle) || defaults.storeSubtitle,
+    },
+    doc,
+  };
+}
+
+async function saveMarketplaceSettings(actorUserId, input) {
+  await requireAdmin(actorUserId);
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de configuracoes nao configurada."), { status: 500 });
+  }
+  const settings = {
+    enabled: input?.enabled === true,
+    storeTitle: cleanString(input?.storeTitle) || "Marketplace",
+    storeSubtitle: cleanString(input?.storeSubtitle) || "Produtos e serviços da escola",
+  };
+  const data = { key: "marketplace", settings_json: JSON.stringify(settings) };
+  const current = await loadMarketplaceSettingsDoc();
+  const doc = current.doc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.doc.$id, data)
+    : await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  return { ...settings, updatedAt: doc.$updatedAt || null };
+}
+
+async function createMarketplaceCheckout(actorUserId, productId, variantIdInput = "") {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  if (!MARKETPLACE_PRODUCTS_COLLECTION_ID || !MARKETPLACE_ORDERS_COLLECTION_ID) {
+    throw Object.assign(new Error("Marketplace nao configurado."), { status: 500 });
+  }
+  const { settings } = await loadMarketplaceSettingsDoc();
+  if (!settings.enabled) throw Object.assign(new Error("Marketplace indisponivel."), { status: 403 });
+
+  const safeProductId = cleanString(productId);
+  if (!safeProductId) throw Object.assign(new Error("Produto nao informado."), { status: 400 });
+  const product = await databases.getDocument(DATABASE_ID, MARKETPLACE_PRODUCTS_COLLECTION_ID, safeProductId).catch(() => null);
+  if (!product || product.deleted_at || product.active === false || product.school_id !== SCHOOL_ID) {
+    throw Object.assign(new Error("Produto indisponivel."), { status: 404 });
+  }
+  if (cleanString(product.payment_mode) !== "cakto") {
+    throw Object.assign(new Error("Este item nao cria pedido interno (link externo)."), { status: 400 });
+  }
+
+  const details = (() => {
+    try {
+      const parsed = JSON.parse(String(product.details_json || "{}"));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+  const variants = parseMarketplaceJsonArray(details.variants || product.variants_json)
+    .map((v) => ({
+      id: cleanString(v?.id),
+      label: cleanString(v?.label),
+      stock: v?.stock == null || v?.stock === "" ? null : Number(v.stock),
+    }))
+    .filter((v) => v.id && v.label);
+  const variantId = cleanString(variantIdInput);
+  let variant = null;
+  if (variants.length) {
+    variant = variants.find((v) => v.id === variantId) || variants[0];
+    if (!variant) throw Object.assign(new Error("Variante invalida."), { status: 400 });
+  }
+
+  const trackStock = product.track_stock === true;
+  if (trackStock) {
+    if (variant) {
+      if (variant.stock != null && variant.stock <= 0) {
+        throw Object.assign(new Error("Variante fora de estoque."), { status: 409 });
+      }
+    } else if (product.stock != null && Number(product.stock) <= 0) {
+      throw Object.assign(new Error("Produto fora de estoque."), { status: 409 });
+    }
+  }
+
+  const frcStatus = await getFlightReviewClubStatus(actorUserId).catch(() => ({ hasAccess: false }));
+  const isFrc = Boolean(frcStatus?.hasAccess);
+  const frcDiscountPercent = Math.max(0, Math.min(100, Number(details.frcDiscountPercent ?? product.frc_discount_percent) || 0));
+  const basePrice = Math.max(0, Number(product.price) || 0);
+  const amount = isFrc && frcDiscountPercent > 0
+    ? Math.round(basePrice * (1 - frcDiscountPercent / 100) * 100) / 100
+    : basePrice;
+  if (!(amount > 0)) throw Object.assign(new Error("Preco do produto invalido."), { status: 400 });
+
+  const actor = await users.get({ userId: actorUserId });
+  const profile = await getProfileByUserId(actorUserId).catch(() => null);
+  const buyerEmail = cleanString(actor.email).toLowerCase();
+  if (!buyerEmail) throw Object.assign(new Error("Usuario sem e-mail."), { status: 400 });
+
+  let categoryName = "";
+  const categoryId = cleanString(product.category_id);
+  if (categoryId && MARKETPLACE_CATEGORIES_COLLECTION_ID) {
+    const cat = await databases.getDocument(DATABASE_ID, MARKETPLACE_CATEGORIES_COLLECTION_ID, categoryId).catch(() => null);
+    categoryName = cleanString(cat?.name);
+  }
+
+  const buyerName = cleanString(profile?.full_name) || cleanString(actor.name) || "Comprador";
+  const productName = cleanString(product.name) || "Marketplace";
+  const offerName = variant?.label ? `${productName} — ${variant.label}` : productName;
+  const payment = await createCaktoOfferForProposal(
+    {
+      $id: `mp_${safeProductId}`,
+      lead_id: actorUserId,
+      lead_name: buyerName,
+      lead_email: buyerEmail,
+      total_value: amount,
+      products_json: "[]",
+    },
+    { name: offerName.slice(0, 120) },
+  );
+  const offerId = cleanString(payment.offerId);
+  const paymentUrl = cleanString(payment.paymentUrl);
+  if (!offerId || !paymentUrl) {
+    throw Object.assign(new Error("Falha ao gerar link de pagamento na Cakto."), { status: 400 });
+  }
+
+  const orderId = sdk.ID.unique();
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    MARKETPLACE_ORDERS_COLLECTION_ID,
+    orderId,
+    {
+      school_id: SCHOOL_ID,
+      product_id: safeProductId,
+      buyer_user_id: actorUserId,
+      buyer_email: buyerEmail,
+      cakto_offer_id: offerId,
+      amount,
+      status: "pending",
+      admin_notes: "",
+      cakto_receipt_id: "",
+      paid_at: "",
+      snapshot_json: JSON.stringify({
+        productName,
+        categoryId,
+        categoryName,
+        variantId: variant?.id || "",
+        variantLabel: variant?.label || "",
+        buyerName,
+        paymentMode: "cakto",
+        paymentUrl,
+        frcApplied: isFrc,
+        frcDiscountPercent: isFrc ? frcDiscountPercent : 0,
+      }),
+    },
+    [
+      sdk.Permission.read(sdk.Role.user(actorUserId)),
+      sdk.Permission.read(sdk.Role.label("admin")),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+
+  return {
+    orderId: doc.$id,
+    paymentUrl,
+    status: "pending",
+  };
+}
+
 async function findFlightCreditProposalForPaymentLink(targetUserId, paymentUrl, proposalId = "") {
   const safeProposalId = cleanString(proposalId);
   if (safeProposalId) {
@@ -23669,6 +25271,7 @@ function stableBriefingSourceId(seed) {
 
 function flightBriefingRouteHash(input = {}) {
   const basis = JSON.stringify({
+    pipeline: "briefing-ai-v2",
     origin: normalizeBriefingIcao(input.origin),
     destination: normalizeBriefingIcao(input.destination),
     alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean).sort() : [],
@@ -23699,6 +25302,43 @@ function extractFirstBriefingUrl(...values) {
     /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com\.br|gov\.br|mil\.br|com|org|net)(?:\/[^\s<>"')\]]*)?/i,
   );
   return bare ? normalizeBriefingUrlCandidate(bare[0]) : "";
+}
+
+function extractAllBriefingUrls(...values) {
+  const text = values.map((value) => cleanString(value)).join(" ");
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const url = normalizeBriefingUrlCandidate(raw);
+    const key = url.toLowerCase();
+    if (!url || seen.has(key)) return;
+    seen.add(key);
+    out.push(url);
+  };
+  for (const match of text.match(/https?:\/\/[^\s<>"')\]]+/gi) || []) push(match);
+  for (const match of text.match(
+    /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com\.br|gov\.br|mil\.br|com|org|net)(?:\/[^\s<>"')\]]*)?/gi,
+  ) || []) {
+    if (/@/.test(match)) continue;
+    push(match);
+  }
+  return out;
+}
+
+function authUrlPriority(url = "") {
+  const value = String(url || "").toLowerCase();
+  if (/forms\.office\.com/.test(value)) return 0;
+  if (/ga\.ccraeroportos|webapp/.test(value)) return 1;
+  if (/ccraeroportos/.test(value)) return 2;
+  if (/redevoa/.test(value) && /form|agend|\/r\//.test(value)) return 3;
+  if (/redevoa/.test(value)) return 8;
+  return 5;
+}
+
+function extractPreferredAuthUrl(...values) {
+  const urls = extractAllBriefingUrls(...values);
+  if (!urls.length) return "";
+  return [...urls].sort((a, b) => authUrlPriority(a) - authUrlPriority(b) || b.length - a.length)[0] || "";
 }
 
 function inferBriefingContactRelevance(label = "", value = "", type = "", contextText = "") {
@@ -23850,13 +25490,9 @@ function extractOfficialRotaerProviders(rotaer, sourceId) {
 
   const pick = (re) => allChunks.filter((text) => re.test(text)).join(" | ");
   const fuelText = pick(/abastec|combust|avgas|jet\s*a|airbp|querosene|fuel|info\s*addn|petrobras|shell|jet\s*fly/i);
-  // Don't treat CCR/auth RMKs as hangar just because they mention "pátio".
-  const hangarText = allChunks
-    .filter((text) => /hangar|pernoite|estadia|fbo/i.test(text) || (/p[aá]tio/i.test(text) && !isBriefingAuthText(text)))
-    .join(" | ");
-  const authText = pick(
-    /autoriza|ppr|slot|formul|compuls[oó]r(?:ia)?|\bauth\b|anteced[eê]ncia|rede\s*voa|forms\.office|agendamento|concession|webapp|ccr|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|reserva\s+de\s+p[aá]tio/i,
-  );
+  // Patio via FBO/paxaeroportos = hangar. Patio via CCR/WebApp/concessionária = AUTH.
+  const hangarText = allChunks.filter((text) => isHangarServiceText(text)).join(" | ");
+  const authText = allChunks.filter((text) => isOperationalAuthText(text)).join(" | ");
 
   const providersByCategory = { fuel: [], hangarage: [], auth: [] };
 
@@ -23984,6 +25620,18 @@ function extractOfficialRotaerProviders(rotaer, sourceId) {
       relevance: "relevant",
     });
   }
+  if (/paxaeroportos/i.test(hangarText)) {
+    const patioUrl =
+      extractUrls(hangarText).find((url) => /paxaeroportos/i.test(url)) ||
+      "https://reservas.paxaeroportos.com.br";
+    pushUnique("hangarage", {
+      type: "website",
+      label: "Pax Aeroportos (pátio/pernoite)",
+      value: patioUrl,
+      sourceIds: [sourceId],
+      relevance: "relevant",
+    });
+  }
   const hangarLabel = /waas|w\.a\.a\.s/i.test(hangarText) ? "W.A.A.S. Avionics" : "Hangaragem ROTAER";
   for (const phone of extractPhones(hangarText)) {
     pushUnique("hangarage", { type: "phone", label: hangarLabel, value: phone, sourceIds: [sourceId], relevance: "relevant" });
@@ -24007,7 +25655,10 @@ function extractOfficialRotaerProviders(rotaer, sourceId) {
   for (const email of extractEmails(authText)) {
     pushUnique("auth", { type: "email", label: authLabel, value: email, sourceIds: [sourceId], relevance: "relevant" });
   }
-  for (const url of extractUrls(authText)) {
+  const authUrls = extractUrls(authText).sort((a, b) => authUrlPriority(a) - authUrlPriority(b));
+  const bestAuthUrl = authUrls[0] || "";
+  for (const url of authUrls) {
+    if (bestAuthUrl && authUrlPriority(url) >= 8 && authUrlPriority(bestAuthUrl) < 8) continue;
     pushUnique("auth", { type: "website", label: authLabel, value: url, sourceIds: [sourceId], relevance: "relevant" });
   }
 
@@ -24068,24 +25719,53 @@ function fuelNetworkAuxProviders(officialFuelProviders = [], sourceId) {
 }
 
 const IMPORTANT_NOTAM_RE =
-  /\b(?:RWY|TWY|CLSD|CLOSED|U\/S|UNSERVICEABLE|WIP|ILS|PAPI|ALS|LIGHT(?:ING)?|LUZ(?:ES)?|BIRD|GRUA|CRANE|AD\s*CLSD|AERODROME\s*CLOSED|FUEL|COMBUST|RESTRICT|PROHIBIT|LIMIT|INOP|FECHAD|OUT\s*OF\s*SERVICE|NAV\s*AID|VOR|NDB|GPS|RVR|SNOWTAM)\b/i;
+  /\b(?:RWY|TWY|CLSD|CLOSED|U\/S|UNSERVICEABLE|WIP|ILS|PAPI|ALS|LIGHT(?:ING)?|LUZ(?:ES)?|BIRD|AD\s*CLSD|AERODROME\s*CLOSED|FUEL|COMBUST|RESTRICT|PROHIBIT|LIMIT|INOP|FECHAD|OUT\s*OF\s*SERVICE|RVR|SNOWTAM)\b/i;
+const OBSTACLE_ONLY_NOTAM_RE = /\b(?:OBST|GRUA|CRANE|MASTRO)\b/i;
+const NAVAID_ONLY_NOTAM_RE = /\b(?:VOR|DVOR|DME|NDB|GPS|NAV\s*AID)\b/i;
+const AIRFIELD_NOTAM_RE =
+  /\b(?:RWY|TWY|AD\s*CLSD|AERODROME\s*CLOSED|CLSD|CLOSED|FUEL|COMBUST|PAPI|ALS|PORTO(?:E|Õ)S?|BIRD|WIP)\b/i;
+const OPERATIONAL_NOTAM_RE =
+  /\b(?:RWY|TWY|AD\s*CLSD|AERODROME\s*CLOSED|CLSD|CLOSED|FUEL|COMBUST|ILS|PAPI|U\/S|UNSERVICEABLE|INOP|FECHAD|PORTO(?:E|Õ)S?)\b/i;
+
+function isImportantBriefingNotam(notam = {}) {
+  const number = cleanString(notam?.number);
+  const text = cleanString(notam?.text);
+  if (!text) return false;
+  if (OBSTACLE_ONLY_NOTAM_RE.test(text) && !OPERATIONAL_NOTAM_RE.test(text)) return false;
+  if (NAVAID_ONLY_NOTAM_RE.test(text) && !AIRFIELD_NOTAM_RE.test(text)) return false;
+  return IMPORTANT_NOTAM_RE.test(text) || IMPORTANT_NOTAM_RE.test(number);
+}
+
+function notamImportanceRank(notam = {}) {
+  const text = `${notam?.number || ""} ${notam?.text || ""}`.toUpperCase();
+  if (/\bAD\s*CLSD\b|AERODROME\s*CLOSED/.test(text)) return 0;
+  if (/\bRWY\b/.test(text) && /\bCLSD\b|\bCLOSED\b|\bFECHAD/.test(text)) return 1;
+  if (/\bTWY\b/.test(text) && /\bCLSD\b|\bCLOSED\b|\bRETIRADO\b/.test(text)) return 2;
+  if (/\bFUEL\b|\bCOMBUST/.test(text)) return 3;
+  if (/\bILS\b|\bPAPI\b|\bALS\b/.test(text)) return 4;
+  return 5;
+}
 
 function pickImportantNotams(notams = [], limit = 3) {
-  const out = [];
-  for (const item of Array.isArray(notams) ? notams : []) {
-    const number = cleanString(item?.number) || "NOTAM";
-    const text = cleanString(item?.text);
-    if (!text) continue;
-    if (!IMPORTANT_NOTAM_RE.test(text) && !IMPORTANT_NOTAM_RE.test(number)) continue;
-    out.push({ number, summary: compactBriefingText(text, 160) });
-    if (out.length >= limit) break;
-  }
-  return out;
+  return (Array.isArray(notams) ? notams : [])
+    .filter((item) => isImportantBriefingNotam(item))
+    .sort((a, b) => notamImportanceRank(a) - notamImportanceRank(b))
+    .slice(0, limit)
+    .map((item) => {
+      const number = cleanString(item?.number) || "NOTAM";
+      const text = cleanString(item?.text);
+      const validity = decodeNotamValidity(item?.validFrom, item?.validTo);
+      const schedule = decodeNotamSchedule(item?.schedule, item?.validFrom);
+      const when = [validity, schedule].filter(Boolean).join(" · ");
+      return { number, summary: compactBriefingText(text, 160), when };
+    });
 }
 
 function buildNotamTaskContent(icao, notams = []) {
   const important = pickImportantNotams(notams, 3);
-  const highlights = important.map((item) => `${item.number}: ${item.summary} — merece atenção`);
+  const highlights = important.map((item) =>
+    item.when ? `${item.number}: ${item.summary} — ${item.when}` : `${item.number}: ${item.summary} — merece atenção`,
+  );
   const description = important.length
     ? `Há ${important.length} NOTAM(s) que merecem mais atenção (lista abaixo). Abra a lista completa no AISWEB e confirme validade antes do voo.`
     : `Nenhum NOTAM crítico óbvio nos dados atuais de ${icao}. Mesmo assim, abra a lista completa e confirme validade antes do voo.`;
@@ -24101,36 +25781,55 @@ function notamsForAirportInput(input = {}, icao) {
 }
 
 function standardNotamTaskTitle(icao) {
-  return `Verificar os notams de ${icao}`;
+  return `Verificar NOTAM - ${icao}`;
 }
 
 function standardFuelTaskTitle(icao) {
-  return `Verificar abastecimento em ${icao}`;
+  return `Verificar abastecimento - ${icao}`;
 }
 
 function standardHangarTaskTitle(icao) {
-  return `Verificar hangaragem em ${icao}`;
+  return `Verificar hangaragem - ${icao}`;
+}
+
+function isNightOnlyAuthText(text = "") {
+  const value = String(text || "").toLowerCase();
+  if (/h24|24\s*h|00:?00\s*[-–]\s*24:?00|dly\s*0{3,4}\s*-\s*2{1}4{1}00/.test(value)) return false;
+  return /somente.{0,80}(noturn|noite|\bhn\b)|apenas.{0,60}(noturn|noite)|fora do hor[aá]rio|ap[oó]s o p[oô]r.?do.?sol|opera[cç][aã]o noturna|per[ií]odo noturno|solicita.{0,50}noturn|auth.{0,50}noturn|autoriza.{0,50}noturn|noturn.{0,50}(solicita|autoriza|ppr|anteced|auth)/i.test(
+    value,
+  );
 }
 
 function authTaskTitleForText(icao, authText = "") {
   const text = String(authText || "").toLowerCase();
-  if (/rede\s*voa|\bvoa\b|forms\.office/.test(text)) return `Verificar agendamento Rede VOA em ${icao}`;
-  if (/ccr|webapp|ccraeroportos|concession/.test(text)) return `Verificar autorização da concessionária em ${icao}`;
-  if (/\bppr\b|slot/.test(text)) return `Verificar autorização prévia (PPR/slot) em ${icao}`;
-  return `Verificar autorização prévia em ${icao}`;
+  const night = isNightOnlyAuthText(text);
+  if (/rede\s*voa|\bvoa\b|forms\.office/.test(text)) {
+    return night ? `Verificar agendamento Rede VOA noturno - ${icao}` : `Verificar agendamento Rede VOA - ${icao}`;
+  }
+  if (/ccr|webapp|ccraeroportos|concession/.test(text)) {
+    return night
+      ? `Verificar autorização da concessionária noturna - ${icao}`
+      : `Verificar autorização da concessionária - ${icao}`;
+  }
+  if (/\bppr\b|slot/.test(text)) {
+    return night
+      ? `Verificar autorização prévia noturna (PPR/slot) - ${icao}`
+      : `Verificar autorização prévia (PPR/slot) - ${icao}`;
+  }
+  return night ? `Verificar autorização prévia noturna - ${icao}` : `Verificar autorização prévia - ${icao}`;
 }
 
 function buildAuthTaskDescription(authText = "", authUrl = "") {
   const text = cleanString(authText);
   if (/ccr|webapp|ccraeroportos/i.test(text)) {
-    const link = authUrl || extractFirstBriefingUrl(text) || "https://ga.ccraeroportos.com.br";
+    const link = authUrl || extractPreferredAuthUrl(text) || "https://ga.ccraeroportos.com.br";
     return compactBriefingText(
       `Solicitar AUTH prévia no WebApp-CCR (${link}) com no mínimo 2h de antecedência. Necessário p/ reserva de pátio, matrícula internacional, multi-operador no RAB, cadastro/financeiro pendente, ou ACFT isenta fora PRIVADA/INSTRUCAO/EXPERIMENTAL. APOC responde no WebApp; ajustes até 30 min antes. Contingência: e-mail APOC do RMK / www.ccraeroportos.com.br/clientes-aeroportuarios.`,
       620,
     );
   }
   if (/rede\s*voa|\bvoa\b|forms\.office/i.test(text)) {
-    const link = authUrl || extractFirstBriefingUrl(text);
+    const link = authUrl || extractPreferredAuthUrl(text);
     return compactBriefingText(
       `Agendar/autorizar via Rede VOA${link ? ` (${link})` : ""} conforme COMPL/RMK do aeródromo, com a antecedência exigida.`,
       420,
@@ -24142,16 +25841,41 @@ function buildAuthTaskDescription(authText = "", authUrl = "") {
 function isPreservedStandardTaskTitle(title = "") {
   const t = cleanString(title).toLowerCase();
   return (
-    /verifica(?:r)?\s+os\s+notams\b/.test(t) ||
+    /verifica(?:r)?(?:\s+os)?\s+notams?\b/.test(t) ||
     /verifica(?:r)?\s+abastecimento\b/.test(t) ||
     /verifica(?:r)?\s+hangaragem\b/.test(t) ||
-    /verifica(?:r)?\s+(autoriza(?:ção|cao)?|agendamento\s+rede\s+voa)/.test(t)
+    /verifica(?:r)?\s+(autoriza(?:ção|cao)?(?:\s+pr[eé]via)?(?:\s+noturna)?(?:\s+\([^)]+\))?(?:\s+da\s+concession[aá]ria)?|agendamento\s+rede\s+voa)/.test(
+      t,
+    )
   );
 }
 
 function knownAirportBriefingProviders(icaoRaw = "", generatedAt = briefingNowIso()) {
   const icao = normalizeBriefingIcao(icaoRaw);
   const sourceId = stableBriefingSourceId(`known:${icao}:ops`);
+  if (icao === "SBMT") {
+    return {
+      source: {
+        id: sourceId,
+        title: "Operadores conhecidos SBMT",
+        url: "https://reservas.paxaeroportos.com.br",
+        sourceType: "service_provider",
+        fetchedAt: generatedAt,
+        snippet: "Reserva de pátio/pernoite em Campo de Marte via Pax Aeroportos. Não substitui AUTH de pouso.",
+      },
+      byCategory: {
+        hangarage: [
+          {
+            type: "website",
+            label: "Pax Aeroportos (pátio/pernoite)",
+            value: "https://reservas.paxaeroportos.com.br",
+            sourceIds: [sourceId],
+            relevance: "relevant",
+          },
+        ],
+      },
+    };
+  }
   if (icao === "SDIM") {
     return {
       source: {
@@ -24213,6 +25937,7 @@ function unifyBriefingProvidersList(providers = [], icao = "") {
     if (/ceu\s*azul/.test(s)) return "ceu azul";
     if (/gm\s*aviation/.test(s)) return "gm aviation";
     if (/waas/.test(s)) return "waas";
+    if (/paxaeroportos/.test(s)) return "paxaeroportos";
     if (/rede\s*voa|\bvoa\b/.test(s)) return "rede voa";
     s = s
       .replace(
@@ -24229,6 +25954,7 @@ function unifyBriefingProvidersList(providers = [], icao = "") {
     if (/rede\s*voa|\bvoa\b/i.test(raw)) return `Rede VOA${icao ? ` ${normalizeBriefingIcao(icao)}` : ""}`.trim();
     if (isFuelSupplierLabel(raw)) return normalizeFuelBrandLabel(raw);
     if (/w\.?a\.?a\.?s|waas/i.test(raw)) return "W.A.A.S. Avionics";
+    if (/paxaeroportos/i.test(raw)) return "Pax Aeroportos";
     return raw;
   };
 
@@ -24297,10 +26023,54 @@ function unifyBriefingProvidersList(providers = [], icao = "") {
   return out.sort((a, b) => Number(b.relevance === "relevant") - Number(a.relevance === "relevant"));
 }
 
+function isHangarBookingOperatorText(text = "") {
+  return /paxaeroportos|waas|w\.a\.a\.s/.test(String(text || "").toLowerCase());
+}
+
+function isOperationalAuthText(text = "") {
+  const value = String(text || "").toLowerCase();
+  const opsAuth =
+    /slot|\bppr\b|autoriza|formul|rede\s*voa|concession|webapp|ccr(?:aeroportos)?|\bauth\b|compuls|agendamento|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|webapp-?\s*ccr|ga\.ccraeroportos|forms\.office/.test(
+      value,
+    );
+  if (!opsAuth) return false;
+  // Patio/pernoite via FBO (paxaeroportos/WAAS) is hangaragem, not landing AUTH —
+  // unless the same text also has concessionária / Rede VOA / PPR / WebApp.
+  if (
+    isHangarBookingOperatorText(value) &&
+    !/rede\s*voa|forms\.office|ccr|webapp|\bppr\b|slot|concession|\bauth\b/.test(value) &&
+    !/pouso|decolagem|aterriss|landing/.test(value)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isHangarServiceText(text = "") {
+  const value = String(text || "").toLowerCase();
+  if (isHangarBookingOperatorText(value) && !isOperationalAuthText(value)) return true;
+  if (/hangar|fbo|pernoite|estadia/.test(value) && !isOperationalAuthText(value)) return true;
+  if (/p[aá]tio/.test(value) && !isOperationalAuthText(value)) return true;
+  return false;
+}
+
 function isBriefingAuthText(text = "") {
-  return /slot|ppr|autoriza|formul|rede\s*voa|concession|webapp|ccr(?:aeroportos)?|\bauth\b|compuls|anteced[eê]ncia|agendamento|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|webapp-?\s*ccr|ga\.ccraeroportos|reserva\s+de\s+p[aá]tio/.test(
-    String(text || "").toLowerCase(),
-  );
+  return isOperationalAuthText(text);
+}
+
+function briefingTaskCategory(task) {
+  const title = String(task?.title || "").toLowerCase();
+  if (/verifica(?:r)?(?:\s+os)?\s+notams?\b/.test(title) || /verifica(?:r)?\s+notam\b/.test(title)) return "";
+  if (/verifica(?:r)?\s+abastecimento\b/.test(title)) return "fuel";
+  if (/verifica(?:r)?\s+hangaragem\b/.test(title)) return "hangarage";
+  if (/verifica(?:r)?\s+(autoriza|agendamento\s+rede\s+voa)/.test(title)) return "auth";
+  const text = `${task?.title || ""} ${task?.description || ""} ${task?.url || ""}`.toLowerCase();
+  if (/notam/.test(text)) return "";
+  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|webapp-?\s*ccr/.test(text)) return "auth";
+  if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
+  if (/hangar|pernoite|estadia|fbo|estacionamento|paxaeroportos/.test(text)) return "hangarage";
+  if (/p[aá]tio/.test(text) && !isOperationalAuthText(text)) return "hangarage";
+  return "";
 }
 
 /** Keep only contacts that belong to the task service (fuel / hangar / auth). */
@@ -24329,10 +26099,10 @@ function providerMatchesServiceCategory(provider, category, officialProviders = 
   }
   if (category === "hangarage") {
     if (isFuelSupplierLabel(label) && !/hangar|fbo|waas/.test(blob)) return false;
-    return /hangar|fbo|waas|pernoite|estadia|estacionamento|ground\s*handling/.test(blob);
+    return /hangar|fbo|waas|paxaeroportos|pernoite|estadia|estacionamento|ground\s*handling/.test(blob);
   }
   if (category === "auth") {
-    if (isFuelSupplierLabel(label) || /hangar|fbo|waas|pernoite/.test(blob)) return false;
+    if (isFuelSupplierLabel(label) || /hangar|fbo|waas|paxaeroportos|pernoite/.test(blob)) return false;
     if (provider.type === "hours") return false;
     return (
       isBriefingAuthText(blob) ||
@@ -24352,7 +26122,7 @@ function objectiveBriefingTaskTitle(task = {}) {
   const title = cleanString(task.title);
   const text = `${title} ${cleanString(task.description)} ${cleanString(task.url)}`.toLowerCase();
   // Keep deterministic checklist titles — do not rewrite into action verbs.
-  if (/verifica(?:r)?\s+os\s+notams\b/.test(text) || (/notam/.test(text) && /verifica/.test(text))) {
+  if (/verifica(?:r)?(?:\s+os)?\s+notams?\b/.test(text) || (/notam/.test(text) && /verifica/.test(text))) {
     return standardNotamTaskTitle(icao);
   }
   if (/verifica(?:r)?\s+abastecimento\b/.test(text)) return standardFuelTaskTitle(icao);
@@ -24500,26 +26270,6 @@ function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
         updatedAt: generatedAt,
       });
     }
-    if (official.needsAuth || (official.byCategory.auth || []).length || official.authText) {
-      const authProviders = official.byCategory.auth || [];
-      const authUrl =
-        authProviders.find((item) => item.type === "website")?.value || extractFirstBriefingUrl(official.authText);
-      tasks.push({
-        id: stableBriefingTaskId(`${icao}:auth`),
-        airportIcao: icao,
-        title: authTaskTitleForText(icao, official.authText),
-        description: buildAuthTaskDescription(official.authText, authUrl),
-        action: authUrl ? "url" : "manual",
-        status: "open",
-        priority: "high",
-        dueHint: "Com a antecedência exigida no ROTAER",
-        providers: authProviders,
-        url: authUrl || undefined,
-        sourceIds: [source.id],
-        pilotNote: "",
-        updatedAt: generatedAt,
-      });
-    }
     return {
       icao,
       role,
@@ -24564,10 +26314,8 @@ function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
     model: cleanString(process.env.OPENAI_BRIEFING_MODEL) || "fallback",
     generatedAt,
     route: { origin, destination, alternates },
-    summary: "Checklist operacional gerado em modo fallback com base nos dados AISWEB/ROTAER. Informações de combustível e hangaragem devem ser confirmadas pelo piloto.",
-    warnings: reason
-      ? [{ id: "fallback_reason", severity: "medium", title: "IA/pesquisa externa indisponível", detail: reason, sourceIds: [] }]
-      : [],
+    summary: "",
+    warnings: [],
     airports: enrichments,
     tasks,
     sources,
@@ -24770,17 +26518,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     if (type === "hours") return `hours:${cleanString(contact?.label).toLowerCase()}:${cleanString(contact?.value).toLowerCase()}`;
     return `${type}:${cleanString(contact?.value).toLowerCase()}`;
   };
-  const taskCategory = (task) => {
-    const text = `${task.title} ${task.description} ${task.url || ""}`.toLowerCase();
-    if (/notam/.test(text)) return "";
-    // Auth before hangar: CCR/WebApp RMKs often mention "pátio" and must not become hangaragem.
-    if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|webapp-?\s*ccr/.test(text)) return "auth";
-    if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
-    if (/hangar|pernoite|estadia|fbo|estacionamento/.test(text)) return "hangarage";
-    // "pátio" alone is weak — only hangar if not an auth/ops text.
-    if (/p[aá]tio/.test(text) && !/autoriza|concession|webapp|ccr|\bauth\b|compuls/.test(text)) return "hangarage";
-    return "";
-  };
+  const taskCategory = (task) => briefingTaskCategory(task);
   const mergedTasks = [];
   const groupedTaskByKey = new Map();
   for (const task of normalizedTasks) {
@@ -25034,8 +26772,10 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
       if (!/autoriza|ppr|slot|formul|compuls|webapp|ccr/i.test(task.description) || task.description.length < 40) {
         const authUrl =
           task.url ||
-          (task.providers || []).find((item) => item.type === "website")?.value ||
-          extractFirstBriefingUrl(official.authText);
+          [...(task.providers || []).filter((item) => item.type === "website")].sort(
+            (a, b) => authUrlPriority(a.value) - authUrlPriority(b.value),
+          )[0]?.value ||
+          extractPreferredAuthUrl(official.authText);
         task.description = buildAuthTaskDescription(official.authText, authUrl);
       }
     }
@@ -25049,7 +26789,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     }
   }
 
-  // Ensure standard checklist tasks: NOTAM (already), fuel always, hangar dest/alt, auth when AISWEB needs it.
+  // Ensure standard checklist tasks: NOTAM (already), fuel always, hangar dest/alt. Auth is decided by the AISWEB auth pass.
   for (const airport of Array.isArray(input.airports) ? input.airports : []) {
     const icao = normalizeBriefingIcao(airport?.icao);
     const role = airport?.role === "destino" || airport?.role === "alternativo" ? airport.role : "origem";
@@ -25147,33 +26887,19 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
         dueHint: "Se houver pernoite ou permanência",
       });
     }
-
-    // Authorization: one task per aeródromo when AISWEB/COMPL/RMK indicates need.
-    if (facts.needsAuth || (facts.byCategory.auth || []).length || facts.authText) {
-      const authUrl =
-        (facts.byCategory.auth || []).find((item) => item.type === "website")?.value ||
-        extractFirstBriefingUrl(facts.authText);
-      upsertTask({
-        category: "auth",
-        title: authTaskTitleForText(icao, facts.authText),
-        description: buildAuthTaskDescription(facts.authText, authUrl),
-        providers: facts.byCategory.auth || [],
-        priority: "high",
-        dueHint: "Com a antecedência exigida no ROTAER",
-        action: authUrl ? "url" : "manual",
-        url: authUrl,
-      });
-    }
   }
 
-  // Fold leftover "link operacional" / auth-URL tasks into the single auth task per ICAO.
+  // Fold leftover "link operacional" / auth-URL extras into the single auth task per ICAO.
+  // Never fold or drop the default NOTAM / combustível / hangaragem tasks.
   for (const task of [...mergedTasks]) {
     const icao = normalizeBriefingIcao(task.airportIcao);
-    if (!icao || taskCategory(task) === "auth") continue;
+    const category = taskCategory(task);
+    if (!icao || category === "auth" || category === "fuel" || category === "hangarage") continue;
+    if (/notam/i.test(task.title || "")) continue;
     const blob = `${task.title} ${task.description} ${task.url || ""}`;
     if (!isBriefingAuthText(blob) && !/ccraeroportos|forms\.office|webapp/i.test(blob)) continue;
     const authTask = mergedTasks.find((item) => normalizeBriefingIcao(item.airportIcao) === icao && taskCategory(item) === "auth");
-    const url = task.url || extractFirstBriefingUrl(task.description, task.title);
+    const url = task.url || extractPreferredAuthUrl(task.description, task.title, task.url);
     const authOnlyProviders = filterProvidersForServiceCategory(task.providers || [], "auth", officialByIcao.get(icao)?.byCategory?.auth || []);
     if (authTask) {
       if (url && !authTask.url) {
@@ -25191,12 +26917,8 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
       const idx = mergedTasks.indexOf(task);
       if (idx >= 0) mergedTasks.splice(idx, 1);
     } else {
-      task.title = authTaskTitleForText(icao, blob);
-      task.providers = authOnlyProviders;
-      if (url) {
-        task.url = url;
-        task.action = "url";
-      }
+      const idx = mergedTasks.indexOf(task);
+      if (idx >= 0) mergedTasks.splice(idx, 1);
     }
   }
 
@@ -25281,11 +27003,16 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
 
     if (category === "auth") {
       const authText = officialByIcao.get(icao)?.authText || `${task.title} ${task.description}`;
-      task.title = authTaskTitleForText(icao, authText);
+      if (!isPreservedStandardTaskTitle(task.title)) {
+        task.title = authTaskTitleForText(icao, authText);
+      }
       const authUrl =
-        task.url ||
-        (task.providers || []).find((item) => item.type === "website")?.value ||
-        extractFirstBriefingUrl(task.description);
+        extractPreferredAuthUrl(
+          task.url,
+          ...(task.providers || []).filter((item) => item.type === "website").map((item) => item.value),
+          task.description,
+          authText,
+        ) || task.url;
       if (authUrl) {
         task.url = authUrl;
         task.action = "url";
@@ -25332,7 +27059,9 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     );
     existing.title =
       category === "auth"
-        ? authTaskTitleForText(icao, existing.description || task.description)
+        ? isPreservedStandardTaskTitle(existing.title)
+          ? existing.title
+          : authTaskTitleForText(icao, existing.description || task.description)
         : category === "fuel"
           ? standardFuelTaskTitle(icao)
           : category === "hangarage"
@@ -25411,15 +27140,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
       alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean) : [],
     },
     summary: compactBriefingText(obj.summary || fallback.summary, 1200),
-    warnings: Array.isArray(obj.warnings)
-      ? obj.warnings.slice(0, 12).map((warning, index) => ({
-          id: cleanString(warning?.id) || `warning_${index + 1}`,
-          severity: ["high", "medium", "low"].includes(warning?.severity) ? warning.severity : "medium",
-          title: compactBriefingText(warning?.title || "Atenção", 140),
-          detail: compactBriefingText(warning?.detail || "", 900),
-          sourceIds: safeSourceIds(warning?.sourceIds),
-        })).filter((warning) => warning.detail || warning.title)
-      : fallback.warnings,
+    warnings: [],
     airports,
     tasks: mergedTasks,
     sources,
@@ -25451,36 +27172,269 @@ function compactAiReportForStorage(report) {
   };
 }
 
-async function callOpenAiBriefingReport(input = {}) {
+function compactAirportBriefForAi(airport) {
+  const rotaer = airport?.bundle?.rotaer || {};
+  return {
+    role: airport.role,
+    icao: airport.icao,
+    name: rotaer.name || null,
+    city: rotaer.city || null,
+    uf: rotaer.uf || null,
+    typeOpr: rotaer.typeOpr || null,
+    typeUtil: rotaer.typeUtil || null,
+    fuel: rotaer.fuel || null,
+    workingHours: rotaer.workingHours || null,
+    sun: airport?.bundle?.sun || null,
+    remarks: (rotaer.remarks || []).slice(0, 12),
+    complements: (rotaer.complements || []).slice(0, 12),
+    notams: (airport?.bundle?.notams || []).slice(0, 20).map((n) => ({
+      number: n.number,
+      validFrom: n.validFrom,
+      validTo: n.validTo,
+      text: compactBriefingText(n.text, 420),
+    })),
+    supplements: (airport?.bundle?.supplements || []).slice(0, 5).map((s) => ({
+      number: s.number,
+      title: s.title,
+      text: compactBriefingText(s.text, 320),
+    })),
+  };
+}
+
+function buildAuthTaskFromDecision(icao, decision, input, generatedAt) {
+  const source = sourceFromAisweb(icao, "COMPL/RMK autorizacao", generatedAt);
+  const airport = (Array.isArray(input.airports) ? input.airports : []).find(
+    (item) => normalizeBriefingIcao(item?.icao) === icao,
+  );
+  const official = extractOfficialRotaerProviders(airport?.bundle?.rotaer || null, source.id);
+  const officialAuthUrl =
+    (official.byCategory.auth || [])
+      .filter((item) => item.type === "website")
+      .sort((a, b) => authUrlPriority(a.value) - authUrlPriority(b.value) || String(b.value).length - String(a.value).length)[0]
+      ?.value || "";
+  const authUrl =
+    cleanString(decision?.url) || officialAuthUrl || extractPreferredAuthUrl(official.authText);
+  const title = cleanString(decision?.title) || authTaskTitleForText(icao, official.authText);
+  return {
+    id: stableBriefingTaskId(`${icao}:auth`),
+    airportIcao: icao,
+    title,
+    description: compactBriefingText(
+      decision?.description || buildAuthTaskDescription(official.authText, authUrl),
+      520,
+    ),
+    action: authUrl ? "url" : "manual",
+    status: "open",
+    priority: "high",
+    dueHint: decision?.nightOnly ? "Somente se a operação for noturna / fora do horário" : "Com a antecedência exigida no ROTAER",
+    providers: official.byCategory.auth || [],
+    url: authUrl || undefined,
+    sourceIds: [source.id],
+    pilotNote: "",
+    updatedAt: generatedAt,
+  };
+}
+
+function applyAuthPassToReport(report, authPass, input) {
+  const generatedAt = briefingNowIso();
+  const tasks = [...(report.tasks || [])].filter((task) => briefingTaskCategory(task) !== "auth");
+  for (const decision of Array.isArray(authPass?.airports) ? authPass.airports : []) {
+    const icao = normalizeBriefingIcao(decision?.icao);
+    if (!icao || !decision?.needsAuth) continue;
+    tasks.push(buildAuthTaskFromDecision(icao, decision, input, generatedAt));
+  }
+  return { ...report, tasks, warnings: [], summary: "" };
+}
+
+function applyHeuristicAuthToReport(report, input) {
+  const generatedAt = briefingNowIso();
+  const tasks = [...(report.tasks || [])].filter((task) => briefingTaskCategory(task) !== "auth");
+  for (const airport of Array.isArray(input.airports) ? input.airports : []) {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    if (!icao) continue;
+    const source = sourceFromAisweb(icao, "COMPL/RMK autorizacao", generatedAt);
+    const official = extractOfficialRotaerProviders(airport?.bundle?.rotaer || null, source.id);
+    if (!official.needsAuth && !official.authText) continue;
+    tasks.push(
+      buildAuthTaskFromDecision(
+        icao,
+        {
+          icao,
+          needsAuth: true,
+          nightOnly: isNightOnlyAuthText(official.authText),
+          title: authTaskTitleForText(icao, official.authText),
+          description: "",
+          url: "",
+        },
+        input,
+        generatedAt,
+      ),
+    );
+  }
+  return { ...report, tasks, warnings: [], summary: "" };
+}
+
+function mergeEnrichmentIntoReport(base, enriched) {
+  const generatedAt = briefingNowIso();
+  const tasks = [...(base.tasks || [])];
+  const keyOf = (task) => {
+    const icao = normalizeBriefingIcao(task?.airportIcao);
+    const category = briefingTaskCategory(task);
+    if (icao && category) return `${icao}:${category}`;
+    if (icao && /notam/i.test(`${task?.title || ""} ${task?.description || ""}`)) return `${icao}:notam`;
+    return "";
+  };
+  const byKey = new Map();
+  for (const task of tasks) {
+    const key = keyOf(task);
+    if (key) byKey.set(key, task);
+  }
+  for (const task of Array.isArray(enriched?.tasks) ? enriched.tasks : []) {
+    const key = keyOf(task);
+    const existing = key ? byKey.get(key) : null;
+    if (existing) {
+      existing.providers = [...(existing.providers || []), ...(Array.isArray(task.providers) ? task.providers : [])];
+      if (task.url && !existing.url) {
+        existing.url = task.url;
+        existing.action = "url";
+      }
+      if (task.suggestedText && !existing.suggestedText) existing.suggestedText = task.suggestedText;
+      if (task.contact && !existing.contact) existing.contact = task.contact;
+      if (
+        (key.endsWith(":fuel") || key.endsWith(":hangarage")) &&
+        task.description &&
+        (!existing.description || existing.description.length < 40)
+      ) {
+        existing.description = task.description;
+      }
+      continue;
+    }
+    if (key.endsWith(":notam") || key.endsWith(":fuel") || key.endsWith(":hangarage") || key.endsWith(":auth")) continue;
+    const title = cleanString(task.title);
+    const icao = normalizeBriefingIcao(task.airportIcao);
+    if (!title) continue;
+    if (
+      tasks.some(
+        (item) =>
+          normalizeBriefingIcao(item.airportIcao) === icao &&
+          cleanString(item.title).toLowerCase() === title.toLowerCase(),
+      )
+    ) {
+      continue;
+    }
+    tasks.push({
+      ...task,
+      id: task.id || stableBriefingTaskId(`${icao}:${title}`),
+      updatedAt: generatedAt,
+    });
+  }
+  return {
+    ...base,
+    status: "ready",
+    model: enriched?.model || base.model,
+    airports: Array.isArray(enriched?.airports) && enriched.airports.length ? enriched.airports : base.airports,
+    sources: [...(base.sources || []), ...(enriched?.sources || [])],
+    tasks,
+    warnings: [],
+    summary: "",
+    usage: enriched?.usage || base.usage,
+  };
+}
+
+async function callOpenAiBriefingAuthPass(input = {}) {
   const apiKey = cleanString(process.env.OPENAI_API_KEY);
   if (!apiKey) throw new Error("OPENAI_API_KEY nao configurada.");
   const model = cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
   const reasoningEffort = cleanString(process.env.OPENAI_BRIEFING_REASONING) || "low";
   const airportBrief = (Array.isArray(input.airports) ? input.airports : []).map((airport) => {
-    const rotaer = airport?.bundle?.rotaer || {};
+    const brief = compactAirportBriefForAi(airport);
     return {
-      role: airport.role,
-      icao: airport.icao,
-      name: rotaer.name || null,
-      city: rotaer.city || null,
-      uf: rotaer.uf || null,
-      fuel: rotaer.fuel || null,
-      workingHours: rotaer.workingHours || null,
-      remarks: (rotaer.remarks || []).slice(0, 12),
-      complements: (rotaer.complements || []).slice(0, 12),
-      notams: (airport?.bundle?.notams || []).slice(0, 20).map((n) => ({
-        number: n.number,
-        validFrom: n.validFrom,
-        validTo: n.validTo,
-        text: compactBriefingText(n.text, 420),
-      })),
-      supplements: (airport?.bundle?.supplements || []).slice(0, 5).map((s) => ({
-        number: s.number,
-        title: s.title,
-        text: compactBriefingText(s.text, 320),
-      })),
+      role: brief.role,
+      icao: brief.icao,
+      name: brief.name,
+      typeOpr: brief.typeOpr,
+      typeUtil: brief.typeUtil,
+      fuel: brief.fuel,
+      workingHours: brief.workingHours,
+      sun: brief.sun,
+      remarks: brief.remarks,
+      complements: brief.complements,
     };
   });
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      airports: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            icao: { type: "string" },
+            needsAuth: { type: "boolean" },
+            nightOnly: { type: "boolean" },
+            title: { type: "string" },
+            description: { type: "string" },
+            url: { type: "string" },
+          },
+          required: ["icao", "needsAuth", "nightOnly", "title", "description", "url"],
+        },
+      },
+    },
+    required: ["airports"],
+  };
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        { role: "system", content: briefingAiPrompts.AUTH_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: JSON.stringify({
+            generatedAt: briefingNowIso(),
+            taskPolicy: briefingAiPrompts.AUTH_TASK_POLICY,
+            airports: airportBrief,
+          }),
+        },
+      ],
+      reasoning: { effort: reasoningEffort },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "flight_briefing_auth_pass",
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) {
+    throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  }
+  const text = extractOpenAiResponseText(body);
+  if (!text) throw new Error("OpenAI nao retornou a etapa de autorizacao.");
+  return JSON.parse(text);
+}
+
+async function callOpenAiBriefingReport(input = {}, baseReport = null) {
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) throw new Error("OPENAI_API_KEY nao configurada.");
+  const model = cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
+  const reasoningEffort = cleanString(process.env.OPENAI_BRIEFING_REASONING) || "low";
+  const airportBrief = (Array.isArray(input.airports) ? input.airports : []).map(compactAirportBriefForAi);
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -25646,8 +27600,7 @@ async function callOpenAiBriefingReport(input = {}) {
       input: [
         {
           role: "system",
-          content:
-              "Voce e um assistente operacional de briefing VFR no Brasil. Seu trabalho e ENRIQUECER o checklist e ajudar o piloto a CUMPRIR as tasks — nao inventar checklist solta. Nunca diga se o voo e seguro. Pipeline: (1) Leia COMPL/RMK/fuel do ROTAER e separe CADA fornecedor de combustivel pelo nome com telefones/horarios daquele trecho. (2) Use web_search para completar lacunas: para CADA ICAO busque '{ICAO} abastecimento AVGAS Jet A-1 telefone email horario' e, se destino/alternativo, '{ICAO} hangaragem FBO pernoite telefone email'. So adicione contatos publicos encontrados; nao invente. (3) Tasks obrigatorias com titulos EXATOS: 'Verificar os notams de {ICAO}' (todos), 'Verificar abastecimento em {ICAO}' (todos), 'Verificar hangaragem em {ICAO}' (somente destino e alternativo), autorizacao previa SOMENTE se COMPL/RMK exigir (titulo claro + passos simples + link). Em NOTAM: diga se viu algo importante e deixe CTA para a lista completa. Extras so se agregarem e nao duplicarem notam/combustivel/hangar/autorizacao. CRITICO: providers de cada task so do servico da task. Autorizacao = o que fazer + link/contatos da concessionaria. Responda apenas JSON no schema.",
+          content: briefingAiPrompts.ENRICH_SYSTEM_PROMPT,
         },
         {
           role: "user",
@@ -25665,8 +27618,13 @@ async function callOpenAiBriefingReport(input = {}) {
             },
             airspaces: (Array.isArray(input.airspaces) ? input.airspaces : []).slice(0, 20),
             airports: airportBrief,
-            taskPolicy:
-              "Titulos fixos: Verificar os notams de ICAO; Verificar abastecimento em ICAO; Verificar hangaragem em ICAO (destino/alternativo). Autorizacao so se AISWEB indicar. Providers filtrados por servico. Combustivel: marcas/TEL/email/horario do ROTAER + web. Hangar: FBO/hangar + web. Autorizacao: description com passos + url. Nao criar extras que concorram com essas. Summary util, ate ~8 frases.",
+            existingTasks: (baseReport?.tasks || []).map((task) => ({
+              id: task.id,
+              airportIcao: task.airportIcao,
+              title: task.title,
+              description: compactBriefingText(task.description, 280),
+            })),
+            taskPolicy: briefingAiPrompts.ENRICH_TASK_POLICY,
           }),
         },
       ],
@@ -25695,7 +27653,8 @@ async function callOpenAiBriefingReport(input = {}) {
   const text = extractOpenAiResponseText(body);
   if (!text) throw new Error("OpenAI nao retornou texto estruturado.");
   const parsed = JSON.parse(text);
-  const report = normalizeAiBriefingReport(parsed, input);
+  const merged = mergeEnrichmentIntoReport(baseReport || fallbackFlightBriefingAiReport("", input), parsed);
+  const report = normalizeAiBriefingReport(merged, input);
   return {
     ...report,
     status: "ready",
@@ -25765,12 +27724,20 @@ async function generateFlightBriefingAiReport(actorUserId, input = {}) {
   if (dep.length !== 4 || arr.length !== 4) {
     throw Object.assign(new Error("Origem e destino invalidos para briefing IA."), { status: 400 });
   }
+  const defaults = fallbackFlightBriefingAiReport(actorUserId, input);
+  let withAuth = defaults;
+  try {
+    const authPass = await callOpenAiBriefingAuthPass(input);
+    withAuth = applyAuthPassToReport(defaults, authPass, input);
+  } catch {
+    withAuth = applyHeuristicAuthToReport(defaults, input);
+  }
   let report;
   try {
-    report = await callOpenAiBriefingReport(input);
+    report = await callOpenAiBriefingReport(input, withAuth);
   } catch (err) {
     const reason = cleanString(err?.message) || "Falha ao chamar IA.";
-    report = normalizeAiBriefingReport(fallbackFlightBriefingAiReport(actorUserId, input, reason), input, reason);
+    report = normalizeAiBriefingReport(withAuth, input, reason);
     report.status = "fallback";
     if (reason) report.error = reason;
   }
@@ -27003,6 +28970,80 @@ function flightStartDate(flight) {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
+async function runBirthdayDigestScan(log = () => undefined) {
+  if (!PROFILES_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de perfis nao configurada."), { status: 500 });
+  }
+  const todayIso = birthdayDigest.schoolTodayIso();
+  const profileFields = ["user_id", "full_name", "nickname", "email", "role", "active_role", "birth_date", "is_active"];
+  const profiles = await listAllDocuments(PROFILES_COLLECTION_ID, [...selectQuery(profileFields)]).catch(() =>
+    listAllDocuments(PROFILES_COLLECTION_ID).catch(() => []),
+  );
+  const people = birthdayDigest.collectTodaysBirthdays(profiles, todayIso);
+  if (people.length === 0) {
+    log(`[birthday-digest] ${todayIso}: nenhum aniversariante; e-mail nao enviado.`);
+    return { skipped: true, reason: "no_birthdays", date: todayIso, count: 0, delivered: 0 };
+  }
+
+  const [{ settings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+  if (!settings.enabled) {
+    log(`[birthday-digest] ${todayIso}: ${people.length} aniversariante(s), mas e-mail esta desabilitado.`);
+    return { skipped: true, reason: "email_disabled", date: todayIso, count: people.length, delivered: 0 };
+  }
+
+  const adminIds = await listAdminUserIds();
+  if (adminIds.length === 0) {
+    log(`[birthday-digest] ${todayIso}: ${people.length} aniversariante(s), mas nenhum admin encontrado.`);
+    return { skipped: true, reason: "no_admins", date: todayIso, count: people.length, delivered: 0 };
+  }
+
+  const message = birthdayDigest.buildBirthdayDigestMessage(people, todayIso, APP_URL);
+  const eventType = "birthday.digest";
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const adminId of adminIds) {
+    const dedupeKey = `${eventType}:${todayIso}:${adminId}`;
+    try {
+      if (await alreadyDelivered(dedupeKey, "email", adminId)) {
+        skipped += 1;
+        continue;
+      }
+      const user = await users.get({ userId: adminId }).catch(() => null);
+      if (!user?.email) {
+        skipped += 1;
+        await logDelivery(eventType, dedupeKey, "email", adminId, "skipped", null, "Usuario sem email.");
+        continue;
+      }
+      const emailResult = await sendEmailToUser(settings, brand, user, message);
+      if (emailResult?.status === "sent") {
+        delivered += 1;
+        await logDelivery(eventType, dedupeKey, "email", adminId, "sent", emailResult.providerMessageId, null);
+      } else {
+        skipped += 1;
+        await logDelivery(eventType, dedupeKey, "email", adminId, "skipped", null, emailResult?.reason || "Nao enviado.");
+      }
+    } catch (err) {
+      failed += 1;
+      await logDelivery(eventType, dedupeKey, "email", adminId, "failed", null, err?.message || err).catch(() => undefined);
+    }
+  }
+  log(`[birthday-digest] ${todayIso}: ${people.length} aniversariante(s); delivered=${delivered} skipped=${skipped} failed=${failed}`);
+  return {
+    skipped: false,
+    date: todayIso,
+    count: people.length,
+    names: people.map((person) => person.name),
+    delivered,
+    skippedCount: skipped,
+    failed,
+    adminCount: adminIds.length,
+  };
+}
+
 async function runFlightReminderScan(actorUserId) {
   if (!FLIGHTS_COLLECTION_ID) throw Object.assign(new Error("Colecao de voos nao configurada."), { status: 500 });
   const now = Date.now();
@@ -27303,6 +29344,9 @@ async function runAiswebMetarWatchScan(log = () => {}) {
         notifyOk = true;
         notified += 1;
       } catch (err) {
+        if (err?.code === "trial_expired") {
+          continue;
+        }
         errors += 1;
         log(`[aisweb-metar-watch] notify failed ${watch.phone}/${watch.icao}: ${err?.message || err}`);
       }
@@ -27628,6 +29672,16 @@ async function runAiswebNotamAlertScan(log = () => {}) {
           }
         }
       }
+      for (const notam of newNotams) {
+        try {
+          const wppResult = await sendAiswebAlertWpp(userId, "NOTAM", notam);
+          if (wppResult?.status === "failed") {
+            log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${wppResult.reason}`);
+          }
+        } catch (err) {
+          log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${err?.message || err}`);
+        }
+      }
     }
 
     if (changed || newNotams.length) {
@@ -27779,6 +29833,16 @@ async function runAiswebSupplementAlertScan(log = () => {}) {
           }
         }
       }
+      for (const item of newItems) {
+        try {
+          const wppResult = await sendAiswebAlertWpp(userId, "SUPLEMENTO AIP", item);
+          if (wppResult?.status === "failed") {
+            log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+          }
+        } catch (err) {
+          log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
+        }
+      }
     }
 
     if (changed || newItems.length) {
@@ -27926,6 +29990,16 @@ async function runAiswebAdWarningAlertScan(log = () => {}) {
             errors += 1;
             log(`[aisweb-adw] email failed ${userId}/${item.id}: ${err?.message || err}`);
           }
+        }
+      }
+      for (const item of newItems) {
+        try {
+          const wppResult = await sendAiswebAlertWpp(userId, "AVISO DE AERODROMO", item);
+          if (wppResult?.status === "failed") {
+            log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+          }
+        } catch (err) {
+          log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
         }
       }
     }
@@ -28340,6 +30414,18 @@ function sampleEventForTemplate(templateType) {
         paymentMethod: "PIX",
         productLabel: "Pacote 10h — C152",
         orderId: "ORD-12345",
+      },
+    },
+    "marketplace.order_paid": {
+      eventType: "marketplace.order_paid",
+      data: {
+        productName: "Camiseta da escola",
+        productLabel: "Camiseta da escola",
+        variantLabel: "M",
+        amount: 89.9,
+        currency: "BRL",
+        orderId: "mp_order_123",
+        receiptId: "receipt_456",
       },
     },
     "crm.lead_qualified": {
@@ -29370,15 +31456,30 @@ module.exports = async ({ req, res, log, error }) => {
       if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
         return jsonResponse(res, 401, { message: "Token inválido." });
       }
-      const [deliveries, studentWpp] = await Promise.all([
+      const [deliveries, studentWpp, studentEmail] = await Promise.all([
         notifyCaktoSaleToAdmins(payload.sale),
         notifyCaktoSaleToStudent(payload.sale).catch((err) => ({
           status: "failed",
           reason: cleanString(err?.message).slice(0, 512) || "Falha ao enviar WhatsApp.",
         })),
+        notifyCaktoSaleEmailToStudent(payload.sale).catch((err) => ({
+          status: "failed",
+          reason: cleanString(err?.message).slice(0, 512) || "Falha ao enviar email.",
+        })),
       ]);
-      log(`[notifyCaktoSaleEvent] receipt=${cleanString(payload.sale?.receiptId)} deliveries=${JSON.stringify(deliveries)} studentWpp=${JSON.stringify(studentWpp)}`);
-      return jsonResponse(res, 200, { ok: true, deliveries, studentWpp });
+      log(`[notifyCaktoSaleEvent] receipt=${cleanString(payload.sale?.receiptId)} deliveries=${JSON.stringify(deliveries)} studentWpp=${JSON.stringify(studentWpp)} studentEmail=${JSON.stringify(studentEmail)}`);
+      return jsonResponse(res, 200, { ok: true, deliveries, studentWpp, studentEmail });
+    }
+
+    if (action === "notifyMarketplaceOrderPaid") {
+      const expectedToken = await loadCaktoWebhookToken();
+      if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
+        return jsonResponse(res, 401, { message: "Token inválido." });
+      }
+      const sale = payload.sale && typeof payload.sale === "object" ? payload.sale : {};
+      const deliveries = await notifyMarketplaceOrderPaid(sale);
+      log(`[notifyMarketplaceOrderPaid] order=${cleanString(sale.orderId)} receipt=${cleanString(sale.receiptId)} deliveries=${JSON.stringify(deliveries)}`);
+      return jsonResponse(res, 200, { ok: true, deliveries });
     }
 
     if (action === "dispatchEvent") {
@@ -29393,6 +31494,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "runFlightReminderScan") {
       if (actorUserId) await requireAdmin(actorUserId);
       const result = await runFlightReminderScan(actorUserId || "system");
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "runBirthdayDigestScan") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const result = await runBirthdayDigestScan(log);
       return jsonResponse(res, 200, { ok: true, ...result });
     }
 
@@ -29634,14 +31741,59 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { checkout });
     }
 
+    if (action === "createMarketplaceCheckout") {
+      const checkout = await createMarketplaceCheckout(actorUserId, payload.productId, payload.variantId);
+      return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "saveMarketplaceSettings") {
+      const settings = await saveMarketplaceSettings(actorUserId, payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
     if (action === "quoteFlightReviewClubCheckout") {
-      const quote = await quoteFlightReviewClubCheckout(actorUserId);
+      const quote = await quoteFlightReviewClubCheckout(actorUserId, payload);
       return jsonResponse(res, 200, { quote });
     }
 
     if (action === "createFlightReviewClubCheckout") {
-      const checkout = await createFlightReviewClubCheckout(actorUserId);
+      const checkout = await createFlightReviewClubCheckout(actorUserId, payload);
       return jsonResponse(res, 200, { checkout });
+    }
+
+    if (action === "getFlightReviewClubStatus") {
+      const frcStatus = await getFlightReviewClubStatus(actorUserId, payload.userId);
+      return jsonResponse(res, 200, { frcStatus });
+    }
+
+    if (action === "cancelFlightReviewClubSubscription") {
+      const frcStatus = await cancelFlightReviewClubSubscription(actorUserId);
+      return jsonResponse(res, 200, { frcStatus });
+    }
+
+    if (action === "getAdminFlightReviewClubOverview") {
+      const frcOverview = await getAdminFlightReviewClubOverview(actorUserId);
+      return jsonResponse(res, 200, { frcOverview });
+    }
+
+    if (action === "listAdminFlightReviewClubMembers") {
+      const members = await listAdminFlightReviewClubMembers(actorUserId, payload.search);
+      return jsonResponse(res, 200, { members });
+    }
+
+    if (action === "updateFlightReviewClubTask") {
+      const task = await updateFlightReviewClubTask(actorUserId, payload.task);
+      return jsonResponse(res, 200, { task });
+    }
+
+    if (action === "ensureFlightReviewClubMemberTasks") {
+      const members = await ensureAdminFlightReviewClubMemberTasks(actorUserId, payload.membershipId);
+      return jsonResponse(res, 200, { members });
+    }
+
+    if (action === "forceFlightReviewClubAccess") {
+      const members = await forceFlightReviewClubAccess(actorUserId, payload);
+      return jsonResponse(res, 200, { members });
     }
 
     if (action === "adminCreateFlightCreditCheckout") {
@@ -30195,6 +32347,18 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { request });
     }
 
+    if (action === "getWppHub") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const hub = await getWppHub(actorUserId);
+      return jsonResponse(res, 200, { hub });
+    }
+
+    if (action === "stopMyMetarWatch") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const watches = await stopMyMetarWatch(actorUserId, payload.icao);
+      return jsonResponse(res, 200, { watches });
+    }
+
     await requireAdmin(actorUserId);
 
     if (action === "createUser") {
@@ -30452,6 +32616,12 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       const templates = await ensureSoloFlightWppTemplates();
       return jsonResponse(res, 200, { ok: true, templates });
+    }
+
+    if (action === "ensureAiswebAlertWppTemplate") {
+      await requireAdmin(actorUserId);
+      const template = await ensureAiswebAlertWppTemplate();
+      return jsonResponse(res, 200, { ok: true, template });
     }
 
     if (action === "saveGoogleCalendarSettings") {

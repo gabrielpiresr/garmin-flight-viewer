@@ -45,6 +45,7 @@ const NoTelemetryTab = lazy(() => import("./NoTelemetryTab").then((module) => ({
 const PlatformSettingsTab = lazy(() =>
   import("./PlatformSettingsTab").then((module) => ({ default: module.PlatformSettingsTab })),
 );
+const AdminFrcTab = lazy(() => import("./AdminFrcTab").then((module) => ({ default: module.AdminFrcTab })));
 const ScheduleAdminTab = lazy(() => import("./ScheduleAdminTab").then((module) => ({ default: module.ScheduleAdminTab })));
 const TelemetryAlertsTab = lazy(() =>
   import("./TelemetryAlertsTab").then((module) => ({ default: module.TelemetryAlertsTab })),
@@ -83,12 +84,16 @@ const AtualizacoesAdminTab = lazy(() =>
   import("./AtualizacoesAdminTab").then((module) => ({ default: module.AtualizacoesAdminTab })),
 );
 const AiswebTab = lazy(() => import("../AiswebTab").then((module) => ({ default: module.AiswebTab })));
+const WhatsAppHubTab = lazy(() => import("../WhatsAppHubTab").then((module) => ({ default: module.WhatsAppHubTab })));
 const RadarTab = lazy(() => import("./RadarTab").then((module) => ({ default: module.RadarTab })));
 const PlanejamentoTab = lazy(() =>
   import("./PlanejamentoTab").then((module) => ({ default: module.PlanejamentoTab })),
 );
 const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ default: module.MediaAlbumTab })));
 const AdminSoloFlightTab = lazy(() => import("./AdminSoloFlightTab").then((module) => ({ default: module.AdminSoloFlightTab })));
+const MarketplaceAdminTab = lazy(() =>
+  import("./MarketplaceAdminTab").then((module) => ({ default: module.MarketplaceAdminTab })),
+);
 
 type AdminSection =
   | "home"
@@ -99,6 +104,7 @@ type AdminSection =
   | "students"
   | "users"
   | "settings"
+  | "frc"
   | "logbook"
   | "fuelings"
   | "dre"
@@ -110,9 +116,11 @@ type AdminSection =
   | "atualizacoes"
   | "solo-flight"
   | "aisweb"
+  | "whatsapp"
   | "planejamento"
   | "radar"
-  | "album";
+  | "album"
+  | "marketplace";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
@@ -170,6 +178,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "whatsapp",
+    label: "WhatsApp",
+    sublabel: "Avisos, METAR e comandos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M4.848 2.771A49.144 49.144 0 0112 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 01-3.476.383.39.39 0 00-.297.17l-2.755 4.133a.75.75 0 01-1.248 0l-2.755-4.133a.39.39 0 00-.297-.17 48.9 48.9 0 01-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97zM6.75 8.25a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5H12a.75.75 0 000-1.5H7.5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: "planejamento",
     label: "Planejamento",
     sublabel: "Rotas, mapa e NexAtlas",
@@ -196,6 +214,16 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "marketplace",
+    label: "Marketplace",
+    sublabel: "Loja, catálogo e vendas",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M2.25 2.25a.75.75 0 000 1.5h1.386c.17 0 .318.114.362.278l2.558 9.592a3.752 3.752 0 00-2.306 3.63 3.75 3.75 0 003.75 3.75h11.25a.75.75 0 000-1.5H7.999a2.25 2.25 0 01-2.206-1.75h11.182c.847 0 1.603-.55 1.849-1.36l2.49-8.14a.75.75 0 00-.71-.97H5.615l-.5-1.875A1.875 1.875 0 003.636 2.25H2.25zM3.75 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM16.5 20.25a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" />
       </svg>
     ),
   },
@@ -330,6 +358,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "frc",
+    label: "FRC",
+    sublabel: "Assinatura, landing e integrantes",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M12 2.25l2.92 5.92 6.53.95-4.73 4.61 1.12 6.5L12 17.16l-5.84 3.07 1.12-6.5-4.73-4.61 6.53-.95L12 2.25z" />
+      </svg>
+    ),
+  },
+  {
     id: "disparos",
     label: "Disparos",
     sublabel: "Email marketing e avisos",
@@ -365,7 +403,7 @@ const NAV_ITEMS: NavItem[] = [
 const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "planejamento", "radar", "album", "reports", "contents"],
+    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "whatsapp", "planejamento", "radar", "album", "reports", "contents"],
   },
   {
     title: "Frota",
@@ -373,7 +411,7 @@ const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   },
   {
     title: "Comercial & Financeiro",
-    ids: ["crm", "instructor-admission", "receipts", "dre", "contracts", "disparos"],
+    ids: ["crm", "instructor-admission", "frc", "receipts", "marketplace", "dre", "contracts", "disparos"],
   },
 ];
 
@@ -650,13 +688,16 @@ const ADMIN_ROUTES = [
   { id: "dre", path: "/admin/dre" },
   { id: "receipts", path: "/admin/recebimentos", aliases: ["/admin/comprar-creditos"] },
   { id: "contracts", path: "/admin/contratos" },
+  { id: "frc", path: "/admin/frc" },
   { id: "settings", path: "/admin/configuracoes", aliases: SETTINGS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "atualizacoes", path: "/admin/atualizacoes/agendamentos", aliases: ATUALIZACOES_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "solo-flight", path: "/admin/voo-solo" },
   { id: "aisweb", path: "/admin/aisweb" },
+  { id: "whatsapp", path: "/admin/whatsapp" },
   { id: "planejamento", path: "/admin/planejamento" },
   { id: "radar", path: "/admin/radar" },
   { id: "album", path: "/admin/album" },
+  { id: "marketplace", path: "/admin/marketplace" },
 ] satisfies readonly TabRoute<AdminSection>[];
 
 const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
@@ -668,7 +709,6 @@ const SCHEDULE_TAB_LABELS: Record<ScheduleSubTab, string> = {
 
 const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   rules: "Regras",
-  frc: "FRC",
   email: "E-mail",
   brand: "Aparencia",
   badges: "Badges",
@@ -1136,6 +1176,13 @@ export function AdminLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("frc") && (
+            <div hidden={section !== "frc"}>
+              <LazyTab>
+                <AdminFrcTab />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("logbook") && (
             <div hidden={section !== "logbook"}><LazyTab><DiarioDeBordoTab /></LazyTab></div>
           )}
@@ -1189,6 +1236,13 @@ export function AdminLayout() {
               </LazyTab>
             </div>
           )}
+          {openedSections.has("whatsapp") && (
+            <div hidden={section !== "whatsapp"}>
+              <LazyTab>
+                <WhatsAppHubTab />
+              </LazyTab>
+            </div>
+          )}
           {openedSections.has("planejamento") && (
             <div hidden={section !== "planejamento"}>
               <LazyTab>
@@ -1207,6 +1261,13 @@ export function AdminLayout() {
             <div hidden={section !== "album"}>
               <LazyTab>
                 <MediaAlbumTab />
+              </LazyTab>
+            </div>
+          )}
+          {openedSections.has("marketplace") && (
+            <div hidden={section !== "marketplace"}>
+              <LazyTab>
+                <MarketplaceAdminTab />
               </LazyTab>
             </div>
           )}

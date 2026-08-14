@@ -31,6 +31,16 @@
       "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
     },
     {
+      "functionId": "birthday-digest",
+      "name": "Birthday Digest",
+      "runtime": "node-22",
+      "entrypoint": "src/birthdayDigestCron.js",
+      "path": "functions/admin-users",
+      "schedule": "0 11 * * *",
+      "timeout": 120,
+      "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
+    },
+    {
       "functionId": "instructor-patch-flight",
       "name": "Instructor Patch Flight",
       "runtime": "node-22",

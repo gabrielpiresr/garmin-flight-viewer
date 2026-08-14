@@ -1,8 +1,11 @@
-import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
+import { Query } from "appwrite";
+import { ADMIN_USERS_FUNCTION_ID, databases, functions, PLATFORM_SETTINGS_COL_ID } from "./appwrite";
 import { getEmailBrandSettings } from "./notificationsDb";
 import { DEFAULT_SCHOOL_RULES, normalizeSchoolRules, type SchoolRules, type SchoolRulesInput } from "../types/schoolRules";
 
 const RULES_CACHE_KEY = "gfv:schoolRules";
+const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
+const SCHOOL_RULES_SETTING_KEY = "schoolRules";
 
 function cacheSchoolRules(rules: SchoolRules): void {
   try {
@@ -83,7 +86,10 @@ async function executeSchoolRules(payload: Record<string, unknown>): Promise<Sch
 
 export async function getSchoolRules(): Promise<SchoolRules> {
   const response = await executeSchoolRules({ action: "getSchoolRules" });
-  const rules = normalizeSchoolRules(response.schoolRules ?? DEFAULT_SCHOOL_RULES);
+  let rules = normalizeSchoolRules(response.schoolRules ?? DEFAULT_SCHOOL_RULES);
+  if (!hasScheduleField(response.schoolRules, "maxBookingLeadDaysFrc")) {
+    rules = await getSchoolRulesDirectFallback().catch(() => rules);
+  }
   cacheSchoolRules(rules);
   return rules;
 }
@@ -91,10 +97,54 @@ export async function getSchoolRules(): Promise<SchoolRules> {
 export async function saveSchoolRules(rules: SchoolRulesInput): Promise<SchoolRules> {
   const response = await executeSchoolRules({ action: "saveSchoolRules", rules });
   if (!response.schoolRules) throw new Error(response.message || "Regras da escola não retornadas.");
-  const saved = normalizeSchoolRules(response.schoolRules);
+  let saved = normalizeSchoolRules(response.schoolRules);
+  const intendedFrcLeadDays = Number(rules.schedule?.maxBookingLeadDaysFrc);
+  if (
+    Number.isFinite(intendedFrcLeadDays) &&
+    saved.schedule.maxBookingLeadDaysFrc !== Math.round(intendedFrcLeadDays)
+  ) {
+    saved = await saveSchoolRulesDirectFallback(rules);
+  }
   cacheSchoolRules(saved);
   applySchoolTheme(saved);
   return saved;
+}
+
+async function saveSchoolRulesDirectFallback(rules: SchoolRulesInput): Promise<SchoolRules> {
+  if (!databases || !DB_ID || !PLATFORM_SETTINGS_COL_ID) {
+    throw new Error("A funcao administrativa nao salvou a antecedencia FRC e o fallback direto nao esta configurado.");
+  }
+  const normalized = normalizeSchoolRules({ ...rules, updatedAt: null });
+  const { updatedAt: _updatedAt, ...settings } = normalized;
+  const current = await getSchoolRulesSettingsDoc();
+  if (!current) {
+    throw new Error("Documento de regras da escola nao encontrado para aplicar fallback.");
+  }
+  const doc = await databases.updateDocument(DB_ID, PLATFORM_SETTINGS_COL_ID, current.$id, {
+    key: SCHOOL_RULES_SETTING_KEY,
+    settings_json: JSON.stringify(settings),
+  });
+  return normalizeSchoolRules({ ...settings, updatedAt: doc.$updatedAt ?? null });
+}
+
+function hasScheduleField(rules: SchoolRules | undefined, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(rules?.schedule ?? {}, key);
+}
+
+async function getSchoolRulesDirectFallback(): Promise<SchoolRules> {
+  const doc = await getSchoolRulesSettingsDoc();
+  if (!doc) return DEFAULT_SCHOOL_RULES;
+  const raw = typeof doc.settings_json === "string" ? JSON.parse(doc.settings_json || "{}") : {};
+  return normalizeSchoolRules({ ...raw, updatedAt: doc.$updatedAt ?? null });
+}
+
+async function getSchoolRulesSettingsDoc() {
+  if (!databases || !DB_ID || !PLATFORM_SETTINGS_COL_ID) return null;
+  const result = await databases.listDocuments(DB_ID, PLATFORM_SETTINGS_COL_ID, [
+    Query.equal("key", [SCHOOL_RULES_SETTING_KEY]),
+    Query.limit(1),
+  ]);
+  return result.documents[0] ?? null;
 }
 
 export function applySchoolTheme(

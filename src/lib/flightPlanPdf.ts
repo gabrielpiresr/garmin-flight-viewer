@@ -248,18 +248,6 @@ function aiBriefingHtml(report: FlightBriefingAiReport | null | undefined): stri
         .join("")
     : `<tr><td colspan="6" class="muted">Nenhuma tarefa operacional sugerida pela IA.</td></tr>`;
 
-  const airportBlocks = report.airports
-    .map(
-      (airport) => `<article class="card keep-together">
-        <header><strong>${esc(airport.icao)}</strong> <span class="pill">${esc(airport.role)}</span></header>
-        <p>${esc(airport.summary)}</p>
-        <p class="line"><span>Combustível</span> ${esc(airport.fuel.detail || "Verificar")}</p>
-        <p class="line"><span>Hangaragem</span> ${esc(airport.hangarage.detail || "Verificar")}</p>
-        <p class="line"><span>Slot/PPR</span> ${esc(airport.slotPpr.detail || "Verificar")}</p>
-      </article>`,
-    )
-    .join("");
-
   const sourceRows = report.sources.length
     ? report.sources
         .slice(0, 12)
@@ -271,8 +259,6 @@ function aiBriefingHtml(report: FlightBriefingAiReport | null | undefined): stri
 
   return `<section id="checklist-ia" class="page keep-together">
     <h2>Checklist operacional IA</h2>
-    <p>${esc(report.summary)}</p>
-    ${airportBlocks ? `<section class="block"><h3>Enriquecimento por aeródromo</h3>${airportBlocks}</section>` : ""}
     <section class="block">
       <h3>Tarefas do piloto</h3>
       <table>

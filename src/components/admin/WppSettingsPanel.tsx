@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   createWppTemplate,
   deleteWppTemplate,
+  ensureAiswebAlertWppTemplate,
   getWppSettings,
   listWppDeliveryStatuses,
   listWppTemplates,
@@ -82,6 +83,13 @@ const DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE: WppTransactionalTemplateSettings =
   templateName: "voo_solo_ciencia",
   language: "pt_BR",
   bodyParameters: ["student_name", "flight_date", "route", "status", "request_id"],
+};
+
+const DEFAULT_AISWEB_ALERT_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "alerta_aisweb",
+  language: "pt_BR",
+  bodyParameters: ["kind", "icao", "identifier", "summary", "validity"],
 };
 
 const DEFAULT_INCOMING_AUTO_REPLY_MESSAGE =
@@ -652,6 +660,7 @@ export function WppSettingsPanel() {
   const [bookingRequestedTemplate, setBookingRequestedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_BOOKING_REQUESTED_TEMPLATE);
   const [soloFlightApprovalTemplate, setSoloFlightApprovalTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
   const [soloFlightAwarenessTemplate, setSoloFlightAwarenessTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+  const [aiswebAlertTemplate, setAiswebAlertTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_AISWEB_ALERT_TEMPLATE);
   const [soloFlightCoordinatorPhone, setSoloFlightCoordinatorPhone] = useState("");
   const [soloFlightSgsoPhone, setSoloFlightSgsoPhone] = useState("");
   const [incomingAutoReply, setIncomingAutoReply] = useState<WppIncomingAutoReplySettings>(DEFAULT_INCOMING_AUTO_REPLY);
@@ -661,6 +670,7 @@ export function WppSettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [ensuringSoloTemplates, setEnsuringSoloTemplates] = useState(false);
+  const [ensuringAiswebTemplate, setEnsuringAiswebTemplate] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
   const [testing, setTesting] = useState(false);
   const [activeSection, setActiveSection] = useState<WppSettingsSection>("bot");
@@ -697,6 +707,7 @@ export function WppSettingsPanel() {
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setSoloFlightApprovalTemplate(next.soloFlightApprovalTemplate ?? DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
       setSoloFlightAwarenessTemplate(next.soloFlightAwarenessTemplate ?? DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+      setAiswebAlertTemplate(next.aiswebAlertTemplate ?? DEFAULT_AISWEB_ALERT_TEMPLATE);
       setSoloFlightCoordinatorPhone(next.soloFlightCoordinatorPhone ?? "");
       setSoloFlightSgsoPhone(next.soloFlightSgsoPhone ?? "");
       setIncomingAutoReply(incomingAutoReplyForm(next));
@@ -865,6 +876,12 @@ export function WppSettingsPanel() {
           language: soloFlightAwarenessTemplate.language.trim() || "pt_BR",
           bodyParameters: soloFlightAwarenessTemplate.bodyParameters,
         },
+        aiswebAlertTemplate: {
+          ...aiswebAlertTemplate,
+          templateName: aiswebAlertTemplate.templateName.trim().toLowerCase(),
+          language: aiswebAlertTemplate.language.trim() || "pt_BR",
+          bodyParameters: aiswebAlertTemplate.bodyParameters,
+        },
         soloFlightCoordinatorPhone: soloFlightCoordinatorPhone.trim(),
         soloFlightSgsoPhone: soloFlightSgsoPhone.trim(),
       });
@@ -873,11 +890,25 @@ export function WppSettingsPanel() {
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
       setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
+      setAiswebAlertTemplate(next.aiswebAlertTemplate ?? DEFAULT_AISWEB_ALERT_TEMPLATE);
       showToast({ variant: "success", message: "Templates de notificação salvos." });
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
     } finally {
       setSavingTemplates(false);
+    }
+  }
+
+  async function createAiswebAlertTemplate() {
+    setEnsuringAiswebTemplate(true);
+    try {
+      await ensureAiswebAlertWppTemplate();
+      showToast({ variant: "success", message: "Template alerta_aisweb criado/listado no Meta." });
+      await loadTemplates();
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar o template AISWEB." });
+    } finally {
+      setEnsuringAiswebTemplate(false);
     }
   }
 
@@ -1207,6 +1238,33 @@ export function WppSettingsPanel() {
             <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
               <strong className="block text-slate-300">VariÃ¡veis</strong>
               student_name, flight_date, presentation_time, start_time, aircraft, duration, status, booking_url
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-200">Alerta AISWEB (NOTAM / SUP / AD WRNG)</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">O mesmo template utility dispara os três tipos. Crie na Meta se ainda não existir.</p>
+            </div>
+            <button type="button" onClick={() => void createAiswebAlertTemplate()} disabled={ensuringAiswebTemplate || !connected} className={secondaryButton}>
+              {ensuringAiswebTemplate ? "Criando..." : "Criar template Meta"}
+            </button>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+              <input type="checkbox" checked={aiswebAlertTemplate.enabled} onChange={(e) => setAiswebAlertTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar WhatsApp quando um NOTAM, suplemento ou aviso de aeródromo novo for publicado
+            </label>
+            <label className="text-xs font-medium text-slate-400">Template AISWEB
+              <input value={aiswebAlertTemplate.templateName} onChange={(e) => setAiswebAlertTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="alerta_aisweb" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={aiswebAlertTemplate.language} onChange={(e) => setAiswebAlertTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">Variáveis</strong>
+              tipo, ICAO, número, texto e validade. Botão URL abre o AISWEB no app.
             </div>
           </div>
         </div>

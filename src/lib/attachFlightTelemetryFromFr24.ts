@@ -8,9 +8,11 @@ import {
   searchFlightRadar,
 } from "./flightRadarDb";
 import { fr24TelemetryFileName, flightRadarTrackToGarminCsv } from "./flightRadarTrackToGarminCsv";
-import { getSavedFlight } from "./flightsDb";
+import { getSavedFlight, type SavedFlightFull } from "./flightsDb";
+import { parseGarminCsv } from "./parseGarminCsv";
 import type { UserRole } from "./rbac";
 import { flightLocalMs } from "./telemetryLogFilename";
+import type { FlightPoint } from "../types/flight";
 import type { FlightRadarSummary } from "../types/flightRadar";
 
 const MATCH_TOLERANCE_MIN = 90;
@@ -190,36 +192,32 @@ async function resolveLiveMatch(registration: string): Promise<Fr24TelemetryMatc
   return null;
 }
 
-/**
- * Encontra o voo no Flightradar24 (matrícula + horário da ficha) e anexa a trilha
- * pelo mesmo caminho de `attachFlightTelemetry` usado pelos CSVs Garmin.
- */
-export async function attachFlightTelemetryFromFr24(
-  input: AttachFlightTelemetryFromFr24Input,
-): Promise<AttachFlightTelemetryFromFr24Result> {
-  const saved = await getSavedFlight(input.flightId);
-  if (saved.error || !saved.data) {
-    return { ok: false, error: saved.error ?? new Error("Voo não encontrado.") };
-  }
+type ResolvedFr24Track =
+  | {
+      ok: true;
+      match: Fr24TelemetryMatch;
+      csv: string;
+      sourceFileName: string;
+      pointCount: number;
+    }
+  | {
+      ok: false;
+      error: Error;
+      match?: Fr24TelemetryMatch;
+      candidates?: Fr24TelemetryMatch[];
+    };
 
-  const decoded = decodeFlightRecord(saved.data.csv_text);
+async function resolveFr24TrackForSavedFlight(
+  saved: SavedFlightFull,
+  fr24Id?: string | null,
+): Promise<ResolvedFr24Track> {
+  const decoded = decodeFlightRecord(saved.csv_text);
   if (!decoded.meta) {
     return { ok: false, error: new Error("Ficha do voo sem metadados para anexar telemetria.") };
   }
 
-  const hasExistingTelemetry = Boolean(decoded.telemetryCsv?.trim());
-  if (hasExistingTelemetry && !input.replaceExisting) {
-    return {
-      ok: false,
-      error: new Error(
-        "Este voo já tem telemetria. Confirme para substituir pelos dados do Flightradar24.",
-      ),
-      needsConfirmReplace: true,
-    };
-  }
-
   const registration = normalizeAircraftRegistration(
-    saved.data.aircraft_ident || decoded.meta.header.aircraft || "",
+    saved.aircraft_ident || decoded.meta.header.aircraft || "",
   );
   if (!registration) {
     return {
@@ -231,24 +229,24 @@ export async function attachFlightTelemetryFromFr24(
   let match: Fr24TelemetryMatch | null = null;
   let candidates: Fr24TelemetryMatch[] = [];
 
-  if (input.fr24Id?.trim()) {
+  if (fr24Id?.trim()) {
     match = {
-      fr24Id: input.fr24Id.trim(),
+      fr24Id: fr24Id.trim(),
       summary: null,
       deltaMin: null,
       confidence: "medium",
-      label: `FR24 ${input.fr24Id.trim()}`,
+      label: `FR24 ${fr24Id.trim()}`,
     };
   } else {
     const depIcao = decoded.meta.legs?.[0]?.dep?.trim().toUpperCase() || null;
     const range = buildQueryRange(
-      saved.data.flight_date || decoded.meta.header.date || null,
-      saved.data.start_time ||
+      saved.flight_date || decoded.meta.header.date || null,
+      saved.start_time ||
         decoded.meta.legs?.find((leg) => leg.engineStart?.trim())?.engineStart ||
         decoded.meta.header.departureTimeUtc ||
         decoded.meta.header.startTime ||
         null,
-      saved.data.duration_sec,
+      saved.duration_sec,
     );
 
     const summaryResult = await getFlightRadarFlightSummary([registration], {
@@ -291,24 +289,92 @@ export async function attachFlightTelemetryFromFr24(
     fr24Id: match.fr24Id,
     registration,
   });
-  const sourceFileName = fr24TelemetryFileName(match.fr24Id);
+  return {
+    ok: true,
+    match,
+    csv,
+    sourceFileName: fr24TelemetryFileName(match.fr24Id),
+    pointCount: track.tracks.length,
+  };
+}
+
+/** Busca a trilha FR24 em memória (não grava na ficha). Usado pelo Flyover. */
+export async function fetchFr24TrackPointsForFlight(flightId: string): Promise<
+  | { ok: true; points: FlightPoint[]; sourceFileName: string; match: Fr24TelemetryMatch }
+  | { ok: false; error: Error }
+> {
+  const saved = await getSavedFlight(flightId);
+  if (saved.error || !saved.data) {
+    return { ok: false, error: saved.error ?? new Error("Voo não encontrado.") };
+  }
+  const resolved = await resolveFr24TrackForSavedFlight(saved.data);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const parsed = parseGarminCsv(resolved.csv);
+  if (parsed.points.length < 2) {
+    return { ok: false, error: new Error("Flightradar24 não retornou pontos de trajetória para este voo.") };
+  }
+  return {
+    ok: true,
+    points: parsed.points,
+    sourceFileName: resolved.sourceFileName,
+    match: resolved.match,
+  };
+}
+
+/**
+ * Encontra o voo no Flightradar24 (matrícula + horário da ficha) e anexa a trilha
+ * pelo mesmo caminho de `attachFlightTelemetry` usado pelos CSVs Garmin.
+ */
+export async function attachFlightTelemetryFromFr24(
+  input: AttachFlightTelemetryFromFr24Input,
+): Promise<AttachFlightTelemetryFromFr24Result> {
+  const saved = await getSavedFlight(input.flightId);
+  if (saved.error || !saved.data) {
+    return { ok: false, error: saved.error ?? new Error("Voo não encontrado.") };
+  }
+
+  const decoded = decodeFlightRecord(saved.data.csv_text);
+  if (!decoded.meta) {
+    return { ok: false, error: new Error("Ficha do voo sem metadados para anexar telemetria.") };
+  }
+
+  const hasExistingTelemetry = Boolean(decoded.telemetryCsv?.trim());
+  if (hasExistingTelemetry && !input.replaceExisting) {
+    return {
+      ok: false,
+      error: new Error(
+        "Este voo já tem telemetria. Confirme para substituir pelos dados do Flightradar24.",
+      ),
+      needsConfirmReplace: true,
+    };
+  }
+
+  const resolved = await resolveFr24TrackForSavedFlight(saved.data, input.fr24Id);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: resolved.error,
+      match: resolved.match,
+      candidates: resolved.candidates,
+    };
+  }
 
   const attach = await attachFlightTelemetry({
     flightId: input.flightId,
     actorUserId: input.actorUserId,
     actorRole: input.actorRole,
-    telemetryFiles: [{ name: sourceFileName, text: csv }],
+    telemetryFiles: [{ name: resolved.sourceFileName, text: resolved.csv }],
   });
 
   if (attach.error) {
-    return { ok: false, error: attach.error, match };
+    return { ok: false, error: attach.error, match: resolved.match };
   }
 
   return {
     ok: true,
-    match,
-    points: track.tracks.length,
+    match: resolved.match,
+    points: resolved.pointCount,
     attach,
-    sourceFileName,
+    sourceFileName: resolved.sourceFileName,
   };
 }

@@ -54,9 +54,12 @@ export type FlightShareRouteMap = {
   routePoints: Array<{ x: number; y: number }>;
 };
 
+export type FlightShareTelemetryKind = "garmin" | "fr24" | "none";
+
 export type FlightShareData = {
   flightId: string;
   sourceFileName: string;
+  telemetryKind: FlightShareTelemetryKind;
   meta: FlightRecordMeta | null;
   displayInfo: FlightDisplayInfo;
   parsed: ParseResult | null;
@@ -195,6 +198,19 @@ function clampText(value: string | null | undefined, fallback = "-"): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+export function detectFlightShareTelemetryKind(fileName: string, csv: string): FlightShareTelemetryKind {
+  if (!csv.trim()) return "none";
+  const name = fileName.toLowerCase();
+  if (
+    name.startsWith("fr24-") ||
+    csv.includes("Flightradar24 track export") ||
+    csv.includes("ADS-B only")
+  ) {
+    return "fr24";
+  }
+  return "garmin";
 }
 
 function formatDatePt(iso: string | null): string {
@@ -368,7 +384,32 @@ function logoHref(data: FlightShareData): string | null {
   return href;
 }
 
+const flightShareDataCache = new Map<string, FlightShareData>();
+const flightShareDataInflight = new Map<string, Promise<FlightShareData>>();
+
+export function getCachedFlightShareData(flightId: string): FlightShareData | null {
+  return flightShareDataCache.get(flightId) ?? null;
+}
+
 export async function loadFlightShareData(flightId: string): Promise<FlightShareData> {
+  const cached = flightShareDataCache.get(flightId);
+  if (cached) return cached;
+  const inflight = flightShareDataInflight.get(flightId);
+  if (inflight) return inflight;
+
+  const promise = loadFlightShareDataUncached(flightId)
+    .then((data) => {
+      flightShareDataCache.set(flightId, data);
+      return data;
+    })
+    .finally(() => {
+      flightShareDataInflight.delete(flightId);
+    });
+  flightShareDataInflight.set(flightId, promise);
+  return promise;
+}
+
+async function loadFlightShareDataUncached(flightId: string): Promise<FlightShareData> {
   logBrandDebug("loading flight share data", { flightId });
   const [flight, brand] = await Promise.all([getSavedFlight(flightId), loadFlightShareBrand()]);
   if (flight.error || !flight.data) {
@@ -383,6 +424,7 @@ export async function loadFlightShareData(flightId: string): Promise<FlightShare
   const summary = summarizeFlight(points);
   const displayInfo = buildFlightDisplayInfo(flight.data, flight.data.csv_text);
   const routeMap = await buildRouteMap(points);
+  const telemetryKind = detectFlightShareTelemetryKind(flight.data.source_filename, telemetryCsv);
   const durationSec =
     chartDurationSec(chartData, parsed?.hasChartTime ?? false) ??
     summary.durationSec ??
@@ -392,6 +434,7 @@ export async function loadFlightShareData(flightId: string): Promise<FlightShare
   logBrandDebug("flight share data ready", {
     flightId,
     sourceFileName: flight.data.source_filename,
+    telemetryKind,
     points: points.length,
     chartRows: chartData.length,
     hasRouteMap: Boolean(routeMap),
@@ -401,6 +444,7 @@ export async function loadFlightShareData(flightId: string): Promise<FlightShare
   return {
     flightId,
     sourceFileName: flight.data.source_filename,
+    telemetryKind,
     meta: decoded.meta,
     displayInfo,
     parsed,
@@ -428,15 +472,17 @@ export async function buildFlightShareDataFromFlight(
   const summary = summarizeFlight(points);
   const displayInfo = buildFlightDisplayInfo(flight, flight.csv_text);
   const routeMap = await buildRouteMap(points);
+  const telemetryKind = detectFlightShareTelemetryKind(flight.source_filename, telemetryCsv);
   const durationSec =
     chartDurationSec(chartData, parsed?.hasChartTime ?? false) ??
     summary.durationSec ??
     flight.duration_sec ??
     (displayInfo.totalFlightMinutes > 0 ? displayInfo.totalFlightMinutes * 60 : null);
 
-  return {
+  const data: FlightShareData = {
     flightId: flight.id,
     sourceFileName: flight.source_filename,
+    telemetryKind,
     meta: decoded.meta,
     displayInfo,
     parsed,
@@ -449,6 +495,8 @@ export async function buildFlightShareDataFromFlight(
     brand,
     routeMap,
   };
+  flightShareDataCache.set(flight.id, data);
+  return data;
 }
 
 function baseDefs(data: FlightShareData): string {

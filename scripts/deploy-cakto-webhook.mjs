@@ -93,7 +93,19 @@ const studentTracksCollectionId =
   env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID ||
   env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID ||
   "student_training_tracks";
+const frcMembershipsCollectionId =
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+  env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+  env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID ||
+  "flight_review_club_memberships";
+const frcTasksCollectionId =
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID ||
+  env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID ||
+  env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COL_ID ||
+  "flight_review_club_tasks";
 await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
+await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID", frcMembershipsCollectionId);
+await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID", frcTasksCollectionId);
 const deployment = await functions.createDeployment({
   functionId,
   code: InputFile.fromBuffer(archive, "cakto-webhook.tar.gz"),

@@ -15,6 +15,19 @@ export type FlightReviewClubBenefitItem = {
   imageUrl: string;
 };
 
+export type FlightReviewClubScreenshotItem = {
+  title: string;
+  description: string;
+  imageUrl: string;
+};
+
+export type FlightReviewClubChecklistTemplateItem = {
+  id: string;
+  title: string;
+  description: string;
+  enabled: boolean;
+};
+
 export type FlightReviewClubPricingRule = {
   id: string;
   trainingTrackId: string;
@@ -26,11 +39,26 @@ export type FlightReviewClubPricingRule = {
   active: boolean;
 };
 
+export type FlightReviewClubBillingMode = "legacy_one_time" | "student_subscription" | "both";
+
+export type FlightReviewClubSubscriptionPlanKey = "monthly" | "quarterly" | "semiannual" | "annual";
+
+export type FlightReviewClubSubscriptionPlan = {
+  id: FlightReviewClubSubscriptionPlanKey;
+  label: string;
+  description: string;
+  recurrencePeriodDays: number;
+  amount: number;
+  enabled: boolean;
+};
+
 export type FlightReviewClubRules = {
   enabled: boolean;
   landingPageType: FlightReviewClubLpType;
   externalUrl: string;
   showInStudentMenu: boolean;
+  billingMode: FlightReviewClubBillingMode;
+  caktoSubscriptionProductId: string;
   benefits: string[];
   ctaSubscriptionUrl: string;
   adhesionTermUrl: string;
@@ -41,7 +69,11 @@ export type FlightReviewClubRules = {
   lpCtaLabel: string;
   lpValueProps: string[];
   lpBenefitItems: FlightReviewClubBenefitItem[];
+  lpScreenshotItems: FlightReviewClubScreenshotItem[];
+  checklistTemplate: FlightReviewClubChecklistTemplateItem[];
   pricingRules: FlightReviewClubPricingRule[];
+  subscriptionPlans: FlightReviewClubSubscriptionPlan[];
+  exclusiveStudentTabs: StudentPortalTab[];
 };
 
 export type SoloFlightAutomaticCriterionKey =
@@ -82,6 +114,13 @@ export type StudentPortalTab =
   | "ajuda"
   | "endossos"
   | "perfil"
+  | "indique-ganhe"
+  | "aisweb"
+  | "planejamento"
+  | "whatsapp"
+  | "album"
+  | "painel"
+  | "marketplace"
   | "dre"       // EDB — opcional, desativado por padrão
   | "fuelings"  // Abastecimentos — opcional, desativado por padrão
   | "contratos"; // Contratos — opcional, desativado por padrão
@@ -143,6 +182,7 @@ export type FlightScheduleRules = {
   autoDebitCancellationPenalty: boolean;
   minBookingLeadDays: number;
   maxBookingLeadDays: number;
+  maxBookingLeadDaysFrc: number;
   /** Matrículas (agendas SAGA) OCULTAS para o aluno na escala — ele não vê nem agenda nelas. */
   studentHiddenAircraftIdents: string[];
   /**
@@ -190,7 +230,14 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "ajuda", label: "Ajuda" },
   { id: "endossos", label: "Endossos" },
   { id: "perfil", label: "Perfil" },
+  { id: "indique-ganhe", label: "Indique e ganhe" },
+  { id: "aisweb", label: "AISWEB" },
+  { id: "planejamento", label: "Planejamento", defaultEnabled: false },
+  { id: "whatsapp", label: "WhatsApp", defaultEnabled: false },
+  { id: "album", label: "Álbum" },
+  { id: "painel", label: "Painel" },
   // Abas opcionais — desativadas por padrão, admin pode ativar por escola e/ou por role
+  { id: "marketplace", label: "Marketplace", defaultEnabled: false },
   { id: "dre", label: "EDB", defaultEnabled: false },
   { id: "fuelings", label: "Abastecimentos", defaultEnabled: false },
   { id: "contratos", label: "Contratos", defaultEnabled: false },
@@ -206,25 +253,114 @@ export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },
   { id: "cakto.sale_approved", label: "Venda Cakto aprovada (admins)" },
+  { id: "marketplace.order_paid", label: "Compra marketplace confirmada (comprador)" },
+];
+
+export const DEFAULT_FLIGHT_REVIEW_CLUB_SUBSCRIPTION_PLANS: FlightReviewClubSubscriptionPlan[] = [
+  {
+    id: "monthly",
+    label: "Mensal",
+    description: "Cobrança mensal recorrente.",
+    recurrencePeriodDays: 30,
+    amount: 0,
+    enabled: false,
+  },
+  {
+    id: "quarterly",
+    label: "Trimestral",
+    description: "Cobrança a cada 3 meses.",
+    recurrencePeriodDays: 90,
+    amount: 0,
+    enabled: false,
+  },
+  {
+    id: "semiannual",
+    label: "Semestral",
+    description: "Cobrança a cada 6 meses.",
+    recurrencePeriodDays: 180,
+    amount: 0,
+    enabled: false,
+  },
+  {
+    id: "annual",
+    label: "Anual",
+    description: "Cobrança anual recorrente.",
+    recurrencePeriodDays: 365,
+    amount: 0,
+    enabled: false,
+  },
 ];
 
 export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
-  enabled: false,
+  enabled: true,
   landingPageType: "internal_public_page",
   externalUrl: "",
   showInStudentMenu: false,
-  benefits: [],
+  billingMode: "both",
+  caktoSubscriptionProductId: "",
+  benefits: [
+    "Análise da telemetria de cada voo.",
+    "Link público para compartilhamento do voo.",
+    "Curso de Segurança de Voo EAD.",
+    "Camiseta da escola + crachá exclusivo na primeira assinatura.",
+    "Acesso gratuito ao NexAtlas (etapa manual).",
+    "Acesso gratuito ao Clube 360 (etapa manual).",
+    "Descontos no Marketplace da epeac.",
+    "Pelo menos 1 webinar por mês exclusivo para integrantes.",
+    "Agendamento antecipado para voos com até 30 dias de antecedência.",
+    "Planejamento de voo e rotas.",
+    "Figurinhas e animações dos voos.",
+    "Jornada gamificada com histórico detalhado.",
+    "Vídeos com fonia e fotos dos voos.",
+  ],
   ctaSubscriptionUrl: "",
   adhesionTermUrl: "",
-  trialFlightCount: 0,
+  trialFlightCount: 100,
   lpHeroTitle: "Flight Review Club",
   lpHeroSubtitle:
-    "Revise seus voos com telemetria, videos, fotos e dados reais para evoluir com mais clareza em cada etapa da formacao.",
+    "Assine o pacote premium para revisar cada voo com telemetria, vídeos, fotos, planejamento, benefícios manuais e vantagens exclusivas da escola.",
   lpCoverImageUrl: "",
   lpCtaLabel: "Assinar o Flight Review Club",
-  lpValueProps: [],
-  lpBenefitItems: [],
+  lpValueProps: [
+    "Revise seus voos com dados reais e chegue mais preparado para a próxima aula.",
+    "Tenha acesso aos materiais, descontos e ferramentas que ajudam a manter o ritmo da formação.",
+    "Acompanhe sua jornada com histórico, figurinhas e registros visuais dos seus voos.",
+  ],
+  lpBenefitItems: [
+    { text: "Análise da telemetria de cada voo", imageUrl: "" },
+    { text: "Link público para compartilhamento do voo", imageUrl: "" },
+    { text: "Curso de Segurança de Voo EAD", imageUrl: "" },
+    { text: "Camiseta da escola + crachá exclusivo na primeira assinatura", imageUrl: "" },
+    { text: "Acesso gratuito ao NexAtlas (etapa manual)", imageUrl: "" },
+    { text: "Acesso gratuito ao Clube 360 (etapa manual)", imageUrl: "" },
+    { text: "Descontos no Marketplace da epeac", imageUrl: "" },
+    { text: "Pelo menos 1 webinar por mês exclusivo para integrantes", imageUrl: "" },
+    { text: "Agendamento antecipado para voos com até 30 dias de antecedência", imageUrl: "" },
+    { text: "Planejamento de voo e rotas", imageUrl: "" },
+    { text: "Figurinhas e animações dos voos", imageUrl: "" },
+    { text: "Jornada gamificada com histórico detalhado", imageUrl: "" },
+    { text: "Vídeos com fonia e fotos dos voos", imageUrl: "" },
+  ],
+  lpScreenshotItems: [
+    { title: "Telemetria e Flight Review", description: "Dados, manobras e pontos de melhoria do voo em uma revisao visual.", imageUrl: "" },
+    { title: "Link público do voo", description: "Compartilhe a experiência com uma página pública do Flight Review.", imageUrl: "" },
+    { title: "Planejamento e AISWEB", description: "Rotas, aeródromos, meteorologia e materiais para preparar a próxima navegação.", imageUrl: "" },
+    { title: "Jornada e figurinhas", description: "Histórico gamificado, marcos da formação e cards para celebrar evolução.", imageUrl: "" },
+    { title: "Álbum, vídeos e fotos", description: "Acervo de vídeos com fonia, fotos e registros completos dos voos.", imageUrl: "" },
+    { title: "Marketplace e vantagens", description: "Descontos e benefícios comerciais exclusivos para integrantes.", imageUrl: "" },
+  ],
+  checklistTemplate: [
+    { id: "nexatlas", title: "Liberar NexAtlas", description: "Criar ou liberar o acesso gratuito do aluno ao NexAtlas.", enabled: true },
+    { id: "clube-360", title: "Liberar Clube 360", description: "Criar ou liberar o acesso gratuito do aluno ao Clube 360.", enabled: true },
+    { id: "curso-ead", title: "Enviar Curso EAD", description: "Enviar instruções de acesso ao Curso de Segurança de Voo EAD.", enabled: true },
+    { id: "camiseta", title: "Entregar camiseta", description: "Separar e registrar a entrega da camiseta da escola.", enabled: true },
+    { id: "cracha", title: "Entregar crachá", description: "Emitir e registrar a entrega do crachá exclusivo.", enabled: true },
+    { id: "webinars", title: "Incluir em lista de webinars", description: "Adicionar o integrante na lista de comunicação dos webinars exclusivos.", enabled: true },
+    { id: "marketplace", title: "Conferir desconto marketplace", description: "Conferir se os descontos FRC aparecem corretamente no marketplace.", enabled: true },
+  ],
   pricingRules: [],
+  subscriptionPlans: DEFAULT_FLIGHT_REVIEW_CLUB_SUBSCRIPTION_PLANS,
+  exclusiveStudentTabs: [],
 };
 
 export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
@@ -308,6 +444,7 @@ export const DEFAULT_FLIGHT_SCHEDULE_RULES: FlightScheduleRules = {
   autoDebitCancellationPenalty: false,
   minBookingLeadDays: 0,
   maxBookingLeadDays: 365,
+  maxBookingLeadDaysFrc: 365,
   studentHiddenAircraftIdents: [],
   studentWaitlistAircraftIdents: [],
   maintenanceAlertEnabled: false,
@@ -505,6 +642,12 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
       autoDebitCancellationPenalty: Boolean(raw.schedule?.autoDebitCancellationPenalty),
       minBookingLeadDays: normalizeInteger(raw.schedule?.minBookingLeadDays, 0, 3650, 0),
       maxBookingLeadDays: normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
+      maxBookingLeadDaysFrc: normalizeInteger(
+        raw.schedule?.maxBookingLeadDaysFrc,
+        0,
+        3650,
+        normalizeInteger(raw.schedule?.maxBookingLeadDays, 0, 3650, 365),
+      ),
       studentHiddenAircraftIdents: Array.isArray(raw.schedule?.studentHiddenAircraftIdents)
         ? [...new Set(raw.schedule.studentHiddenAircraftIdents.map((value) => String(value).trim().toUpperCase()).filter(Boolean))]
         : [],
@@ -542,6 +685,14 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
         landingPageType: lpType === "external_url" ? "external_url" : "internal_public_page",
         externalUrl: typeof club?.externalUrl === "string" ? club.externalUrl.slice(0, 2048) : "",
         showInStudentMenu: Boolean(club?.showInStudentMenu ?? false),
+        billingMode: (
+          club?.billingMode === "legacy_one_time" ||
+          club?.billingMode === "student_subscription" ||
+          club?.billingMode === "both"
+        ) ? club.billingMode : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.billingMode,
+        caktoSubscriptionProductId: typeof club?.caktoSubscriptionProductId === "string"
+          ? club.caktoSubscriptionProductId.slice(0, 128)
+          : "",
         benefits: Array.isArray(club?.benefits)
           ? club.benefits.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 20)
           : [],
@@ -569,7 +720,28 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
               }))
               .filter((item) => item.text)
               .slice(0, 20)
-          : [],
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpBenefitItems,
+        lpScreenshotItems: Array.isArray(club?.lpScreenshotItems)
+          ? club.lpScreenshotItems
+              .map((item) => ({
+                title: String(item?.title ?? "").slice(0, 120).trim(),
+                description: String(item?.description ?? "").slice(0, 400).trim(),
+                imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
+              }))
+              .filter((item) => item.title)
+              .slice(0, 12)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpScreenshotItems,
+        checklistTemplate: Array.isArray(club?.checklistTemplate)
+          ? club.checklistTemplate
+              .map((item, index) => ({
+                id: String(item?.id || `frc-task-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64),
+                title: String(item?.title ?? "").slice(0, 140).trim(),
+                description: String(item?.description ?? "").slice(0, 500).trim(),
+                enabled: item?.enabled !== false,
+              }))
+              .filter((item) => item.id && item.title)
+              .slice(0, 30)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.checklistTemplate,
         pricingRules: Array.isArray(club?.pricingRules)
           ? club.pricingRules
               .map((rule, index) => {
@@ -594,6 +766,26 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
               })
               .filter((rule) => rule.trainingTrackId && rule.amount > 0)
               .slice(0, 50)
+          : [],
+        subscriptionPlans: DEFAULT_FLIGHT_REVIEW_CLUB_SUBSCRIPTION_PLANS.map((defaultPlan) => {
+          const rawPlan = Array.isArray(club?.subscriptionPlans)
+            ? club.subscriptionPlans.find((plan) => plan?.id === defaultPlan.id)
+            : null;
+          return {
+            id: defaultPlan.id,
+            label: String(rawPlan?.label || defaultPlan.label).trim().slice(0, 80) || defaultPlan.label,
+            description: String(rawPlan?.description || defaultPlan.description).trim().slice(0, 240),
+            recurrencePeriodDays: defaultPlan.recurrencePeriodDays,
+            amount: normalizeMoney(rawPlan?.amount),
+            enabled: Boolean(rawPlan?.enabled ?? defaultPlan.enabled),
+          };
+        }),
+        exclusiveStudentTabs: Array.isArray(club?.exclusiveStudentTabs)
+          ? [...new Set(
+              club.exclusiveStudentTabs.filter((tab): tab is StudentPortalTab =>
+                STUDENT_PORTAL_TAB_OPTIONS.some((item) => item.id === tab),
+              ),
+            )]
           : [],
       };
     })(),

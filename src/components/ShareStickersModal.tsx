@@ -55,6 +55,7 @@ type Props = {
   onCustomShowBackgroundChange: (checked: boolean) => void;
   onClose: () => void;
   onReset?: () => void;
+  flyover?: ReactNode;
 };
 
 type WorkspaceProps = Omit<Props, "title" | "subtitle" | "ariaLabel" | "onClose"> & {
@@ -62,7 +63,7 @@ type WorkspaceProps = Omit<Props, "title" | "subtitle" | "ariaLabel" | "onClose"
 };
 
 type BusyAction = "share" | "download" | "copy" | null;
-type StickerMode = "ready" | "custom";
+type StickerMode = "ready" | "custom" | "flyover";
 
 type NavigatorWithFiles = Navigator & {
   canShare?: (data: ShareData) => boolean;
@@ -285,6 +286,7 @@ export function ShareStickersWorkspace({
   onCustomShowBackgroundChange,
   onClose,
   onReset,
+  flyover,
 }: WorkspaceProps) {
   const { showToast } = useToast();
   const [activeIndex, setActiveIndex] = useState(0);
@@ -309,6 +311,7 @@ export function ShareStickersWorkspace({
     ? customSticker
     : stickers[activeIndex] ?? stickers[0] ?? null;
   const supportsCopy = canCopyImage();
+  const tabCount = flyover ? 3 : 2;
 
   const handleDownload = async () => {
     if (!activeSticker) return;
@@ -386,7 +389,35 @@ export function ShareStickersWorkspace({
                 </button>
               ) : null}
             </div>
-          ) : activeSticker ? (
+          ) : activeSticker || flyover ? (
+            <div className="flex min-h-full flex-col gap-4">
+              <div className={`mx-auto grid w-full max-w-5xl gap-2 rounded-2xl border border-slate-800 bg-slate-950/50 p-1 ${tabCount === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+                <button
+                  type="button"
+                  onClick={() => setMode("ready")}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${mode === "ready" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                >
+                  Prontas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("custom")}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${mode === "custom" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                >
+                  Montar
+                </button>
+                {flyover ? (
+                  <button
+                    type="button"
+                    onClick={() => setMode("flyover")}
+                    className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${mode === "flyover" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Flyover
+                  </button>
+                ) : null}
+              </div>
+
+              {mode === "flyover" && flyover ? flyover : activeSticker ? (
             <div className="grid min-h-full gap-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
               <div className="flex flex-col items-center gap-4">
                 <StickerPreview
@@ -433,24 +464,7 @@ export function ShareStickersWorkspace({
               </div>
 
               <aside className="rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-                <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-800 bg-slate-950/50 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setMode("ready")}
-                    className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${mode === "ready" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                  >
-                    Prontas
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode("custom")}
-                    className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${mode === "custom" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                  >
-                    Montar
-                  </button>
-                </div>
-
-                <p className="mt-4 text-xs font-bold uppercase tracking-[0.2em] text-slate-500">{mode === "ready" ? "Modelo" : "Personalizar"}</p>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">{mode === "ready" ? "Modelo" : "Personalizar"}</p>
                 <h3 className="mt-2 text-xl font-bold text-slate-100">{activeSticker.title}</h3>
                 <p className="mt-1 text-sm text-slate-400">{activeSticker.description}</p>
 
@@ -497,6 +511,8 @@ export function ShareStickersWorkspace({
                   </div>
                 )}
               </aside>
+            </div>
+              ) : null}
             </div>
           ) : null}
         </div>

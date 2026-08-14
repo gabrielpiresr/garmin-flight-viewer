@@ -80,6 +80,13 @@ const env = {
   APPWRITE_SCHEDULE_AUDIT_COLLECTION_ID: "schedule_audit_events",
   APPWRITE_SCHEDULE_SLOT_LOCKS_COLLECTION_ID: "schedule_slot_locks",
   APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID: process.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID,
+  APPWRITE_STUDENT_TRACKS_COLLECTION_ID:
+    process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID || byName.get("student_training_tracks") || "student_training_tracks",
+  APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID:
+    process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+    process.env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID ||
+    byName.get("flight_review_club_memberships") ||
+    "flight_review_club_memberships",
   APPWRITE_OPERATIONAL_WEEKS_COLLECTION_ID: process.env.VITE_APPWRITE_OP_WEEKS_COL_ID || byName.get("aircraft_operational_weeks"),
   APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COLLECTION_ID:
     process.env.VITE_APPWRITE_MAINTENANCE_PROGRAM_ITEMS_COL_ID || byName.get("maintenance_program_items") || "",

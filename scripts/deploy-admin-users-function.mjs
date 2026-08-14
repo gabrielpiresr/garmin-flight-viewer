@@ -236,6 +236,14 @@ async function main() {
     process.env.APPWRITE_TRAINING_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID || "training_tracks";
   const studentTracksCollectionId =
     process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || env.VITE_APPWRITE_STUDENT_TRACKS_COL_ID || "student_training_tracks";
+  const frcMembershipsCollectionId =
+    process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID ||
+    "flight_review_club_memberships";
+  const frcTasksCollectionId =
+    process.env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID ||
+    env.VITE_APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COL_ID ||
+    "flight_review_club_tasks";
   const studentObservationsCollectionId =
     process.env.APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID ||
     process.env.APPWRITE_STUDENT_OBSERVATIONS_COL_ID ||
@@ -391,6 +399,8 @@ async function main() {
   }
   await upsertVariable(functions, "APPWRITE_TRAINING_TRACKS_COLLECTION_ID", trainingTracksCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID", frcMembershipsCollectionId);
+  await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID", frcTasksCollectionId);
   await upsertVariable(functions, "APPWRITE_STUDENT_OBSERVATIONS_COLLECTION_ID", studentObservationsCollectionId);
   await upsertVariable(functions, "APPWRITE_CONTRACT_TEMPLATES_COLLECTION_ID", contractTemplatesCollectionId);
   await upsertVariable(functions, "APPWRITE_CONTRACTS_COLLECTION_ID", contractsCollectionId);

@@ -10,6 +10,8 @@ import {
   DEFAULT_SOLO_FLIGHT_RULES,
   EMAIL_NOTIFICATION_EVENT_OPTIONS,
   SCHOOL_FONT_OPTIONS,
+  STUDENT_PORTAL_TAB_OPTIONS,
+  type FlightReviewClubSubscriptionPlan,
   type SchoolRules,
   type SchoolRulesInput,
   type SoloFlightAutomaticCriterionKey,
@@ -56,7 +58,17 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
     theme: { ...settings.theme },
     schedule: { ...settings.schedule },
     scheduleStudentHelp: { ...settings.scheduleStudentHelp },
-    flightReviewClub: { ...settings.flightReviewClub },
+    flightReviewClub: {
+      ...settings.flightReviewClub,
+      pricingRules: settings.flightReviewClub.pricingRules.map((item) => ({ ...item })),
+      lpBenefitItems: settings.flightReviewClub.lpBenefitItems.map((item) => ({ ...item })),
+      lpScreenshotItems: settings.flightReviewClub.lpScreenshotItems.map((item) => ({ ...item })),
+      checklistTemplate: settings.flightReviewClub.checklistTemplate.map((item) => ({ ...item })),
+      lpValueProps: [...settings.flightReviewClub.lpValueProps],
+      benefits: [...settings.flightReviewClub.benefits],
+      subscriptionPlans: settings.flightReviewClub.subscriptionPlans.map((item) => ({ ...item })),
+      exclusiveStudentTabs: [...settings.flightReviewClub.exclusiveStudentTabs],
+    },
     flightEvaluation: {
       enabled: settings.flightEvaluation.enabled,
       criteria: {
@@ -719,8 +731,19 @@ export function FlightReviewClubPanel() {
       setError("Informe o link externo da Landing Page do Flight Review Club.");
       return;
     }
-    if (club.pricingRules.some((rule) => rule.active && (!rule.trainingTrackId || rule.amount <= 0))) {
+    const legacyEnabled = club.billingMode !== "student_subscription";
+    const recurringEnabled = club.billingMode !== "legacy_one_time";
+    const activeSubscriptionPlans = club.subscriptionPlans.filter((plan) => plan.enabled);
+    if (legacyEnabled && club.pricingRules.some((rule) => rule.active && (!rule.trainingTrackId || rule.amount <= 0))) {
       setError("Cada regra de preco ativa precisa ter trilha e valor.");
+      return;
+    }
+    if (recurringEnabled && activeSubscriptionPlans.some((plan) => plan.amount <= 0)) {
+      setError("Cada plano recorrente ativo precisa ter valor maior que zero.");
+      return;
+    }
+    if (club.enabled && recurringEnabled && activeSubscriptionPlans.length > 0 && !club.caktoSubscriptionProductId.trim()) {
+      setError("Informe o Product ID recorrente da Cakto para usar planos por assinatura.");
       return;
     }
     setSaving(true);
@@ -805,6 +828,19 @@ export function FlightReviewClubPanel() {
     });
   }
 
+  function updateSubscriptionPlan(planId: FlightReviewClubSubscriptionPlan["id"], patch: Partial<FlightReviewClubSubscriptionPlan>) {
+    setClub({
+      subscriptionPlans: club.subscriptionPlans.map((plan) => plan.id === planId ? { ...plan, ...patch } : plan),
+    });
+  }
+
+  function toggleExclusiveStudentTab(tabId: string, checked: boolean) {
+    const current = new Set(club.exclusiveStudentTabs);
+    if (checked) current.add(tabId as (typeof club.exclusiveStudentTabs)[number]);
+    else current.delete(tabId as (typeof club.exclusiveStudentTabs)[number]);
+    setClub({ exclusiveStudentTabs: STUDENT_PORTAL_TAB_OPTIONS.map((tab) => tab.id).filter((tab) => current.has(tab)) });
+  }
+
   if (loading) return <SettingsSkeleton rows={8} />;
 
   return (
@@ -856,8 +892,87 @@ export function FlightReviewClubPanel() {
                 </label>
                 <label className="text-xs text-slate-400">
                   Voos de trial
-                  <input type="number" min={0} max={20} step={1} value={club.trialFlightCount} onChange={(e) => setClub({ trialFlightCount: Math.max(0, Math.round(Number(e.target.value))) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
+                  <input type="number" min={0} max={500} step={1} value={club.trialFlightCount} onChange={(e) => setClub({ trialFlightCount: Math.max(0, Math.round(Number(e.target.value))) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
                 </label>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cobranca e recorrencia</p>
+                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                  <label className="text-xs text-slate-400">
+                    Modo de cobranca
+                    <select
+                      value={club.billingMode}
+                      onChange={(e) => setClub({ billingMode: e.target.value as typeof club.billingMode })}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+                    >
+                      <option value="both">Legado por trilha + assinatura por aluno</option>
+                      <option value="student_subscription">Somente assinatura por aluno</option>
+                      <option value="legacy_one_time">Somente pagamento unico por trilha</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Product ID recorrente da Cakto
+                    <input
+                      value={club.caktoSubscriptionProductId}
+                      onChange={(e) => setClub({ caktoSubscriptionProductId: e.target.value })}
+                      placeholder="prod_..."
+                      disabled={club.billingMode === "legacy_one_time"}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 disabled:opacity-50"
+                    />
+                    <span className="mt-1 block text-[11px] text-slate-500">Use um produto Cakto do tipo subscription para os planos recorrentes.</span>
+                  </label>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {club.subscriptionPlans.map((plan) => (
+                    <div key={plan.id} className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
+                      <label className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={plan.enabled}
+                          disabled={club.billingMode === "legacy_one_time"}
+                          onChange={(e) => updateSubscriptionPlan(plan.id, { enabled: e.target.checked })}
+                          className="h-4 w-4 accent-sky-500 disabled:opacity-50"
+                        />
+                        {plan.label}
+                      </label>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+                        <input
+                          value={plan.label}
+                          onChange={(e) => updateSubscriptionPlan(plan.id, { label: e.target.value })}
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={plan.amount}
+                          onChange={(e) => updateSubscriptionPlan(plan.id, { amount: Math.max(0, Number(e.target.value) || 0) })}
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+                        />
+                      </div>
+                      <p className="mt-2 text-[11px] text-slate-500">Recorrencia fixa: {plan.recurrencePeriodDays} dias.</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Abas exclusivas para FRC</p>
+                <p className="mt-1 text-xs text-slate-500">As abas continuam no menu. Alunos sem FRC ativo veem o aviso de acesso ao abrir.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {STUDENT_PORTAL_TAB_OPTIONS.map((tab) => (
+                    <label key={tab.id} className="flex items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-900/40 px-3 py-2 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={club.exclusiveStudentTabs.includes(tab.id)}
+                        onChange={(e) => toggleExclusiveStudentTab(tab.id, e.target.checked)}
+                        className="h-4 w-4 accent-amber-400"
+                      />
+                      {tab.label}
+                    </label>
+                  ))}
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
@@ -1126,7 +1241,7 @@ export function FlightReviewClubPanelLegacy() {
                   <input
                     type="number"
                     min={0}
-                    max={20}
+                    max={500}
                     step={1}
                     value={club.trialFlightCount}
                     onChange={(e) => setClub({ trialFlightCount: Math.max(0, Math.round(Number(e.target.value))) })}

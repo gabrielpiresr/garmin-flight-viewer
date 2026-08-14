@@ -16,6 +16,13 @@ export type Route3dMarker = {
   kind: "origin" | "destination" | "waypoint" | "toc" | "tod";
 };
 
+export type Route3dAircraftPose = {
+  lat: number;
+  lng: number;
+  altitudeFt?: number | null;
+  headingDeg?: number | null;
+};
+
 const FT_TO_M = 0.3048;
 const UNL_FT = 100_000;
 

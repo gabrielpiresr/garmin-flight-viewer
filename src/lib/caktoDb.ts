@@ -5,6 +5,11 @@ import type {
   CaktoSettings,
   CaktoSettingsInput,
   FlightReviewClubCheckout,
+  FlightReviewClubAdminOverview,
+  FlightReviewClubMemberRow,
+  FlightReviewClubStatus,
+  FlightReviewClubTask,
+  FlightReviewClubTaskStatus,
   FlightReviewClubQuote,
 } from "../types/cakto";
 import type { CrmProposal, CrmProposalInput } from "../types/proposal";
@@ -20,6 +25,10 @@ type CaktoResponse = {
   summary?: CaktoReceiptPage["summary"];
   checkout?: FlightReviewClubCheckout;
   quote?: FlightReviewClubQuote;
+  frcStatus?: FlightReviewClubStatus;
+  frcOverview?: FlightReviewClubAdminOverview;
+  members?: FlightReviewClubMemberRow[];
+  task?: FlightReviewClubTask;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<CaktoResponse> {
@@ -78,14 +87,65 @@ export async function listCaktoReceipts(filters: CaktoReceiptFilters): Promise<C
   };
 }
 
-export async function createFlightReviewClubCheckout(): Promise<FlightReviewClubCheckout> {
-  const response = await execute({ action: "createFlightReviewClubCheckout" });
+export async function createFlightReviewClubCheckout(planId?: string, mode?: string): Promise<FlightReviewClubCheckout> {
+  const response = await execute({ action: "createFlightReviewClubCheckout", planId, mode });
   if (!response.checkout) throw new Error(response.message || "Checkout do Flight Review Club nao retornado.");
   return response.checkout;
 }
 
-export async function quoteFlightReviewClubCheckout(): Promise<FlightReviewClubQuote> {
-  const response = await execute({ action: "quoteFlightReviewClubCheckout" });
+export async function quoteFlightReviewClubCheckout(planId?: string, mode?: string): Promise<FlightReviewClubQuote> {
+  const response = await execute({ action: "quoteFlightReviewClubCheckout", planId, mode });
   if (!response.quote) throw new Error(response.message || "Preco do Flight Review Club nao retornado.");
   return response.quote;
+}
+
+export async function getFlightReviewClubStatus(userId?: string): Promise<FlightReviewClubStatus> {
+  const response = await execute({ action: "getFlightReviewClubStatus", userId });
+  if (!response.frcStatus) throw new Error(response.message || "Status do Flight Review Club nao retornado.");
+  return response.frcStatus;
+}
+
+export async function cancelFlightReviewClubSubscription(): Promise<FlightReviewClubStatus> {
+  const response = await execute({ action: "cancelFlightReviewClubSubscription" });
+  if (!response.frcStatus) throw new Error(response.message || "Status do Flight Review Club nao retornado.");
+  return response.frcStatus;
+}
+
+export async function getAdminFlightReviewClubOverview(): Promise<FlightReviewClubAdminOverview> {
+  const response = await execute({ action: "getAdminFlightReviewClubOverview" });
+  if (!response.frcOverview) throw new Error(response.message || "Resumo do Flight Review Club nao retornado.");
+  return response.frcOverview;
+}
+
+export async function listAdminFlightReviewClubMembers(search = ""): Promise<FlightReviewClubMemberRow[]> {
+  const response = await execute({ action: "listAdminFlightReviewClubMembers", search });
+  return response.members ?? [];
+}
+
+export async function updateFlightReviewClubTask(input: {
+  taskId: string;
+  status?: FlightReviewClubTaskStatus;
+  assignedToUserId?: string;
+  dueAt?: string | null;
+  completedAt?: string | null;
+  notes?: string;
+}): Promise<FlightReviewClubTask> {
+  const response = await execute({ action: "updateFlightReviewClubTask", task: input });
+  if (!response.task) throw new Error(response.message || "Tarefa FRC nao retornada.");
+  return response.task;
+}
+
+export async function ensureFlightReviewClubMemberTasks(membershipId: string): Promise<FlightReviewClubTask[]> {
+  const response = await execute({ action: "ensureFlightReviewClubMemberTasks", membershipId });
+  const members = response.members ?? [];
+  return members.find((member) => member.membership.id === membershipId)?.tasks ?? [];
+}
+
+export async function forceFlightReviewClubAccess(input: {
+  studentUserId: string;
+  mode: "grant" | "revoke";
+  accessUntil?: string | null;
+}): Promise<FlightReviewClubMemberRow[]> {
+  const response = await execute({ action: "forceFlightReviewClubAccess", ...input });
+  return response.members ?? [];
 }

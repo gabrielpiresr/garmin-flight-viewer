@@ -14,6 +14,7 @@ import { getPublicScheduleCached, invalidatePublicSchedule } from "../lib/schedu
 import { getStudentCreditStatement } from "../lib/creditsDb";
 import { freeBalanceForDateFromPools, isWeekendDate } from "../lib/creditWeekday";
 import { getAvailableFlightCreditPackages } from "../lib/flightCreditSalesDb";
+import { getFlightReviewClubStatus } from "../lib/caktoDb";
 import type { StudentCreditModelSummary, StudentCreditStatement } from "../types/credits";
 import { DEFAULT_FLIGHT_SCHEDULE_RULES, DEFAULT_SCHOOL_RULES, type FlightScheduleRules } from "../types/schoolRules";
 import type { ScheduleStudentHelpConfig } from "../types/scheduleStudentHelp";
@@ -1153,6 +1154,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [flexibilityMinutes, setFlexibilityMinutes] = useState(30);
   const [bookingNotes, setBookingNotes] = useState("");
+  const [frcAccess, setFrcAccess] = useState(false);
+  const [frcAccessLoading, setFrcAccessLoading] = useState(false);
   // Checkbox obrigatório de ciência (a escola confirma entre 48h e 12h antes)
   const [bookingAck, setBookingAck] = useState(false);
   // Mobile abre direto na visão diária; desktop na semanal.
@@ -1361,6 +1364,31 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   }, [bookingOpen, user?.id, user?.role, scheduleStudentUserId, reloadKey]);
 
   useEffect(() => { setFlexibilityMinutes(rules.slotMinutes); }, [rules.slotMinutes]);
+
+  useEffect(() => {
+    const standardMax = Math.max(0, Math.ceil(rules.maxBookingLeadDays));
+    const frcMax = Math.max(standardMax, Math.ceil(rules.maxBookingLeadDaysFrc ?? standardMax));
+    if (!bookingOpen || !scheduleStudentUserId || frcMax <= standardMax) {
+      setFrcAccess(false);
+      setFrcAccessLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFrcAccessLoading(true);
+    void getFlightReviewClubStatus(scheduleStudentUserId)
+      .then((status) => {
+        if (!cancelled) setFrcAccess(status.hasAccess);
+      })
+      .catch(() => {
+        if (!cancelled) setFrcAccess(false);
+      })
+      .finally(() => {
+        if (!cancelled) setFrcAccessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bookingOpen, scheduleStudentUserId, rules.maxBookingLeadDays, rules.maxBookingLeadDaysFrc]);
 
   // Escala futura (mês atual + 2 meses): buscada apenas no PRIMEIRO acesso ao modal.
   // futureLoadedRef só é resetado por invalidateAndReload (após uma mutação).
@@ -1606,9 +1634,25 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     return toLocalIso(date);
   }, [rules.minBookingLeadDays]);
   const dateTooEarly = Boolean(flightDate) && flightDate < minBookingDate;
+  const maxBookingDate = useMemo(() => {
+    const date = new Date();
+    date.setDate(date.getDate() + Math.max(0, Math.ceil(rules.maxBookingLeadDays)));
+    return toLocalIso(date);
+  }, [rules.maxBookingLeadDays]);
+  const maxBookingDateFrc = useMemo(() => {
+    const date = new Date();
+    const standardMax = Math.max(0, Math.ceil(rules.maxBookingLeadDays));
+    const frcMax = Math.max(standardMax, Math.ceil(rules.maxBookingLeadDaysFrc ?? standardMax));
+    date.setDate(date.getDate() + frcMax);
+    return toLocalIso(date);
+  }, [rules.maxBookingLeadDays, rules.maxBookingLeadDaysFrc]);
+  const dateBeyondFrcMax = Boolean(flightDate) && flightDate > maxBookingDateFrc;
+  const dateRequiresFrc = Boolean(flightDate) && !actingForStudentId && flightDate > maxBookingDate && !dateBeyondFrcMax && !frcAccess;
+  const dateUsesFrcBenefit = Boolean(flightDate) && flightDate > maxBookingDate && !dateBeyondFrcMax && frcAccess;
+  const dateTooLate = dateBeyondFrcMax || dateRequiresFrc;
 
   // Dia sem nenhum horário livre nesta aeronave: data em vermelho e campos abaixo inativos.
-  const noSlotsForDay = Boolean(flightDate) && !dateTooEarly && availableTimeSlots.length === 0;
+  const noSlotsForDay = Boolean(flightDate) && !dateTooEarly && !dateTooLate && availableTimeSlots.length === 0;
 
   // Flexibility options (item 5)
   const flexibilityOptions = useMemo(
@@ -1861,6 +1905,17 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       });
       return;
     }
+    if (newDate > maxBookingDateFrc) {
+      showToast({ variant: "error", message: `Agendamento permitido ate ${formatDate(maxBookingDateFrc)}.` });
+      return;
+    }
+    if (!actingForStudentId && !frcAccess && newDate > maxBookingDate) {
+      showToast({
+        variant: "error",
+        message: `Somente integrantes do FRC podem agendar com mais de ${rules.maxBookingLeadDays} dia${rules.maxBookingLeadDays !== 1 ? "s" : ""} de antecedencia.`,
+      });
+      return;
+    }
     if (!buildStartSlotOptions(rules, newDate).some((opt) => opt.value === newStart)) {
       showToast({ variant: "error", message: "Horário fora da grade de agendamento. Solte o voo em um horário válido." });
       return;
@@ -1921,6 +1976,20 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       showToast({
         variant: "error",
         message: "Este dia está na janela mais provável de parada por manutenção — não é possível marcar novos voos.",
+      });
+      return;
+    }
+    if (dateRequiresFrc) {
+      showToast({
+        variant: "error",
+        message: `Somente integrantes do FRC podem agendar com mais de ${rules.maxBookingLeadDays} dia${rules.maxBookingLeadDays !== 1 ? "s" : ""} de antecedencia.`,
+      });
+      return;
+    }
+    if (dateBeyondFrcMax) {
+      showToast({
+        variant: "error",
+        message: `Agendamento permitido ate ${formatDate(maxBookingDateFrc)}.`,
       });
       return;
     }
@@ -2515,12 +2584,43 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                   type="date"
                   value={flightDate}
                   min={minBookingDate}
+                  max={maxBookingDateFrc}
                   onChange={(e) => setFlightDate(e.target.value)}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white ${dateTooEarly || noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm text-white ${dateTooEarly || dateTooLate || noSlotsForDay ? "border-red-600 bg-red-950/40" : "border-slate-700 bg-slate-800"}`}
                 />
                 {dateTooEarly && (
                   <span className="mt-1 block text-[11px] font-medium text-red-400">
                     Antecedência mínima de {rules.minBookingLeadDays} dia{rules.minBookingLeadDays !== 1 ? "s" : ""} — escolha a partir de {formatDate(minBookingDate)}.
+                  </span>
+                )}
+                {dateRequiresFrc && (
+                  <div className="mt-2 rounded-lg border border-amber-600/50 bg-amber-900/20 p-2 text-[11px] text-amber-100">
+                    <p className="font-medium">
+                      Somente integrantes do FRC podem agendar com mais de {rules.maxBookingLeadDays} dia{rules.maxBookingLeadDays !== 1 ? "s" : ""} de antecedência.
+                      {frcAccessLoading ? " Verificando sua assinatura..." : ""}
+                    </p>
+                    {!actingForStudentId ? (
+                      <button
+                        type="button"
+                        onClick={() => window.location.assign("/flight-review-club")}
+                        className="mt-2 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+                      >
+                        Assinar FRC
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+                {dateUsesFrcBenefit && (
+                  <div className="mt-2 rounded-lg border border-emerald-500/50 bg-emerald-900/20 p-2 text-[11px] text-emerald-100">
+                    <p className="font-semibold">Benefício premium FRC liberado</p>
+                    <p className="mt-0.5">
+                      Como integrante do FRC, você pode agendar esta data com mais de {rules.maxBookingLeadDays} dia{rules.maxBookingLeadDays !== 1 ? "s" : ""} de antecedência.
+                    </p>
+                  </div>
+                )}
+                {dateBeyondFrcMax && (
+                  <span className="mt-1 block text-[11px] font-medium text-red-400">
+                    Agendamento permitido até {formatDate(maxBookingDateFrc)} ({Math.max(rules.maxBookingLeadDays, rules.maxBookingLeadDaysFrc ?? rules.maxBookingLeadDays)} dias de antecedência).
                   </span>
                 )}
                 {noSlotsForDay && (
@@ -2701,6 +2801,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                       disabled={
                         !aircraftIdent ||
                         dateTooEarly ||
+                        dateTooLate ||
                         noSlotsForDay ||
                         startTimeInvalid ||
                         waitlistBlocked ||
@@ -2723,6 +2824,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
                         saving ||
                         !bookingAck ||
                         dateTooEarly ||
+                        dateTooLate ||
                         noSlotsForDay ||
                         startTimeInvalid ||
                         waitlistBlocked ||

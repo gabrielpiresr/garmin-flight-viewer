@@ -162,14 +162,6 @@ export default function App() {
     );
   }
 
-  if (isFlightReviewClubRoute) {
-    return (
-      <Suspense fallback={<AppLoading />}>
-        <FlightReviewClubPage />
-      </Suspense>
-    );
-  }
-
   if (isQualificacaoRoute) {
     return (
       <Suspense fallback={<AppLoading />}>
@@ -212,6 +204,14 @@ export default function App() {
 
   if (loading) {
     return bootFallback;
+  }
+
+  if (isFlightReviewClubRoute && (!user || user.role !== "aluno")) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <FlightReviewClubPage />
+      </Suspense>
+    );
   }
 
   if (!user) {

@@ -18,6 +18,8 @@ const eventLabels: Record<string, string> = {
   openfinance_nubank_gerado: "Open Finance gerado",
   refund: "Reembolso",
   chargeback: "Chargeback",
+  subscription_renewed: "Assinatura renovada",
+  subscription_canceled: "Assinatura cancelada",
   saga_imported_receipt: "Recebimento importado (SAGA)",
   saga_credit_created: "Crédito lançado (SAGA)",
 };

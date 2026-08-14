@@ -273,6 +273,10 @@ export function ScheduleSettingsPanel() {
       showToast({ variant: "error", message: "A antecedência mínima não pode superar a máxima." });
       return;
     }
+    if (schedule.maxBookingLeadDaysFrc < schedule.maxBookingLeadDays) {
+      showToast({ variant: "error", message: "A antecedencia maxima FRC nao pode ser menor que a comum." });
+      return;
+    }
     setSaving(true);
     try {
       const saved = await saveSchoolRules({
@@ -516,6 +520,7 @@ export function ScheduleSettingsPanel() {
       >
         {numberField("minBookingLeadDays", "Antecedência mínima (dias)", "O aluno só consegue marcar voos com pelo menos esta quantidade de dias de antecedência. 0 = pode marcar para hoje.")}
         {numberField("maxBookingLeadDays", "Antecedência máxima (dias)", "Horizonte máximo de agendamento: o aluno não consegue marcar voos além desta quantidade de dias no futuro.")}
+        {numberField("maxBookingLeadDaysFrc", "Antecedência máxima (dias) FRC", "Horizonte máximo para alunos com Flight Review Club ativo. Use um valor maior que a antecedência comum para liberar agenda antecipada aos assinantes.")}
         {nullableField("weekdayMaxFlightsPerDay", "Voos por dia (seg–sex)", "Quantidade máxima de voos ativos que um aluno pode ter num mesmo dia de semana.")}
         {nullableField("weekendMaxFlightsPerDay", "Voos por dia (fim de semana)", "Quantidade máxima de voos ativos que um aluno pode ter num mesmo dia de sábado ou domingo.")}
         {nullableField("weeklyMaxFlights", "Voos por semana", "Quantidade máxima de voos agendados que o aluno pode ter na mesma semana (segunda a domingo, fim de semana incluído).")}

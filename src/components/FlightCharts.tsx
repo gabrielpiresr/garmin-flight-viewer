@@ -79,7 +79,9 @@ function calcYDomain(data: ChartRow[], visibleKeys: string[], domain: Domain): [
 }
 
 function defaultHiddenForPanel(panelId: string, keys: string[]): Set<string> {
-  if (panelId === "alt" && keys.includes("gpsAltFt")) return new Set(keys.filter((k) => k !== "gpsAltFt"));
+  if (panelId === "alt" && keys.includes("gpsAltFt")) {
+    return new Set(keys.filter((k) => k !== "gpsAltFt" && k !== "terrainFt"));
+  }
   if (panelId === "spd" && keys.includes("iasKt")) return new Set(keys.filter((k) => k !== "iasKt"));
   return new Set();
 }
@@ -390,6 +392,49 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.strokeStyle = "rgba(125, 211, 252, 0.85)";
         ctx.lineWidth = 1;
         ctx.strokeRect(Math.min(dx1, dx2), top, Math.abs(dx2 - dx1), plotH);
+      }
+
+      if (visibleKeys.includes("terrainFt")) {
+        const gradient = ctx.createLinearGradient(0, top, 0, top + plotH);
+        gradient.addColorStop(0, "rgba(196, 165, 116, 0.70)");
+        gradient.addColorStop(1, "rgba(139, 105, 20, 0.95)");
+        ctx.fillStyle = gradient;
+        ctx.strokeStyle = "#ca8a04";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        let active = false;
+        let lastX = 0;
+        for (const row of displayData) {
+          if (row.x < xMin || row.x > xMax) continue;
+          const value = row.terrainFt;
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            if (active) {
+              ctx.lineTo(lastX, top + plotH);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+              ctx.beginPath();
+              active = false;
+            }
+            continue;
+          }
+          const x = toX(row.x);
+          const y = toY(value);
+          if (!active) {
+            ctx.moveTo(x, top + plotH);
+            ctx.lineTo(x, y);
+            active = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+          lastX = x;
+        }
+        if (active) {
+          ctx.lineTo(lastX, top + plotH);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
       }
 
       for (const ev of events ?? []) {

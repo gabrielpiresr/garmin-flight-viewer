@@ -18,9 +18,15 @@ const AUDIT_ID = process.env.APPWRITE_SCHEDULE_AUDIT_COLLECTION_ID || "schedule_
 const LOCKS_ID = process.env.APPWRITE_SCHEDULE_SLOT_LOCKS_COLLECTION_ID || "schedule_slot_locks";
 const SETTINGS_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
 const OP_WEEKS_ID = process.env.APPWRITE_OPERATIONAL_WEEKS_COLLECTION_ID || "aircraft_operational_weeks";
+const STUDENT_TRACKS_ID = process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID || "student_training_tracks";
+const FLIGHT_REVIEW_CLUB_MEMBERSHIPS_ID =
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID ||
+  process.env.APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COL_ID ||
+  "flight_review_club_memberships";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "";
 const ACTIVE_STATUSES = ["Pendente", "Confirmado"];
+const FRC_ACTIVE_STATUSES = new Set(["active", "trial"]);
 const SAGA_IMPORT_MAPPING_KEY = "sagaImportMapping";
 
 function response(res, status, body) {
@@ -82,6 +88,7 @@ function defaultScheduleRules() {
     autoDebitCancellationPenalty: false,
     minBookingLeadDays: 0,
     maxBookingLeadDays: 365,
+    maxBookingLeadDaysFrc: 365,
     studentHiddenAircraftIdents: [],
     studentWaitlistAircraftIdents: [],
     maintenanceAlertEnabled: false,
@@ -114,6 +121,7 @@ function normalizeRules(raw) {
     weekendMaxHours: Math.max(0.25, number(raw?.weekendMaxHours, raw?.maxRequestHours || 4)),
     minBookingLeadDays: integer(raw?.minBookingLeadDays, 0),
     maxBookingLeadDays: integer(raw?.maxBookingLeadDays, 365),
+    maxBookingLeadDaysFrc: integer(raw?.maxBookingLeadDaysFrc, raw?.maxBookingLeadDays ?? 365),
     nightBookingWeekdays: Array.isArray(raw?.nightBookingWeekdays) ? raw.nightBookingWeekdays.map(Number) : [],
     weeklyMaxFlightHours: number(raw?.weeklyMaxFlightHours, 0) > 0 ? number(raw.weeklyMaxFlightHours, 0) : null,
     weeklyMaxFlights: number(raw?.weeklyMaxFlights, 0) > 0 ? Math.round(number(raw.weeklyMaxFlights, 0)) : null,
@@ -204,6 +212,54 @@ async function getProfile(userId) {
   const profile = result.documents[0];
   if (!profile) fail("Perfil não encontrado.", 403);
   return profile;
+}
+
+function normalizeFrcStatus(value) {
+  return clean(value).toLowerCase() || "unknown";
+}
+
+function frcAccessUntilMs(doc) {
+  const value = clean(doc?.access_until || doc?.next_payment_date);
+  if (!value) return 0;
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59:59.999Z` : value;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function hasFrcMembershipAccess(doc) {
+  const status = normalizeFrcStatus(doc?.status);
+  if (FRC_ACTIVE_STATUSES.has(status)) return true;
+  return status === "canceled" && frcAccessUntilMs(doc) >= Date.now();
+}
+
+async function studentHasActiveFrcMembership(studentId) {
+  const safeStudentId = clean(studentId);
+  if (!safeStudentId || !FLIGHT_REVIEW_CLUB_MEMBERSHIPS_ID) return false;
+  const result = await databases.listDocuments(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeStudentId]),
+    sdk.Query.limit(100),
+  ]).catch(() => ({ documents: [] }));
+  return result.documents.some((doc) => hasFrcMembershipAccess(doc));
+}
+
+async function studentHasLegacyFrcTrack(studentId) {
+  const safeStudentId = clean(studentId);
+  if (!safeStudentId || !STUDENT_TRACKS_ID) return false;
+  const result = await databases.listDocuments(DATABASE_ID, STUDENT_TRACKS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("student_user_id", [safeStudentId]),
+    sdk.Query.limit(100),
+  ]).catch(() => ({ documents: [] }));
+  return result.documents.some((doc) => doc.status === "active" && doc.is_flight_review_club_member === true);
+}
+
+async function studentHasScheduleFrcAccess(studentId) {
+  const [activeMembership, legacyTrack] = await Promise.all([
+    studentHasActiveFrcMembership(studentId),
+    studentHasLegacyFrcTrack(studentId),
+  ]);
+  return activeMembership || legacyTrack;
 }
 
 function getEffectiveRole(profile) {
@@ -402,16 +458,37 @@ function brCancelStamp() {
  * Antecedência mínima/máxima em NÍVEL DE DATA — mesmo critério da trava do
  * formulário do aluno (que valida por data, não por horas corridas).
  */
-function validateBookingLeadDates(date, presentationMs, rules) {
+function effectiveMaxBookingLeadDays(rules, hasFrcAccess = false) {
+  const standardMax = integer(rules.maxBookingLeadDays, 365);
+  const frcMax = integer(rules.maxBookingLeadDaysFrc, standardMax);
+  return hasFrcAccess ? Math.max(standardMax, frcMax) : standardMax;
+}
+
+async function resolveScheduleFrcAccessForLeadDate(date, today, rules, studentId) {
+  const standardMax = integer(rules.maxBookingLeadDays, 365);
+  const frcMax = integer(rules.maxBookingLeadDaysFrc, standardMax);
+  if (frcMax <= standardMax) return false;
+  if (date <= addDays(today, standardMax)) return false;
+  return studentHasScheduleFrcAccess(studentId);
+}
+
+function validateBookingLeadDates(date, presentationMs, rules, { hasFrcAccess = false } = {}) {
   if (presentationMs <= Date.now()) fail("O horário selecionado já passou.");
   const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
   const minDate = addDays(today, rules.minBookingLeadDays);
   if (date < minDate) {
     fail(`Antecedência mínima de ${rules.minBookingLeadDays} dia(s): escolha a partir de ${brDate(minDate)}.`);
   }
-  const maxDate = addDays(today, rules.maxBookingLeadDays);
+  const standardMaxDays = integer(rules.maxBookingLeadDays, 365);
+  const frcMaxDays = integer(rules.maxBookingLeadDaysFrc, standardMaxDays);
+  const standardMaxDate = addDays(today, standardMaxDays);
+  if (!hasFrcAccess && frcMaxDays > standardMaxDays && date > standardMaxDate && date <= addDays(today, frcMaxDays)) {
+    fail(`Agendamentos com mais de ${standardMaxDays} dia(s) de antecedência são exclusivos para integrantes do Flight Review Club.`);
+  }
+  const maxDays = effectiveMaxBookingLeadDays(rules, hasFrcAccess);
+  const maxDate = addDays(today, maxDays);
   if (date > maxDate) {
-    fail(`Agendamento permitido até ${brDate(maxDate)} (${rules.maxBookingLeadDays} dias de antecedência).`);
+    fail(`Agendamento permitido até ${brDate(maxDate)} (${maxDays} dias de antecedência).`);
   }
 }
 
@@ -1897,7 +1974,9 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
   if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
-  validateBookingLeadDates(date, presentationMs, rules);
+  const todayForLead = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const hasFrcAccessForLead = await resolveScheduleFrcAccessForLeadDate(date, todayForLead, rules, studentId);
+  validateBookingLeadDates(date, presentationMs, rules, { hasFrcAccess: hasFrcAccessForLead });
   if (!waitlistBooking) {
     await validateMaintenanceDowntimeBlock(rules, actorRole, aircraft, date);
   }
@@ -2145,6 +2224,9 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   const aircraftModelId = waitlistBooking ? await waitlistFallbackModelId(rules) : aircraft.model_id;
   const startMinute = parseClock(payload.startTime);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
+  const todayForLead = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const hasFrcAccessForLead = await resolveScheduleFrcAccessForLeadDate(date, todayForLead, rules, studentId);
+  validateBookingLeadDates(date, Date.parse(times.occupiedStartAt), rules, { hasFrcAccess: hasFrcAccessForLead });
   if (!waitlistBooking) {
     await validateBlockedSlot(aircraft.$id, date, startMinute - rules.bufferBeforeMinutes, startMinute + durationMinutes + rules.bufferAfterMinutes);
   }
@@ -2380,7 +2462,10 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
   if (startMinute < scheduleStartMinute) fail(`Agendamentos a partir das ${rules.scheduleStartTime || "06:00"}.`);
   const times = scheduleTimes(date, payload.startTime, durationMinutes, rules);
   const presentationMs = Date.parse(times.occupiedStartAt);
-  validateBookingLeadDates(date, presentationMs, rules);
+  const leadStudentUserId = clean(event.studentUserId) || (own ? actorId : "");
+  const todayForLead = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const hasFrcAccessForLead = await resolveScheduleFrcAccessForLeadDate(date, todayForLead, rules, leadStudentUserId);
+  validateBookingLeadDates(date, presentationMs, rules, { hasFrcAccess: hasFrcAccessForLead });
   if (!waitlistBooking) {
     await validateMaintenanceDowntimeBlock(rules, actorRole, aircraft, date);
   }

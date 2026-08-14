@@ -41,6 +41,7 @@ export type AdminTabKey =
   | "receipts"
   | "crm"
   | "instructor-admission"
+  | "frc"
   | "settings"
   | "settings.regras"
   | "settings.email"
@@ -65,9 +66,11 @@ export type AdminTabKey =
   | "atualizacoes.agendamentos"
   | "solo-flight"
   | "aisweb"
+  | "whatsapp"
   | "planejamento"
   | "radar"
-  | "album";
+  | "album"
+  | "marketplace";
 
 /** Chaves de abas do portal instrutor */
 export type InstructorTabKey =
@@ -94,8 +97,10 @@ export type InstructorTabKey =
   | "indique-ganhe"
   | "solo-flight"
   | "aisweb"
+  | "whatsapp"
   | "album"
-  | "painel";
+  | "painel"
+  | "marketplace";
 
 /** Chaves de abas do portal aluno */
 export type StudentTabKey =
@@ -116,8 +121,11 @@ export type StudentTabKey =
   | "indique-ganhe"
   | "endossos"
   | "aisweb"
+  | "planejamento"
+  | "whatsapp"
   | "album"
-  | "painel";
+  | "painel"
+  | "marketplace";
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
 
@@ -233,6 +241,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "receipts": "Recebimentos",
   "crm": "CRM",
   "instructor-admission": "Instrutores",
+  "frc": "FRC",
   "settings": "Configurações",
   "settings.regras": "Configurações › Regras",
   "settings.email": "Configurações › E-mail",
@@ -258,8 +267,10 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "solo-flight": "Voo solo",
   "aisweb": "AISWEB",
   "planejamento": "Planejamento",
+  "whatsapp": "WhatsApp",
   "radar": "Radar",
   "album": "Álbum",
+  "marketplace": "Marketplace",
 };
 
 /** Labels descritivos para abas do portal instrutor */
@@ -287,8 +298,10 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "indique-ganhe": "Indique e ganhe",
   "solo-flight": "Voo solo",
   "aisweb": "AISWEB",
+  "whatsapp": "WhatsApp",
   "album": "Álbum",
   "painel": "Painel",
+  "marketplace": "Marketplace",
 };
 
 /** Labels descritivos para abas do portal aluno */
@@ -310,6 +323,9 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "indique-ganhe": "Indique e ganhe",
   "endossos": "Endossos",
   "aisweb": "AISWEB",
+  "planejamento": "Planejamento",
+  "whatsapp": "WhatsApp",
   "album": "Álbum",
   "painel": "Painel",
+  "marketplace": "Marketplace",
 };

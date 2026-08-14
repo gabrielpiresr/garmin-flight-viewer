@@ -24,6 +24,7 @@ import {
 } from "../lib/flightStats";
 import { detectFlightSegments } from "../lib/flightSegments";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
+import { fetchTerrainGrid, sampleGridHeightM, type TerrainGrid } from "../lib/terrainTiles";
 import {
   MAX_TELEMETRY_CSV_FILES,
   mergeTelemetryCsvFiles,
@@ -52,7 +53,30 @@ type Props = {
   parsedResult?: ParseResult;
   publicMode?: boolean;
   clubLocked?: boolean;
+  /** When false, keep parsed state but unmount the Leaflet map and charts. */
+  active?: boolean;
 };
+
+const MAX_MAP_POINTS = 1_800;
+const MAX_CHART_DRAW_ROWS = 1_200;
+
+function downsampleList<T>(items: T[], max: number): T[] {
+  if (items.length <= max) return items;
+  const step = Math.ceil(items.length / max);
+  const out = items.filter((_, index) => index % step === 0);
+  const last = items[items.length - 1];
+  if (last && out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+function isPlottablePoint(point: FlightPoint): boolean {
+  return (
+    Number.isFinite(point.lat) &&
+    Number.isFinite(point.lon) &&
+    Math.abs(point.lat) <= 90 &&
+    Math.abs(point.lon) <= 180
+  );
+}
 
 /** Binary search: finds GPS point closest to targetT (ms epoch). O(log n). */
 function findHoverPos(
@@ -80,7 +104,30 @@ function findHoverPos(
   return best ? [best.lat, best.lon] : null;
 }
 
-export function TelemetriaTab({ flightId, parsedResult, publicMode = false, clubLocked = false }: Props) {
+function findPointForChartX(points: FlightPoint[], chartTimeBaseMs: number | null, x: number): FlightPoint | null {
+  if (points.length === 0) return null;
+  if (chartTimeBaseMs != null) {
+    const targetT = chartTimeBaseMs + x;
+    let lo = 0;
+    let hi = points.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const t = points[mid]?.t;
+      if (t != null && t < targetT) lo = mid + 1;
+      else hi = mid;
+    }
+    const a = points[lo - 1];
+    const b = points[lo];
+    if (!a) return b ?? null;
+    if (!b) return a;
+    if (a.t == null || b.t == null) return b;
+    return Math.abs(a.t - targetT) <= Math.abs(b.t - targetT) ? a : b;
+  }
+  const ratio = points.length > 1 ? Math.max(0, Math.min(1, x / Math.max(1, points.length - 1))) : 0;
+  return points[Math.round(ratio * (points.length - 1))] ?? null;
+}
+
+export function TelemetriaTab({ flightId, parsedResult, publicMode = false, clubLocked = false, active = true }: Props) {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -94,6 +141,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   const [telemetryDirty, setTelemetryDirty] = useState(false);
   const [points, setPoints] = useState<FlightPoint[]>([]);
   const [chartData, setChartData] = useState<ChartRow[]>([]);
+  const [terrainGrid, setTerrainGrid] = useState<TerrainGrid | null>(null);
   const [hasChartTime, setHasChartTime] = useState(false);
   const [chartTimeBaseMs, setChartTimeBaseMs] = useState<number | null>(null);
   const [telemetryColumns, setTelemetryColumns] = useState<Record<string, string>>({});
@@ -251,6 +299,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     setTelemetryDirty(false);
     setPoints([]);
     setChartData([]);
+    setTerrainGrid(null);
     setHasChartTime(false);
     setChartTimeBaseMs(null);
     setTelemetryColumns({});
@@ -622,14 +671,76 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     }
   };
 
-  const segments = useMemo(
-    () => chartData.length > 0 && hasChartTime
-      ? detectFlightSegments(chartData, chartTimeBaseMs, points, {
-          aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
-        })
-      : [],
-    [chartData, flightMeta?.header.aircraft, hasChartTime, chartTimeBaseMs, parsedResult?.aircraftIdent, points],
+  const [segments, setSegments] = useState<FlightSegment[]>([]);
+  const mapPoints = useMemo(
+    () => downsampleList(points.filter(isPlottablePoint), MAX_MAP_POINTS),
+    [points],
   );
+  const chartDrawData = useMemo(
+    () => downsampleList(chartData, MAX_CHART_DRAW_ROWS),
+    [chartData],
+  );
+
+  useEffect(() => {
+    if (mapPoints.length < 2) {
+      setTerrainGrid(null);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetchTerrainGrid(
+        mapPoints.map((p) => ({ lat: p.lat, lng: p.lon })),
+        { signal: controller.signal, padDeg: 0.18, maxTiles: 24, maxZoom: 11, targetCells: 140 },
+      )
+        .then((grid) => {
+          if (!cancelled) setTerrainGrid(grid);
+        })
+        .catch(() => {
+          if (!cancelled && !controller.signal.aborted) setTerrainGrid(null);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [mapPoints]);
+
+  const chartDrawDataWithTerrain = useMemo(() => {
+    if (!terrainGrid || chartDrawData.length === 0 || mapPoints.length === 0) return chartDrawData;
+    return chartDrawData.map((row) => {
+      const point = findPointForChartX(mapPoints, hasChartTime ? chartTimeBaseMs : null, row.x);
+      if (!point) return { ...row, terrainFt: null };
+      const terrainFt = sampleGridHeightM(terrainGrid, point.lat, point.lon) * 3.28084;
+      return { ...row, terrainFt: Number.isFinite(terrainFt) ? terrainFt : null };
+    });
+  }, [chartData.length, chartDrawData, chartTimeBaseMs, hasChartTime, mapPoints, terrainGrid]);
+
+  const telemetryColumnsWithTerrain = useMemo(() => {
+    if (!terrainGrid) return telemetryColumns;
+    return { ...telemetryColumns, terrainFt: "Terreno" };
+  }, [telemetryColumns, terrainGrid]);
+
+  useEffect(() => {
+    if (!(chartData.length > 0 && hasChartTime)) {
+      setSegments([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      setSegments(
+        detectFlightSegments(chartData, chartTimeBaseMs, points, {
+          aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
+        }),
+      );
+    }, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [chartData, chartTimeBaseMs, flightMeta?.header.aircraft, hasChartTime, parsedResult?.aircraftIdent, points]);
 
   const selectedSegment = useMemo(
     () => segments.find((s) => s.id === selectedSegmentId) ?? null,
@@ -959,7 +1070,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
         />
       )}
 
-      {(points.length > 0 || chartData.length > 0) && (
+      {(points.length > 0 || chartData.length > 0) && active && (
         <div
           ref={telemetryFullscreenRef}
           className={
@@ -1013,10 +1124,11 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
                     {mapExpanded ? "Sair da tela cheia" : "Tela cheia"}
                   </button>
                   <FlightMap
-                    points={points}
+                    points={mapPoints}
                     selectedRangeT={selectedRangeT}
                     trafficPattern={enrichedPattern ?? selectedSegment?.trafficPattern}
                     chartTimeBaseMs={chartTimeBaseMs}
+                    deferHeavyLayers
                     className={
                       mapExpanded
                         ? "h-full w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
@@ -1035,10 +1147,10 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
 
               <div className={mapExpanded ? "min-h-0 min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
                 <FlightCharts
-                  chartData={chartData}
+                  chartData={chartDrawDataWithTerrain}
                   hasTime={hasChartTime}
                   chartTimeBaseMs={chartTimeBaseMs}
-                  resolved={telemetryColumns}
+                  resolved={telemetryColumnsWithTerrain}
                   onHoverX={handleHoverX}
                   onXDomainChange={handleChartDomainChange}
                   xDomain={activeChartXDomain}

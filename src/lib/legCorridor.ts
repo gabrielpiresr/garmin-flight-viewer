@@ -138,13 +138,16 @@ export function matchReaCorridorForLeg(
 
 export function reaFeatureToCorridor(feature: ReaRouteFeature): LegCorridorInfo | null {
   const props = feature.properties || {};
-  const name = corridorDisplayName(props.nome);
-  if (!name) return null;
   const a = endpointA(props);
   const b = endpointB(props);
   const aPt = a.lat != null && a.lon != null ? { lat: a.lat, lng: a.lon } : null;
   const bPt = b.lat != null && b.lon != null ? { lat: b.lat, lng: b.lon } : null;
   if (!aPt && !bPt && !feature.geometry) return null;
+  const name =
+    corridorDisplayName(props.nome) ||
+    corridorDisplayName(props.identificador) ||
+    [a.name, b.name].filter(Boolean).join(" – ") ||
+    "REA";
   const { max, min } = resolveReaAltitudes(props);
   return {
     name,

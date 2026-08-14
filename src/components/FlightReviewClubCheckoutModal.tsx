@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { createFlightReviewClubCheckout, quoteFlightReviewClubCheckout } from "../lib/caktoDb";
-import type { FlightReviewClubQuote } from "../types/cakto";
+import {
+  cancelFlightReviewClubSubscription,
+  createFlightReviewClubCheckout,
+  getFlightReviewClubStatus,
+  quoteFlightReviewClubCheckout,
+} from "../lib/caktoDb";
+import type { FlightReviewClubMembership, FlightReviewClubQuote, FlightReviewClubStatus } from "../types/cakto";
+import type { FlightReviewClubBillingMode, FlightReviewClubSubscriptionPlan } from "../types/schoolRules";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("pt-BR", {
@@ -29,36 +35,84 @@ function originalAmountFromDiscount(amount: number, discountPercent: number): nu
   return Math.round((amount / (1 - discountPercent / 100)) * 100) / 100;
 }
 
+function formatRecurrence(days: number): string {
+  if (days === 30) return "mensal";
+  if (days === 90) return "trimestral";
+  if (days === 180) return "semestral";
+  if (days === 365) return "anual";
+  return `a cada ${days} dias`;
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return "data ainda não disponível";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
+}
+
+function membershipStatusLabel(membership: FlightReviewClubMembership | null): string {
+  if (!membership) return "Ativo por trilha";
+  if (membership.status === "trial") return "Trial";
+  if (membership.status === "active") return "Ativa";
+  if (membership.status === "canceled") return "Cancelada";
+  return membership.status || "Indefinida";
+}
+
 export function FlightReviewClubCheckoutModal({
   open,
   onClose,
   fallbackUrl = "",
   adhesionTermUrl = "",
+  plans = [],
+  billingMode = "both",
 }: {
   open: boolean;
   onClose: () => void;
   fallbackUrl?: string;
   adhesionTermUrl?: string;
+  plans?: FlightReviewClubSubscriptionPlan[];
+  billingMode?: FlightReviewClubBillingMode;
 }) {
+  const recurringPlans = useMemo(
+    () => plans.filter((plan) => plan.enabled && Number(plan.amount) > 0),
+    [plans],
+  );
+  const canUseRecurring = billingMode !== "legacy_one_time" && recurringPlans.length > 0;
+  const defaultPlanId = recurringPlans[0]?.id ?? "";
+  const [selectedPlanId, setSelectedPlanId] = useState(defaultPlanId);
+  const [status, setStatus] = useState<FlightReviewClubStatus | null>(null);
   const [quote, setQuote] = useState<FlightReviewClubQuote | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   useEffect(() => {
     if (!open) return;
+    setSelectedPlanId(defaultPlanId);
+  }, [defaultPlanId, open]);
+
+  useEffect(() => {
+    if (!open) return;
     let cancelled = false;
+    const planId = canUseRecurring ? (selectedPlanId || defaultPlanId) : undefined;
+    const mode = canUseRecurring ? "student_subscription" : "legacy_one_time";
     setQuote(null);
+    setStatus(null);
     setError(null);
     setAcceptedTerms(false);
     setLoading(true);
-    void quoteFlightReviewClubCheckout()
-      .then((next) => {
-        if (!cancelled) setQuote(next);
-      })
+    void (async () => {
+      const nextStatus = await getFlightReviewClubStatus();
+      if (cancelled) return;
+      setStatus(nextStatus);
+      if (nextStatus.hasAccess) return;
+      const nextQuote = await quoteFlightReviewClubCheckout(planId, mode);
+      if (!cancelled) setQuote(nextQuote);
+    })()
       .catch((err) => {
-        if (!cancelled) setError((err as Error).message || "Nao foi possivel calcular seu preco agora.");
+        if (!cancelled) setError((err as Error).message || "Nao foi possivel carregar o Flight Review Club agora.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -66,7 +120,7 @@ export function FlightReviewClubCheckoutModal({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [canUseRecurring, defaultPlanId, open, selectedPlanId]);
 
   useEffect(() => {
     if (!open) return;
@@ -91,7 +145,10 @@ export function FlightReviewClubCheckoutModal({
     setCheckoutBusy(true);
     setError(null);
     try {
-      const checkout = await createFlightReviewClubCheckout();
+      const checkout = await createFlightReviewClubCheckout(
+        canUseRecurring ? (selectedPlanId || defaultPlanId) : undefined,
+        canUseRecurring ? "student_subscription" : "legacy_one_time",
+      );
       window.location.href = checkout.paymentUrl;
     } catch (err) {
       setError((err as Error).message || "Nao foi possivel gerar o checkout.");
@@ -101,9 +158,24 @@ export function FlightReviewClubCheckoutModal({
     }
   }
 
+  async function handleCancel() {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    setError(null);
+    try {
+      setStatus(await cancelFlightReviewClubSubscription());
+    } catch (err) {
+      setError((err as Error).message || "Nao foi possivel cancelar sua assinatura agora.");
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
   if (!open) return null;
+  const membership = status?.membership ?? null;
   const discountPercent = quote?.discountPercent ?? 0;
   const originalAmount = quote ? originalAmountFromDiscount(quote.amount, discountPercent) : null;
+  const isSubscriptionQuote = quote?.billingMode === "student_subscription";
 
   const body = (
     <div
@@ -120,16 +192,16 @@ export function FlightReviewClubCheckoutModal({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest text-sky-300/80">Flight Review Club</p>
-            <h3 className="mt-1 text-xl font-black text-white">Confira sua assinatura</h3>
+            <h3 className="mt-1 text-xl font-black text-white">{status?.hasAccess ? "Sua assinatura" : "Confira sua assinatura"}</h3>
             <p className="mt-1 text-sm text-slate-400">
-              Voce esta comprando acesso aos beneficios do FRC em pagamento unico, valido ate o final do curso vinculado a sua trilha atual.
+              {status?.hasAccess
+                ? "Seu acesso ao FRC esta ativo na plataforma."
+                : isSubscriptionQuote
+                  ? "Escolha a recorrencia e finalize a assinatura pela Cakto."
+                  : "Voce esta comprando acesso em pagamento unico, valido ate o final do curso vinculado a sua trilha atual."}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
-          >
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
             Fechar
           </button>
         </div>
@@ -139,17 +211,65 @@ export function FlightReviewClubCheckoutModal({
             <div className="h-20 animate-pulse rounded-xl bg-slate-800/60" />
             <div className="h-12 animate-pulse rounded-xl bg-slate-800/40" />
           </div>
+        ) : status?.hasAccess ? (
+          <div className="mt-5 space-y-4">
+            <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-emerald-200/80">Status</p>
+              <p className="mt-1 text-2xl font-black text-white">{membershipStatusLabel(membership)}</p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Plano</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">{membership?.planName || "FRC legado por trilha"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Próxima cobrança</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">{formatDate(membership?.nextPaymentDate ?? null)}</p>
+                </div>
+              </div>
+            </div>
+            {membership?.caktoSubscriptionId && ["active", "trial"].includes(membership.status) ? (
+              <button
+                type="button"
+                onClick={() => void handleCancel()}
+                disabled={cancelBusy}
+                className="w-full min-h-11 rounded-xl border border-red-500/40 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/10 disabled:cursor-wait disabled:opacity-60"
+              >
+                {cancelBusy ? "Cancelando..." : "Cancelar assinatura"}
+              </button>
+            ) : null}
+          </div>
         ) : quote ? (
           <div className="mt-5 space-y-4">
+            {canUseRecurring ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {recurringPlans.map((plan) => {
+                  const active = selectedPlanId === plan.id;
+                  return (
+                    <button
+                      key={plan.id}
+                      type="button"
+                      onClick={() => setSelectedPlanId(plan.id)}
+                      className={`rounded-xl border p-3 text-left transition ${
+                        active ? "border-sky-400 bg-sky-400/10 text-white" : "border-slate-800 bg-slate-900/60 text-slate-300 hover:border-slate-700"
+                      }`}
+                    >
+                      <span className="block text-sm font-black">{plan.label}</span>
+                      <span className="mt-1 block text-xs text-slate-400">{formatCurrency(plan.amount)} / {formatRecurrence(plan.recurrencePeriodDays)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
             <div className="rounded-2xl border border-sky-500/25 bg-sky-500/10 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-widest text-sky-200/80">Valor encontrado</p>
-                  {originalAmount ? (
-                    <p className="mt-2 text-sm font-semibold text-slate-400 line-through">{formatCurrency(originalAmount)}</p>
-                  ) : null}
+                  {originalAmount ? <p className="mt-2 text-sm font-semibold text-slate-400 line-through">{formatCurrency(originalAmount)}</p> : null}
                   <p className="text-3xl font-black text-white">{formatCurrency(quote.amount)}</p>
-                  <p className="mt-1 text-sm text-slate-300">Pagamento unico pela Cakto.</p>
+                  <p className="mt-1 text-sm text-slate-300">
+                    {isSubscriptionQuote ? `Assinatura ${formatRecurrence(quote.recurrencePeriodDays ?? 30)} pela Cakto.` : "Pagamento unico pela Cakto."}
+                  </p>
                 </div>
                 {discountPercent > 0 ? (
                   <div className="rounded-xl border border-amber-300/40 bg-amber-400/15 px-3 py-2 text-right">
@@ -160,25 +280,21 @@ export function FlightReviewClubCheckoutModal({
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Trilha</p>
-                <p className="mt-1 text-sm font-semibold text-slate-100">{quote.trainingTrackName || "Trilha do aluno"}</p>
+            {!isSubscriptionQuote ? (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Trilha</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">{quote.trainingTrackName || "Trilha do aluno"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Horas voadas</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">{formatHours(quote.flownHours)}</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Faixa</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">{formatRange(quote)}</p>
+                </div>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Horas voadas</p>
-                <p className="mt-1 text-sm font-semibold text-slate-100">{formatHours(quote.flownHours)}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Faixa</p>
-                <p className="mt-1 text-sm font-semibold text-slate-100">{formatRange(quote)}</p>
-              </div>
-            </div>
-
-            {discountPercent > 0 ? (
-              <p className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100">
-                Condicao especial aplicada automaticamente para sua trilha e horas voadas.
-              </p>
             ) : null}
 
             <label className="flex items-start gap-3 rounded-xl border border-slate-700/70 bg-slate-900/60 p-3 text-sm text-slate-300">
@@ -206,28 +322,22 @@ export function FlightReviewClubCheckoutModal({
           </div>
         ) : null}
 
-        {error ? (
-          <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
-            {error}
-          </p>
-        ) : null}
+        {error ? <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">{error}</p> : null}
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
-          >
-            Agora nao
+          <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800">
+            {status?.hasAccess ? "Fechar" : "Agora nao"}
           </button>
-          <button
-            type="button"
-            onClick={() => void handleCheckout()}
-            disabled={loading || !quote || checkoutBusy || !acceptedTerms}
-            className="min-h-11 rounded-xl bg-sky-400 px-5 py-2 text-sm font-black text-slate-950 hover:bg-sky-300 disabled:cursor-wait disabled:opacity-60"
-          >
-            {checkoutBusy ? "Gerando checkout..." : "Ir para assinatura"}
-          </button>
+          {!status?.hasAccess ? (
+            <button
+              type="button"
+              onClick={() => void handleCheckout()}
+              disabled={loading || !quote || checkoutBusy || !acceptedTerms}
+              className="min-h-11 rounded-xl bg-sky-400 px-5 py-2 text-sm font-black text-slate-950 hover:bg-sky-300 disabled:cursor-wait disabled:opacity-60"
+            >
+              {checkoutBusy ? "Gerando checkout..." : "Ir para assinatura"}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

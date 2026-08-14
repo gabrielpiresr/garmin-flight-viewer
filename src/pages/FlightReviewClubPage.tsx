@@ -1,34 +1,101 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { AuthPanel } from "../components/AuthPanel";
 import { FlightReviewClubCheckoutModal } from "../components/FlightReviewClubCheckoutModal";
 import { getEmailBrandSettings } from "../lib/notificationsDb";
 import { getSchoolRules } from "../lib/schoolRulesDb";
+import { cancelFlightReviewClubSubscription, getFlightReviewClubStatus } from "../lib/caktoDb";
+import type { FlightReviewClubStatus } from "../types/cakto";
 import type { EmailBrandSettings } from "../types/notification";
-import type { FlightReviewClubRules } from "../types/schoolRules";
+import type { FlightReviewClubRules, FlightReviewClubScreenshotItem } from "../types/schoolRules";
 
 const DEFAULT_BENEFITS = [
-  "Analise da telemetria de cada voo.",
-  "Analise detalhada das principais manobras.",
-  "Video completo do voo com audio do aluno e do instrutor.",
-  "Registro da evolucao do aluno ao longo da formacao.",
-  "Revisao dos voos para chegar mais preparado na proxima aula.",
-  "Conteudos, reunioes ou beneficios exclusivos oferecidos pela escola.",
+  "Análise da telemetria de cada voo.",
+  "Link público para compartilhamento do voo.",
+  "Curso de Segurança de Voo EAD.",
+  "Camiseta da escola + crachá exclusivo na primeira assinatura.",
+  "Acesso gratuito ao NexAtlas (etapa manual).",
+  "Acesso gratuito ao Clube 360 (etapa manual).",
+  "Descontos no Marketplace da epeac.",
+  "Pelo menos 1 webinar por mês exclusivo para integrantes.",
+  "Agendamento antecipado para voos com até 30 dias de antecedência.",
+  "Planejamento de voo e rotas.",
+  "Figurinhas e animacoes dos voos.",
+  "Jornada gamificada com histórico detalhado.",
+  "Vídeos com fonia e fotos dos voos.",
 ];
 
 const DEFAULT_VALUE_PROPS = [
-  "Evoluir mais rapido revisando cada voo.",
-  "Estudar acertos e pontos de melhoria com base em dados reais.",
-  "Chegar mais preparado para a proxima aula.",
-  "Documentar momentos importantes da formacao.",
-  "Acompanhar sua trajetoria de forma mais completa.",
+  "Revise cada voo com dados reais e transforme a aula seguinte em continuidade.",
+  "Centralize registros, fotos, vídeos, planejamento e histórico em uma jornada mais completa.",
+  "Receba benefícios manuais da escola sem perder o controle do que já foi entregue.",
+];
+
+const DEFAULT_SCREENSHOTS: FlightReviewClubScreenshotItem[] = [
+  { title: "Telemetria", description: "Análise visual dos dados de voo e pontos de melhoria.", imageUrl: "" },
+  { title: "Link público", description: "Página compartilhável para mostrar o voo com contexto.", imageUrl: "" },
+  { title: "Planejamento", description: "Rotas, aeródromos e preparação do próximo voo.", imageUrl: "" },
+  { title: "Jornada", description: "Histórico gamificado e progresso do aluno.", imageUrl: "" },
+  { title: "Álbum", description: "Vídeos com fonia, fotos e registros dos voos.", imageUrl: "" },
+  { title: "Marketplace", description: "Vantagens e descontos para integrantes.", imageUrl: "" },
 ];
 
 function LoadingState() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950">
+    <div className="flex min-h-screen items-center justify-center bg-[#071018]">
       <div className="h-10 w-10 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
     </div>
+  );
+}
+
+function formatRenewalDate(value: string | null | undefined): string {
+  if (!value) return "data ainda não disponível";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
+function ScreenshotVisual({ item, index }: { item: FlightReviewClubScreenshotItem; index: number }) {
+  if (item.imageUrl) {
+    return <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />;
+  }
+  const bars = [66, 48, 82, 56, 72, 38];
+  return (
+    <div className="flex h-full w-full flex-col bg-[#0b1720] p-4">
+      <div className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 rounded-full bg-sky-300" />
+        <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
+        <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
+      </div>
+      <div className="mt-5 grid flex-1 grid-cols-[1fr_88px] gap-3">
+        <div className="space-y-2">
+          {bars.map((bar, barIndex) => (
+            <span
+              key={barIndex}
+              className="block h-3 rounded-full bg-slate-700/80"
+              style={{ width: `${Math.max(30, (bar + index * 7 + barIndex * 3) % 86)}%` }}
+            />
+          ))}
+        </div>
+        <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-2">
+          <div className="h-full rounded-md border border-sky-500/30 bg-sky-500/10" />
+        </div>
+      </div>
+      <div className="mt-4 h-16 rounded-lg border border-emerald-500/20 bg-emerald-500/10" />
+    </div>
+  );
+}
+
+function BenefitIcon({ index }: { index: number }) {
+  const labels = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13"];
+  return (
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-sky-300/30 bg-sky-300/10 text-xs font-black text-sky-100">
+      {labels[index] ?? "OK"}
+    </span>
   );
 }
 
@@ -38,6 +105,9 @@ export function FlightReviewClubPage() {
   const [brand, setBrand] = useState<EmailBrandSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [frcStatus, setFrcStatus] = useState<FlightReviewClubStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [pendingCheckoutAfterAuth, setPendingCheckoutAfterAuth] = useState(false);
@@ -59,24 +129,50 @@ export function FlightReviewClubPage() {
   }, []);
 
   useEffect(() => {
+    if (!user || user.role !== "aluno") {
+      setFrcStatus(null);
+      setStatusLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setStatusLoading(true);
+    void getFlightReviewClubStatus()
+      .then((status) => {
+        if (!cancelled) setFrcStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setFrcStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  useEffect(() => {
     if (!user || !pendingCheckoutAfterAuth) return;
     setPendingCheckoutAfterAuth(false);
     setAuthOpen(false);
     if (user.role === "aluno") setCheckoutOpen(true);
-    else setCheckoutError("A assinatura do Flight Review Club esta disponivel para alunos.");
+    else setCheckoutError("A assinatura do Flight Review Club está disponível para alunos.");
   }, [pendingCheckoutAfterAuth, user]);
+
+  const activePlan = useMemo(() => {
+    const plans = club?.subscriptionPlans?.filter((plan) => plan.enabled && plan.amount > 0) ?? [];
+    return plans.sort((a, b) => a.amount - b.amount)[0] ?? null;
+  }, [club]);
 
   if (loading) return <LoadingState />;
 
   if (!club?.enabled) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
-        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center">
+      <div className="flex min-h-screen items-center justify-center bg-[#071018] px-4 text-slate-100">
+        <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900/70 p-6 text-center">
           <p className="text-sm font-semibold uppercase tracking-widest text-sky-300/80">Flight Review Club</p>
-          <h1 className="mt-2 text-2xl font-black">Programa nao disponivel</h1>
-          <p className="mt-2 text-sm text-slate-400">
-            O Flight Review Club ainda nao esta disponivel nesta escola.
-          </p>
+          <h1 className="mt-2 text-2xl font-black">Programa não disponível</h1>
+          <p className="mt-2 text-sm text-slate-400">O Flight Review Club ainda não está disponível nesta escola.</p>
         </div>
       </div>
     );
@@ -85,14 +181,19 @@ export function FlightReviewClubPage() {
   const activeClub = club;
   const benefitItems = activeClub.lpBenefitItems.length > 0
     ? activeClub.lpBenefitItems
-    : (activeClub.benefits.length > 0 ? activeClub.benefits : DEFAULT_BENEFITS).map((text) => ({ text, imageUrl: "" }));
+    : DEFAULT_BENEFITS.map((text) => ({ text, imageUrl: "" }));
   const valueProps = activeClub.lpValueProps.length > 0 ? activeClub.lpValueProps : DEFAULT_VALUE_PROPS;
+  const screenshots = activeClub.lpScreenshotItems.length > 0 ? activeClub.lpScreenshotItems : DEFAULT_SCREENSHOTS;
   const schoolName = brand?.schoolName?.trim() || "Flight Review Club";
   const logoSrc = brand?.logoDataUrl || brand?.logoUrl || null;
   const coverImageUrl = activeClub.lpCoverImageUrl.trim();
+  const hasFrcAccess = frcStatus?.hasAccess === true;
+  const membership = frcStatus?.membership ?? null;
+  const canCancel = Boolean(membership?.caktoSubscriptionId && ["active", "trial"].includes(membership.status));
 
   async function handleCta() {
     setCheckoutError(null);
+    if (frcStatus?.hasAccess) return;
     if (user?.role === "aluno") {
       setCheckoutOpen(true);
       return;
@@ -106,109 +207,212 @@ export function FlightReviewClubPage() {
       window.open(activeClub.ctaSubscriptionUrl, "_blank", "noopener,noreferrer");
       return;
     }
-    setCheckoutError("A assinatura do Flight Review Club esta disponivel para alunos.");
+    setCheckoutError("A assinatura do Flight Review Club está disponível para alunos.");
+  }
+
+  async function handleCancelSubscription() {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    setCheckoutError(null);
+    try {
+      setFrcStatus(await cancelFlightReviewClubSubscription());
+    } catch (err) {
+      setCheckoutError((err as Error).message || "Não foi possível cancelar sua assinatura agora.");
+    } finally {
+      setCancelBusy(false);
+    }
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 pb-16 text-slate-100">
-      <header className="border-b border-slate-800 bg-slate-950/95">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-5">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-300/80">{schoolName}</p>
-            <h1 className="mt-0.5 text-xl font-black text-white">Flight Review Club</h1>
-          </div>
-          {logoSrc ? <img src={logoSrc} alt={schoolName} className="h-10 w-auto max-w-36 object-contain" /> : null}
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-5xl space-y-10 px-5 py-10">
-        <section
-          className="relative overflow-hidden rounded-3xl border border-sky-400/20 bg-slate-900 px-6 py-10 shadow-2xl shadow-slate-950/60 sm:px-12"
-          style={coverImageUrl ? {
-            backgroundImage: `linear-gradient(90deg, rgba(2,6,23,0.94), rgba(2,6,23,0.62)), url(${coverImageUrl})`,
-            backgroundPosition: "center",
-            backgroundSize: "cover",
-          } : undefined}
-        >
-          <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-200/80">
-              Programa premium - {schoolName}
-            </p>
-            <h2 className="mt-4 text-3xl font-black tracking-tight text-white sm:text-4xl">{activeClub.lpHeroTitle}</h2>
-            <p className="mt-4 max-w-xl text-base leading-7 text-slate-300">{activeClub.lpHeroSubtitle}</p>
-            <button
-              type="button"
-              onClick={() => void handleCta()}
-              className="mt-7 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-6 py-3 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/40 transition hover:bg-sky-300"
-            >
-              {activeClub.lpCtaLabel}
-              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.69l-3.22-3.22a.75.75 0 111.06-1.06l4.5 4.5a.75.75 0 010 1.06l-4.5 4.5a.75.75 0 11-1.06-1.06l3.22-3.22H3.75A.75.75 0 013 10z" clipRule="evenodd" />
-              </svg>
-            </button>
-            {checkoutError ? <p className="mt-3 max-w-xl text-xs text-amber-200">{checkoutError}</p> : null}
-          </div>
-        </section>
-
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Beneficios</h2>
-          <h3 className="mt-2 text-2xl font-black text-white">O que voce recebe</h3>
-          <ul className="mt-6 grid gap-3">
-            {benefitItems.map((benefit, index) => (
-              <li key={index} className="grid gap-3 rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 sm:grid-cols-[96px_minmax(0,1fr)]">
-                <div className="flex h-24 items-center justify-center overflow-hidden rounded-lg border border-slate-800 bg-slate-950/50">
-                  {benefit.imageUrl ? (
-                    <img src={benefit.imageUrl} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-sky-500/20 text-sky-400">
-                      <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
-                      </svg>
-                    </span>
-                  )}
-                </div>
-                <span className="self-center text-sm leading-6 text-slate-200">{benefit.text}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="rounded-2xl border border-emerald-500/20 bg-emerald-950/20 px-6 py-7">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">Por que entrar</h2>
-          <h3 className="mt-2 text-xl font-black text-white">Sua evolucao como piloto</h3>
-          <ul className="mt-5 space-y-2">
-            {valueProps.map((prop, index) => (
-              <li key={index} className="flex items-start gap-2 text-sm text-slate-300">
-                <span className="mt-1 text-emerald-400">-&gt;</span>
-                {prop}
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <div className="flex flex-col items-center gap-4 py-4 text-center">
-          <p className="text-sm text-slate-400">Pronto para elevar seu nivel de formacao?</p>
+    <div className="min-h-screen bg-[#071018] text-slate-100">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#071018]/90 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4">
+          <a href="/" className="flex items-center gap-3">
+            {logoSrc ? <img src={logoSrc} alt={schoolName} className="h-10 w-auto max-w-40 object-contain" /> : null}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-200/80">{schoolName}</p>
+              <p className="text-sm font-black text-white">Flight Review Club</p>
+            </div>
+          </a>
           <button
             type="button"
             onClick={() => void handleCta()}
-            className="inline-flex items-center gap-2 rounded-xl bg-sky-400 px-7 py-3 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/40 transition hover:bg-sky-300"
+            disabled={hasFrcAccess || statusLoading}
+            className="rounded-lg bg-sky-300 px-4 py-2 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/30 transition hover:bg-sky-200 disabled:cursor-default disabled:border disabled:border-emerald-300/40 disabled:bg-emerald-300/10 disabled:text-emerald-100"
           >
-            {activeClub.lpCtaLabel}
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.69l-3.22-3.22a.75.75 0 111.06-1.06l4.5 4.5a.75.75 0 010 1.06l-4.5 4.5a.75.75 0 11-1.06-1.06l3.22-3.22H3.75A.75.75 0 013 10z" clipRule="evenodd" />
-            </svg>
+            {hasFrcAccess ? "Assinatura ativa" : activeClub.lpCtaLabel}
           </button>
         </div>
+      </header>
+
+      <main>
+        <section className="relative overflow-hidden border-b border-white/10">
+          {coverImageUrl ? (
+            <img src={coverImageUrl} alt="" className="absolute inset-0 h-full w-full object-cover opacity-45" />
+          ) : null}
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(7,16,24,0.98),rgba(7,16,24,0.78),rgba(7,16,24,0.42))]" />
+          <div className="relative mx-auto grid min-h-[calc(100vh-74px)] max-w-7xl items-center gap-10 px-5 py-14 lg:grid-cols-[minmax(0,1fr)_520px]">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.28em] text-sky-200/80">Assinatura premium de formação</p>
+              <h1 className="mt-5 max-w-3xl text-4xl font-black leading-tight text-white sm:text-5xl lg:text-6xl">
+                {activeClub.lpHeroTitle || "Flight Review Club"}
+              </h1>
+              <p className="mt-5 max-w-2xl text-base leading-8 text-slate-300 sm:text-lg">{activeClub.lpHeroSubtitle}</p>
+              <div className="mt-8 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleCta()}
+                  disabled={hasFrcAccess || statusLoading}
+                  className="rounded-lg bg-sky-300 px-6 py-3 text-sm font-black text-slate-950 shadow-xl shadow-sky-950/40 transition hover:bg-sky-200 disabled:cursor-default disabled:border disabled:border-emerald-300/40 disabled:bg-emerald-300/10 disabled:text-emerald-100"
+                >
+                  {hasFrcAccess ? "Você já tem acesso" : activeClub.lpCtaLabel}
+                </button>
+                {activePlan ? (
+                  <div className="rounded-lg border border-white/15 bg-white/8 px-4 py-3">
+                    <p className="text-xs text-slate-400">A partir de</p>
+                    <p className="text-xl font-black text-white">{formatCurrency(activePlan.amount)} <span className="text-xs font-semibold text-slate-400">/{activePlan.label.toLowerCase()}</span></p>
+                  </div>
+                ) : null}
+              </div>
+              {checkoutError ? <p className="mt-4 max-w-xl text-sm text-amber-200">{checkoutError}</p> : null}
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-slate-950/72 p-4 shadow-2xl shadow-black/30">
+              <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
+                <ScreenshotVisual item={screenshots[0] ?? DEFAULT_SCREENSHOTS[0]} index={0} />
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                <HeroStat label="Voos" value="100" helper="trial atual" />
+                <HeroStat label="Agenda" value="30d" helper="FRC" />
+                <HeroStat label="Manual" value="7+" helper="benefícios" />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mx-auto grid max-w-7xl gap-4 px-5 py-10 md:grid-cols-3">
+          {valueProps.map((prop, index) => (
+            <div key={index} className="rounded-xl border border-white/10 bg-[#0d1b24] p-5">
+              <p className="text-xs font-black uppercase tracking-widest text-emerald-200/80">0{index + 1}</p>
+              <p className="mt-3 text-sm leading-6 text-slate-200">{prop}</p>
+            </div>
+          ))}
+        </section>
+
+        <section className="border-y border-white/10 bg-[#0b141c]">
+          <div className="mx-auto max-w-7xl px-5 py-14">
+            <div className="max-w-2xl">
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-sky-200/75">Prints e experiencia</p>
+              <h2 className="mt-3 text-3xl font-black text-white">Tudo que sustenta a assinatura fica visivel.</h2>
+              <p className="mt-3 text-sm leading-7 text-slate-400">Use os prints configurados no admin para mostrar a plataforma real: revisao, planejamento, jornada, album e vantagens.</p>
+            </div>
+            <div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {screenshots.map((item, index) => (
+                <article key={`${item.title}-${index}`} className="overflow-hidden rounded-xl border border-white/10 bg-[#071018]">
+                  <div className="aspect-[16/10]">
+                    <ScreenshotVisual item={item} index={index} />
+                  </div>
+                  <div className="p-4">
+                    <h3 className="text-base font-black text-white">{item.title}</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">{item.description}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="mx-auto max-w-7xl px-5 py-14">
+          <div className="grid gap-8 lg:grid-cols-[360px_minmax(0,1fr)]">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-200/75">Pacote real</p>
+              <h2 className="mt-3 text-3xl font-black text-white">Benefícios do FRC</h2>
+              <p className="mt-3 text-sm leading-7 text-slate-400">
+                A oferta combina recursos premium da plataforma com entregas manuais controladas pela escola.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {benefitItems.map((benefit, index) => (
+                <article key={`${benefit.text}-${index}`} className="flex gap-3 rounded-xl border border-white/10 bg-[#0d1b24] p-4">
+                  {benefit.imageUrl ? (
+                    <img src={benefit.imageUrl} alt="" className="h-14 w-14 shrink-0 rounded-lg object-cover" />
+                  ) : (
+                    <BenefitIcon index={index} />
+                  )}
+                  <p className="self-center text-sm leading-6 text-slate-200">{benefit.text}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="border-t border-white/10 bg-[#0b141c]">
+          <div className="mx-auto grid max-w-7xl gap-8 px-5 py-14 lg:grid-cols-[minmax(0,1fr)_380px]">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-sky-200/75">Assinatura</p>
+              <h2 className="mt-3 text-3xl font-black text-white">Entre, revise seus voos e acompanhe sua jornada.</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-400">
+                O cancelamento programado mantém o acesso até o fim do período pago. Benefícios como NexAtlas e Clube 360 entram no fluxo manual da escola.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleCta()}
+                disabled={hasFrcAccess || statusLoading}
+                className="mt-6 rounded-lg bg-sky-300 px-7 py-3 text-sm font-black text-slate-950 shadow-xl shadow-sky-950/40 transition hover:bg-sky-200 disabled:cursor-default disabled:border disabled:border-emerald-300/40 disabled:bg-emerald-300/10 disabled:text-emerald-100"
+              >
+                {hasFrcAccess ? "Assinatura ativa" : activeClub.lpCtaLabel}
+              </button>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-[#071018] p-5">
+              {hasFrcAccess ? (
+                <>
+                  <p className="text-xs font-bold uppercase tracking-widest text-emerald-200/80">Seu acesso</p>
+                  <h3 className="mt-2 text-xl font-black text-white">{membership?.planName || "Flight Review Club"}</h3>
+                  <p className="mt-3 text-sm leading-6 text-slate-400">
+                    Próxima renovação: <span className="font-semibold text-slate-200">{formatRenewalDate(membership?.nextPaymentDate)}</span>.
+                  </p>
+                  {membership?.cancelAtPeriodEnd ? (
+                    <p className="mt-2 text-sm leading-6 text-amber-200">Cancelamento agendado. Acesso mantido até {formatRenewalDate(membership.accessUntil || membership.nextPaymentDate)}.</p>
+                  ) : null}
+                  {canCancel ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelSubscription()}
+                      disabled={cancelBusy}
+                      className="mt-5 rounded-lg border border-red-300/35 px-4 py-2 text-sm font-bold text-red-100 transition hover:bg-red-500/10 disabled:opacity-60"
+                    >
+                      {cancelBusy ? "Cancelando..." : "Cancelar renovação"}
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-bold uppercase tracking-widest text-sky-200/80">Plano</p>
+                  <h3 className="mt-2 text-xl font-black text-white">{activePlan ? activePlan.label : "Assinatura FRC"}</h3>
+                  <p className="mt-3 text-sm leading-6 text-slate-400">
+                    {activePlan ? `${formatCurrency(activePlan.amount)} a cada ${activePlan.recurrencePeriodDays} dias.` : "Escolha o plano disponível no checkout da escola."}
+                  </p>
+                  <p className="mt-4 rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs text-amber-100">
+                    Trial configurado: {activeClub.trialFlightCount} voos. Menu do aluno controlado pelo admin.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        </section>
       </main>
+
       <FlightReviewClubCheckoutModal
         open={checkoutOpen}
         onClose={() => setCheckoutOpen(false)}
         fallbackUrl={activeClub.ctaSubscriptionUrl}
         adhesionTermUrl={activeClub.adhesionTermUrl}
+        plans={activeClub.subscriptionPlans}
+        billingMode={activeClub.billingMode}
       />
       {authOpen ? (
         <div className="fixed inset-0 z-[1200] flex items-end justify-center bg-slate-950/80 px-3 py-3 backdrop-blur-sm sm:items-center sm:px-6" onClick={() => setAuthOpen(false)}>
-          <div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest text-sky-300/80">Entrar para assinar</p>
@@ -222,6 +426,16 @@ export function FlightReviewClubPage() {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function HeroStat({ label, value, helper }: { label: string; value: string; helper: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 text-xl font-black text-white">{value}</p>
+      <p className="text-[11px] text-slate-500">{helper}</p>
     </div>
   );
 }

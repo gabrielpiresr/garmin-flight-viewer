@@ -93,6 +93,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
   { label: "Recebimentos", parentKey: "receipts" },
   { label: "CRM", parentKey: "crm" },
   { label: "Instrutores", parentKey: "instructor-admission" },
+  { label: "FRC", parentKey: "frc" },
   { label: "Flight Review", parentKey: "flight-review" },
   {
     label: "Contratos",
@@ -110,9 +111,11 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
     ],
   },
   { label: "AISWEB", parentKey: "aisweb" },
+  { label: "WhatsApp", parentKey: "whatsapp" },
   { label: "Planejamento", parentKey: "planejamento" },
   { label: "Radar", parentKey: "radar" },
   { label: "Álbum", parentKey: "album" },
+  { label: "Marketplace", parentKey: "marketplace" },
   {
     label: "Configurações",
     parentKey: "settings",

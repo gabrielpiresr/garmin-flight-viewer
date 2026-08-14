@@ -23,6 +23,11 @@ import {
   getLatestFlightBriefingAiReport,
   updateFlightBriefingAiTask,
 } from "../../lib/flightBriefingAiDb";
+import {
+  buildDefaultFlightBriefingReport,
+  importantNotamCardsFromAirports,
+  isDefaultOnlyBriefingReport,
+} from "../../lib/flightBriefingDefaults";
 import { getRouteElevation } from "../../lib/routeElevationDb";
 import {
   buildFlightPlanLegs,
@@ -61,7 +66,7 @@ import {
   type SavedFlightBriefingIndexItem,
 } from "../../lib/savedFlightBriefings";
 import { normalizeIcao } from "../../lib/aiswebMetar";
-import type { AiswebAerodromeMatch, AiswebAirportBundle, AiswebNotam } from "../../types/aisweb";
+import type { AiswebAerodromeMatch, AiswebAirportBundle } from "../../types/aisweb";
 import {
   FLIGHT_PLAN_INFO_OPTIONS,
   type FlightPlanAirspaceHit,
@@ -69,11 +74,7 @@ import {
   type FlightPlanRouteTableRow,
   type FlightPlanWaypoint,
 } from "../../types/flightPlanning";
-import {
-  AirportDocPreview,
-  AirportSummaryStrip,
-  IcaoField,
-} from "../AiswebFlightPlanningTab";
+import { IcaoField } from "../AiswebFlightPlanningTab";
 import { AiswebAirportDetailTabs } from "../AiswebAirportDetails";
 import { AiswebMeteorologyPanel } from "../AiswebMeteorologyPanel";
 import { AerodromeDetailsSidePanel } from "../AerodromePlanningModals";
@@ -96,7 +97,6 @@ import type {
   FlightBriefingAiGenerateInput,
   FlightBriefingAiReport,
   FlightBriefingAiTaskStatus,
-  FlightBriefingAiWarning,
 } from "../../types/flightBriefingAi";
 
 const Route3DView = lazy(() => import("../Route3DView"));
@@ -129,60 +129,6 @@ type BriefingAirportDoc = {
   bundle: AiswebAirportBundle;
   note?: string;
 };
-
-/** Resolve the AISWEB NOTAM behind an AI warning card (by number / ICAO / text). */
-function resolveWarningNotam(
-  warning: FlightBriefingAiWarning,
-  airportDocs: BriefingAirportDoc[],
-): AiswebNotam | null {
-  const blob = `${warning.title} ${warning.detail}`.toUpperCase();
-  const all = airportDocs.flatMap((doc) =>
-    (doc.bundle.notams || []).map((notam) => ({
-      ...notam,
-      icao: normalizeIcao(notam.icao || doc.icao),
-    })),
-  );
-  if (!all.length) return null;
-
-  const numberMatch = blob.match(/\b([A-Z]?\d{3,4}\/\d{2,4})\b/);
-  if (numberMatch) {
-    const needle = numberMatch[1]!.replace(/\s/g, "");
-    const byNumber = all.find((n) => (n.number || "").toUpperCase().replace(/\s/g, "").includes(needle));
-    if (byNumber) return byNumber;
-  }
-
-  for (const notam of all) {
-    const num = (notam.number || "").toUpperCase().replace(/\s/g, "");
-    if (num.length >= 5 && blob.includes(num)) return notam;
-  }
-
-  const icaoMatch = blob.match(/\b(S[BDIJNPRTWY][A-Z]{2})\b/) || blob.match(/\b([A-Z]{4})\b/);
-  const icao = icaoMatch ? normalizeIcao(icaoMatch[1] || "") : "";
-  const pool = icao ? all.filter((n) => n.icao === icao) : all;
-  if (pool.length === 1) return pool[0]!;
-
-  // Soft text overlap against NOTAM body for the same ICAO.
-  const tokens = blob
-    .replace(/[^A-Z0-9/\s]/g, " ")
-    .split(/\s+/)
-    .filter((t) => t.length >= 5)
-    .slice(0, 12);
-  let best: AiswebNotam | null = null;
-  let bestScore = 0;
-  for (const notam of pool) {
-    const text = (notam.text || "").toUpperCase();
-    if (!text) continue;
-    let score = 0;
-    for (const token of tokens) {
-      if (text.includes(token)) score += 1;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      best = notam;
-    }
-  }
-  return bestScore >= 2 ? best : null;
-}
 
 const BRIEFING_ONLINE_TABS: ReadonlyArray<{ id: BriefingOnlineTab; label: string }> = [
   { id: "resumo", label: "Resumo" },
@@ -550,13 +496,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   const [editingBriefingName, setEditingBriefingName] = useState(false);
   const [linkedBriefings, setLinkedBriefings] = useState<SavedFlightBriefingIndexItem[]>([]);
   const [briefingSaveState, setBriefingSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const [expandedWarningId, setExpandedWarningId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSummaryExpanded(false);
-    setExpandedWarningId(null);
-  }, [aiReport?.id, aiReport?.generatedAt, aiReport?.summary]);
+  const [expandedNotamCardId, setExpandedNotamCardId] = useState<string | null>(null);
   const [alternateMetrics, setAlternateMetrics] = useState<
     Array<{
       icao: string;
@@ -580,6 +520,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
     ],
     [airports],
   );
+  const briefingNotamCards = useMemo(() => importantNotamCardsFromAirports(airports), [airports]);
 
   const cruise = Number(String(cruiseSpeedKt).replace(",", "."));
   const burn = Number(String(fuelBurn).replace(",", "."));
@@ -1471,7 +1412,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
       setBriefingOnlineTab("resumo");
       setBriefingSaveState("saved");
       showToast({ variant: "success", title: "Briefing aberto", message: saved.name });
-      if (!saved.aiReport && (saved.airports?.length || 0) > 0) {
+      if ((saved.airports?.length || 0) > 0 && isDefaultOnlyBriefingReport(saved.aiReport)) {
         void handleGenerateAiReport(saved.airports);
       }
     } finally {
@@ -1515,6 +1456,12 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
         }),
       );
       const name = suggestBriefingName(dep, arr);
+      const defaultReport = buildDefaultFlightBriefingReport({
+        origin: dep,
+        destination: arr,
+        alternates,
+        airports: results,
+      });
       const saved = await saveFlightBriefing({
         name,
         routeId: activeSavedId,
@@ -1523,7 +1470,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
         alternates: [],
         sections,
         airports: results,
-        aiReport: null,
+        aiReport: defaultReport,
         aiReportId: null,
       });
       setActiveBriefingId(saved.id);
@@ -1549,7 +1496,7 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
         });
         return changed ? next : prev;
       });
-      setAiReport(null);
+      setAiReport(defaultReport);
       setAiReportId(null);
       setGenerated(true);
       setBriefingOnlineTab("resumo");
@@ -1607,9 +1554,15 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
   async function handleGenerateAiReport(airportDocs: BriefingAirportDoc[], forceRegenerate = false) {
     setAiLoading(true);
     setAiError(null);
-    if (forceRegenerate) {
-      setAiReport(null);
-      setAiReportId(null);
+    const defaultReport = buildDefaultFlightBriefingReport({
+      origin: originIcao,
+      destination: destIcao,
+      alternates,
+      airports: airportDocs,
+    });
+    if (forceRegenerate || !aiReport) {
+      setAiReport(defaultReport);
+      if (forceRegenerate) setAiReportId(null);
     }
     try {
       const input = buildAiBriefingInput(airportDocs);
@@ -3114,32 +3067,6 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <h3 className="text-sm font-semibold text-slate-100">Leia primeiro</h3>
-                      {(() => {
-                        const summaryText =
-                          aiReport?.summary ||
-                          "Briefing AISWEB pronto. A IA ainda esta enriquecendo contatos, combustivel, hangaragem e pendencias operacionais.";
-                        const long = summaryText.length > 220;
-                        return (
-                          <>
-                            <p
-                              className={`mt-1 text-sm leading-6 text-slate-300 ${
-                                summaryExpanded || !long ? "" : "line-clamp-3"
-                              }`}
-                            >
-                              {summaryText}
-                            </p>
-                            {long ? (
-                              <button
-                                type="button"
-                                className="mt-2 text-[11px] font-semibold text-cyan-300 transition hover:text-cyan-200"
-                                onClick={() => setSummaryExpanded((open) => !open)}
-                              >
-                                {summaryExpanded ? "Recolher" : "Ler na íntegra"}
-                              </button>
-                            ) : null}
-                          </>
-                        );
-                      })()}
                     </div>
                     <span className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400">
                       {aiLoading ? "IA pesquisando" : aiReport ? (aiReport.status === "fallback" ? "IA fallback" : "IA pronta") : "AISWEB pronto"}
@@ -3150,62 +3077,60 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                       {aiError}
                     </p>
                   ) : null}
-                  {aiReport?.warnings?.length ? (
+                  {briefingNotamCards.length ? (
                     <div className="mt-3 grid gap-2 @lg:grid-cols-2">
-                      {aiReport.warnings.map((warning) => {
-                        const matchedNotam = resolveWarningNotam(warning, airports);
-                        const expanded = expandedWarningId === warning.id;
-                        const fullText = matchedNotam?.text?.trim() || warning.detail;
-                        const canExpand = Boolean(fullText && (matchedNotam || warning.detail.length > 140));
+                      {briefingNotamCards.map((card) => {
+                        const expanded = expandedNotamCardId === card.id;
+                        const long = card.text.length > 280;
                         return (
                           <article
-                            key={warning.id}
+                            key={card.id}
                             className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3"
                           >
-                            <p className="text-xs font-semibold text-amber-100">{warning.title}</p>
+                            <p className="text-xs font-semibold text-amber-100">{card.title}</p>
+                            {card.validityLabel ? (
+                              <p className="mt-1 text-[11px] font-medium text-amber-50/90">
+                                Validade: {card.validityLabel}
+                              </p>
+                            ) : null}
+                            {card.scheduleLabel ? (
+                              <p className="text-[11px] font-medium text-amber-50/90">
+                                Períodos: {card.scheduleLabel}
+                              </p>
+                            ) : null}
                             <p
-                              className={`mt-1 whitespace-pre-wrap text-xs leading-5 text-amber-100/80 ${
-                                expanded ? "" : "line-clamp-3"
+                              className={`mt-1 whitespace-pre-wrap text-xs leading-5 text-amber-100/85 ${
+                                expanded || !long ? "" : "line-clamp-6"
                               }`}
                             >
-                              {expanded ? fullText : warning.detail}
+                              {card.text}
                             </p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {canExpand ? (
-                                <button
-                                  type="button"
-                                  className="text-[11px] font-semibold text-amber-50/90 underline-offset-2 transition hover:text-white hover:underline"
-                                  onClick={() =>
-                                    setExpandedWarningId((cur) => (cur === warning.id ? null : warning.id))
-                                  }
-                                >
-                                  {expanded ? "Recolher" : "Ler NOTAM na íntegra"}
-                                </button>
-                              ) : null}
-                              {matchedNotam?.icao ? (
-                                <button
-                                  type="button"
-                                  className="text-[11px] font-semibold text-cyan-200/90 underline-offset-2 transition hover:text-cyan-100 hover:underline"
-                                  onClick={() =>
-                                    openBriefingAirportNotams(matchedNotam.icao, matchedNotam.number || undefined)
-                                  }
-                                >
-                                  Abrir na aba NOTAMs
-                                  {matchedNotam.number ? ` (${matchedNotam.number})` : ""}
-                                </button>
-                              ) : null}
-                            </div>
+                            {long ? (
+                              <button
+                                type="button"
+                                className="mt-2 text-[11px] font-semibold text-amber-50/90 underline-offset-2 transition hover:text-white hover:underline"
+                                onClick={() =>
+                                  setExpandedNotamCardId((cur) => (cur === card.id ? null : card.id))
+                                }
+                              >
+                                {expanded ? "Recolher" : "Ler na íntegra"}
+                              </button>
+                            ) : null}
                           </article>
                         );
                       })}
                     </div>
-                  ) : null}
+                  ) : (
+                    <p className="mt-3 text-xs text-slate-500">
+                      Nenhum NOTAM crítico listado no AISWEB para os aeródromos desta rota.
+                    </p>
+                  )}
                 </section>
                 <section className="grid grid-cols-2 gap-2 content-start">
                   {[
                     ["Aeroportos", String(airports.length)],
                     ["Tasks abertas", String(aiReport?.tasks.filter((task) => task.status === "open").length ?? 0)],
-                    ["Alertas IA", String(aiReport?.warnings.length ?? 0)],
+                    ["NOTAMs", String(briefingNotamCards.length)],
                     ["Espacos aereos", String(enteredAirspaces.length)],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/50 p-2.5">
@@ -3272,65 +3197,6 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                     })}
                   </div>
                 </section>
-              </div>
-            ) : null}
-
-            {false ? (
-              <div className="space-y-3">
-                <div className="hidden">
-                <AirportSummaryStrip
-                  airports={airports}
-                  onNoteChange={(role, icao, note) => {
-                    setAirports((prev) =>
-                      prev.map((a) => (a.role === role && a.icao === icao ? { ...a, note } : a)),
-                    );
-                  }}
-                />
-                {aiReport?.airports.length ? (
-                  <div className="grid gap-2 @lg:grid-cols-2 @2xl:grid-cols-4">
-                    {aiReport?.airports.map((airport) => (
-                      <article key={`${airport.role}-${airport.icao}`} className="rounded-lg border border-slate-800 bg-slate-950/45 p-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <h3 className="text-sm font-semibold text-slate-100">{airport.icao}</h3>
-                          <span className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{airport.role}</span>
-                        </div>
-                        <div className="mt-3 grid gap-1.5">
-                          {[
-                            ["Combustível", airport.fuel.detail, airport.fuel.confidence],
-                            ["Hangaragem", airport.hangarage.detail, airport.hangarage.confidence],
-                            ["Slot/PPR", airport.slotPpr.detail, airport.slotPpr.confidence],
-                          ].map(([label, detail, confidence]) => (
-                            <div key={label} className="rounded-md border border-slate-800 bg-slate-900/45 px-2 py-1.5">
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-                                <p className="text-[10px] text-cyan-300">{confidence}</p>
-                              </div>
-                              <p className="mt-0.5 line-clamp-2 text-xs text-slate-300">{detail}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : aiLoading ? (
-                  <p className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-                    IA pesquisando informacoes publicas dos aeroportos.
-                  </p>
-                ) : null}
-                </div>
-                <div className="grid gap-3">
-                  {airports.map((item) => (
-                    <AirportDocPreview
-                      key={`${item.role}-${item.icao}`}
-                      role={
-                        item.role === "origem" ? "Origem" : item.role === "destino" ? "Destino" : "Alternativo"
-                      }
-                      icao={item.icao}
-                      bundle={item.bundle}
-                      sections={sections}
-                    />
-                  ))}
-                </div>
               </div>
             ) : null}
 
@@ -3568,61 +3434,6 @@ export function PlanejamentoTab({ onLeave }: { onLeave?: () => void }) {
                 </section>
               );
             })() : null}
-
-            {false ? (
-              <section className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-100">Documento e offline</h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    O checklist IA entra no PDF e no briefing offline quando o relatório estiver disponível.
-                  </p>
-                </div>
-                <div className="grid gap-2 @md:grid-cols-2 @2xl:grid-cols-3">
-                  {FLIGHT_PLAN_INFO_OPTIONS.map((opt) => {
-                    const on = sections.includes(opt.id);
-                    return (
-                      <label
-                        key={opt.id}
-                        className={`flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition ${
-                          on
-                            ? "border-cyan-500/40 bg-cyan-500/10"
-                            : "border-slate-700/70 bg-slate-950/40 hover:border-slate-600"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          className="mt-0.5"
-                          checked={on}
-                          onChange={() => toggleSection(opt.id)}
-                        />
-                        <span>
-                          <span className="block text-sm font-semibold text-slate-100">{opt.label}</span>
-                          <span className="block text-[11px] text-slate-500">{opt.description}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className={btnSecondary}
-                    disabled={exportingPdf}
-                    onClick={() => void handleExportPdf()}
-                  >
-                    {exportingPdf ? "Preparando mapa..." : "Exportar PDF"}
-                  </button>
-                  <button
-                    type="button"
-                    className={btnSecondary}
-                    disabled={exportingPdf}
-                    onClick={() => void handleOpenTabletBriefing()}
-                  >
-                    Abrir no tablet (offline)
-                  </button>
-                </div>
-              </section>
-            ) : null}
           </section>
         ) : null}
         </>

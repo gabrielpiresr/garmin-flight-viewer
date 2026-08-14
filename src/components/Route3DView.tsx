@@ -1,6 +1,18 @@
 import { Html, Line, OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Component,
+  forwardRef,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ErrorInfo,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import * as THREE from "three";
 import type { AiswebAirportBundle } from "../types/aisweb";
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
@@ -29,6 +41,7 @@ import {
   sceneCeilingFt,
   terrainBaseY,
   type EnuOrigin,
+  type Route3dAircraftPose,
 } from "../lib/route3d";
 import { fetchSatelliteCanvas, fetchTerrainGrid, sampleGridHeightM, type TerrainGrid } from "../lib/terrainTiles";
 import { AerodromeMapPopupContent } from "./AerodromePlanningModals";
@@ -47,7 +60,46 @@ type Props = {
   className?: string;
   /** Override canvas height utilities (embedded default h-[480px]). */
   canvasClassName?: string;
+  /** Telemetry routes can contain many sampled points; keep labels readable by showing only endpoints. */
+  markerMode?: "all" | "endpoints";
+  routeSegmentColors?: string[];
+  currentAircraft?: Route3dAircraftPose | null;
+  /** Imperative aircraft pose — updates the marker without re-rendering the WebGL tree. */
+  currentAircraftRef?: MutableRefObject<Route3dAircraftPose | null>;
+  /** Lower DPR/antialias for dense telemetry scenes. Does not drop terrain quality. */
+  navigationOptimized?: boolean;
+  /** Smaller terrain/satellite fetch for telemetry 3D, where orbiting a dense mesh can crash the tab. */
+  liteTerrain?: boolean;
+  /** Load REA/REH + airspaces for the terrain crop (flight telemetry has no planned legs). */
+  autoLoadAreaLayers?: boolean;
+  defaultVisibleAirspaceTypes?: AirspaceVolume["type"][];
+  areaLayerKinds?: Array<"rea" | "reh">;
+  chartsControl?: {
+    available: boolean;
+    active: boolean;
+    onToggle: () => void;
+  };
 };
+
+const EMPTY_CORRIDORS: Array<LegCorridorInfo | null> = [];
+const EMPTY_VOLUMES: AirspaceVolume[] = [];
+const EMPTY_AERODROMES: Aerodrome[] = [];
+const EMPTY_COLORS: string[] = [];
+const DEFAULT_AREA_LAYER_KINDS: Array<"rea" | "reh"> = ["rea", "reh"];
+const REA_TOGGLES_3D = [
+  {
+    id: "rea" as const,
+    label: "REA",
+    title: "Rotas especiais VFR (REA)",
+  },
+  {
+    id: "reh" as const,
+    label: "REH",
+    title: "Rotas especiais de helicoptero (REH)",
+  },
+] as const;
+
+export type { Route3dAircraftPose };
 
 type TerrainStyle = "hypsometric" | "satellite";
 
@@ -63,6 +115,8 @@ type SceneSelection =
   | { kind: "airspace"; info: AirspaceInfo }
   | { kind: "corridor"; name: string; altMin: number | null; altMax: number | null }
   | { kind: "waypoint"; label: string; lat: number; lng: number; markerKind: string };
+
+type MapToolPanel3d = "basemap" | "layers" | null;
 
 function volumeToInfo(volume: AirspaceVolume): AirspaceInfo {
   if (volume.info) return volume.info;
@@ -81,6 +135,38 @@ function volumeToInfo(volume: AirspaceVolume): AirspaceInfo {
     frequency: null,
     color: def?.color || airspaceHitColor(volume.type),
   };
+}
+
+class CanvasErrorBoundary extends Component<
+  { children: ReactNode; resetKey: number },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Route3DView canvas error", error, info.componentStack);
+  }
+
+  componentDidUpdate(prevProps: { resetKey: number }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <p className="grid h-full place-items-center px-6 text-center text-[12px] text-amber-200">
+          A vista 3D encontrou um erro e foi interrompida. Use Resetar câmera ou recarregue a aba.
+        </p>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function pointerCursor(gl: THREE.WebGLRenderer) {
@@ -105,6 +191,14 @@ const DEFAULT_TOGGLES: LayerToggles = {
 const AIRSPACE_OFF_BY_DEFAULT = new Set<AirspaceVolume["type"]>(["FIR", "FIS"]);
 const CORRIDOR_COLOR = "#a16207";
 const FT_TYPES: AirspaceVolume["type"][] = ["TMA", "CTR", "ATZ", "FIZ", "CTA", "AFIS", "P", "R", "D", "FIR", "FIS"];
+const AIRSPACE_TOGGLES_3D = AIRSPACE_LAYER_DEFS
+  .filter((d) => FT_TYPES.includes(d.type as AirspaceVolume["type"]))
+  .map((d) => ({
+    id: d.id,
+    type: d.type as AirspaceVolume["type"],
+    label: d.label,
+    color: d.color,
+  }));
 
 function markerColor(kind: string): string {
   switch (kind) {
@@ -119,6 +213,81 @@ function markerColor(kind: string): string {
     default:
       return "#e2e8f0";
   }
+}
+
+function AircraftMarker({
+  aircraft,
+  aircraftRef,
+  origin,
+  exaggeration,
+  spanM,
+}: {
+  aircraft?: Props["currentAircraft"];
+  aircraftRef?: Props["currentAircraftRef"];
+  origin: EnuOrigin;
+  exaggeration: number;
+  spanM: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const fallbackRef = useRef<Props["currentAircraft"]>(aircraft ?? null);
+  if (!aircraftRef) fallbackRef.current = aircraft ?? null;
+  const size = Math.min(360, Math.max(90, spanM * 0.00135));
+  useFrame(() => {
+    const pose = (aircraftRef ?? fallbackRef).current;
+    const group = groupRef.current;
+    if (!group) return;
+    if (!pose || !Number.isFinite(pose.lat) || !Number.isFinite(pose.lng)) {
+      group.visible = false;
+      return;
+    }
+    const enu = lngLatToEnu(pose.lat, pose.lng, origin);
+    group.visible = true;
+    group.position.set(enu.x, altFtToY(pose.altitudeFt ?? 0, exaggeration), enu.z);
+    group.rotation.y =
+      pose.headingDeg != null && Number.isFinite(pose.headingDeg) ? (pose.headingDeg * Math.PI) / 180 : 0;
+  });
+  return (
+    <group ref={groupRef} visible={false}>
+      <mesh rotation={[Math.PI / 2, 0, 0]} raycast={() => {}}>
+        <coneGeometry args={[size * 0.42, size * 1.25, 3]} />
+        <meshStandardMaterial color="#f8fafc" emissive="#38bdf8" emissiveIntensity={0.35} roughness={0.35} />
+      </mesh>
+      <mesh position={[0, 0, -size * 0.28]} raycast={() => {}}>
+        <sphereGeometry args={[size * 0.16, 12, 12]} />
+        <meshStandardMaterial color="#0ea5e9" emissive="#0ea5e9" emissiveIntensity={0.25} roughness={0.25} />
+      </mesh>
+    </group>
+  );
+}
+
+function routePointVec(point: THREE.Vector3 | [number, number, number]): THREE.Vector3 {
+  return Array.isArray(point) ? new THREE.Vector3(point[0], point[1], point[2]) : point;
+}
+
+function RouteDirectionArrow({ path, spanM }: { path: Array<THREE.Vector3 | [number, number, number]>; spanM: number }) {
+  const arrow = useMemo(() => {
+    if (path.length < 2) return null;
+    const targetIndex = Math.max(1, Math.min(path.length - 1, Math.round((path.length - 1) * 0.58)));
+    const from = routePointVec(path[targetIndex - 1]!);
+    const to = routePointVec(path[targetIndex]!);
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    if (Math.hypot(dx, dz) < 1) return null;
+    return {
+      position: new THREE.Vector3((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2),
+      yaw: Math.atan2(dx, dz),
+    };
+  }, [path]);
+  if (!arrow) return null;
+  const size = Math.min(300, Math.max(70, spanM * 0.0012));
+  return (
+    <group position={arrow.position} rotation={[0, arrow.yaw, 0]} raycast={() => {}}>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[size * 0.38, size * 1.05, 3]} />
+        <meshStandardMaterial color="#f8fafc" emissive="#22d3ee" emissiveIntensity={0.45} roughness={0.35} />
+      </mesh>
+    </group>
+  );
 }
 
 function CameraRig({ spanM, resetNonce }: { spanM: number; resetNonce: number }) {
@@ -377,6 +546,8 @@ function VolumePrism({
   color,
   opacity,
   onClick,
+  interactionPaused,
+  showEdges = true,
 }: {
   geometry: AirspaceVolume["geometry"];
   origin: EnuOrigin;
@@ -386,6 +557,8 @@ function VolumePrism({
   color: string;
   opacity: number;
   onClick?: (event: ThreeEvent<MouseEvent>) => void;
+  interactionPaused?: boolean;
+  showEdges?: boolean;
 }) {
   const shapes = useMemo(() => geometryToShapes(geometry, origin), [geometry, origin]);
   const lowerY = altFtToY(lowerFt, exaggeration);
@@ -406,6 +579,8 @@ function VolumePrism({
           opacity={opacity}
           lowerY={lowerY}
           onClick={onClick}
+          interactionPaused={interactionPaused}
+          showEdges={showEdges}
         />
       ))}
     </group>
@@ -419,6 +594,8 @@ function VolumeShapeMesh({
   opacity,
   lowerY,
   onClick,
+  interactionPaused,
+  showEdges,
 }: {
   shape: THREE.Shape;
   extrude: { depth: number; bevelEnabled: false; curveSegments: number };
@@ -426,26 +603,51 @@ function VolumeShapeMesh({
   opacity: number;
   lowerY: number;
   onClick?: (event: ThreeEvent<MouseEvent>) => void;
+  interactionPaused?: boolean;
+  showEdges?: boolean;
 }) {
-  const geom = useMemo(() => new THREE.ExtrudeGeometry(shape, extrude), [extrude, shape]);
-  const edges = useMemo(() => new THREE.EdgesGeometry(geom, 28), [geom]);
+  const geom = useMemo(() => {
+    try {
+      const next = new THREE.ExtrudeGeometry(shape, extrude);
+      const pos = next.getAttribute("position");
+      if (!pos || pos.count < 3) {
+        next.dispose();
+        return null;
+      }
+      return next;
+    } catch {
+      return null;
+    }
+  }, [extrude, shape]);
+  const edges = useMemo(() => {
+    if (!geom || !showEdges) return null;
+    const count = geom.getAttribute("position")?.count ?? 0;
+    if (count > 2_400) return null;
+    try {
+      return new THREE.EdgesGeometry(geom, 40);
+    } catch {
+      return null;
+    }
+  }, [geom, showEdges]);
   const gl = useThree((s) => s.gl);
   useEffect(
     () => () => {
-      geom.dispose();
-      edges.dispose();
+      geom?.dispose();
+      edges?.dispose();
     },
     [edges, geom],
   );
   const edgeOpacity = Math.min(0.55, opacity * 2.3);
   const hover = onClick ? pointerCursor(gl) : null;
+  if (!geom) return null;
   return (
     <group rotation={[-Math.PI / 2, 0, 0]} position={[0, lowerY, 0]}>
       <mesh
         geometry={geom}
-        onClick={onClick}
-        onPointerOver={hover?.onPointerOver}
-        onPointerOut={hover?.onPointerOut}
+        raycast={interactionPaused ? () => {} : undefined}
+        onClick={interactionPaused ? undefined : onClick}
+        onPointerOver={interactionPaused ? undefined : hover?.onPointerOver}
+        onPointerOut={interactionPaused ? undefined : hover?.onPointerOut}
       >
         <meshStandardMaterial
           color={color}
@@ -457,9 +659,11 @@ function VolumeShapeMesh({
           metalness={0.05}
         />
       </mesh>
-      <lineSegments geometry={edges}>
-        <lineBasicMaterial color={color} transparent opacity={edgeOpacity} depthWrite={false} />
-      </lineSegments>
+      {edges ? (
+        <lineSegments geometry={edges} raycast={() => {}}>
+          <lineBasicMaterial color={color} transparent opacity={edgeOpacity} depthWrite={false} />
+        </lineSegments>
+      ) : null}
     </group>
   );
 }
@@ -480,6 +684,12 @@ function SceneContent({
   visibleAerodromes,
   runways,
   onSelect,
+  markerMode,
+  routeSegmentColors,
+  currentAircraft,
+  currentAircraftRef,
+  labelsPaused,
+  interactionPaused,
 }: {
   waypoints: FlightPlanWaypoint[];
   performance?: RoutePerformanceProfile | null;
@@ -496,6 +706,12 @@ function SceneContent({
   visibleAerodromes: Aerodrome[];
   runways: RunwayRecord[];
   onSelect: (selection: SceneSelection) => void;
+  markerMode: "all" | "endpoints";
+  routeSegmentColors: string[];
+  currentAircraft?: Props["currentAircraft"];
+  currentAircraftRef?: Props["currentAircraftRef"];
+  labelsPaused: boolean;
+  interactionPaused: boolean;
 }) {
   const gl = useThree((s) => s.gl);
   const hover = pointerCursor(gl);
@@ -515,10 +731,21 @@ function SceneContent({
     () => buildRoute3dPath(waypoints, performance?.profile ?? null, origin, exaggeration),
     [exaggeration, origin, performance?.profile, waypoints],
   );
-  const markers = useMemo(
-    () => buildRoute3dMarkers(waypoints, performance?.phaseMarkers ?? null, origin, exaggeration),
-    [exaggeration, origin, performance?.phaseMarkers, waypoints],
-  );
+  const routeVertexColors = useMemo(() => {
+    if (routeSegmentColors.length === path.length) return routeSegmentColors.map((color) => new THREE.Color(color));
+    if (routeSegmentColors.length === path.length - 1) {
+      return [
+        new THREE.Color(routeSegmentColors[0] ?? "#22d3ee"),
+        ...routeSegmentColors.map((color) => new THREE.Color(color)),
+      ];
+    }
+    return null;
+  }, [path.length, routeSegmentColors]);
+  const markers = useMemo(() => {
+    const all = buildRoute3dMarkers(waypoints, performance?.phaseMarkers ?? null, origin, exaggeration);
+    if (markerMode === "all") return all;
+    return all.filter((marker) => marker.kind === "origin" || marker.kind === "destination");
+  }, [exaggeration, markerMode, origin, performance?.phaseMarkers, waypoints]);
   const markerRadius = Math.min(220, Math.max(28, spanM * 0.00105));
   const labelScale = Math.max(420, Math.min(1800, spanM * 0.0055));
   const routeIcaos = useMemo(() => {
@@ -541,7 +768,7 @@ function SceneContent({
       <TerrainZoom terrain={terrain} origin={origin} exaggeration={exaggeration} spanM={spanM} />
       <OrbitControls
         makeDefault
-        enableDamping
+        enableDamping={!interactionPaused}
         dampingFactor={0.12}
         enableZoom={false}
         screenSpacePanning={false}
@@ -579,8 +806,8 @@ function SceneContent({
         </>
       ) : null}
 
-      {toggles.corridors
-        ? corridors.map((corridor, idx) => {
+            {toggles.corridors
+            ? corridors.map((corridor, idx) => {
             const geom = corridorPrismGeometry(corridor);
             if (!geom) return null;
             const alts = resolveVolumeAlts(corridor.altMin, corridor.altMax, ceilingFt);
@@ -605,7 +832,9 @@ function SceneContent({
                   upperFt={alts.upperFt}
                   exaggeration={exaggeration}
                   color={CORRIDOR_COLOR}
-                  opacity={0.14}
+                  opacity={0.22}
+                  showEdges
+                  interactionPaused={interactionPaused}
                   onClick={(event) => {
                     event.stopPropagation();
                     onSelect({
@@ -616,7 +845,7 @@ function SceneContent({
                     });
                   }}
                 />
-                {labelPos ? (
+                {labelPos && !labelsPaused ? (
                   <WorldLabel
                     position={labelPos}
                     worldScale={labelScale}
@@ -634,11 +863,10 @@ function SceneContent({
       {toggles.airspaces
         ? airspaceVolumes
             .filter((v) => !hiddenAirspaceTypes.has(v.type))
-            .slice(0, 60)
             .map((volume, idx) => {
               const alts = resolveVolumeAlts(volume.lowerFt, volume.upperFt, ceilingFt);
               if (!alts) return null;
-              const opacity = volume.type === "FIR" || volume.type === "FIS" ? 0.05 : 0.1;
+              const opacity = volume.type === "FIR" || volume.type === "FIS" ? 0.05 : 0.16;
               const midY = altFtToY((alts.lowerFt + alts.upperFt) / 2, exaggeration);
               const c = geometryCentroidEnu(volume.geometry, origin);
               const label = volume.ident && volume.ident !== "—" ? `${volume.type} ${volume.ident}` : `${volume.type} ${volume.name}`;
@@ -652,12 +880,14 @@ function SceneContent({
                     exaggeration={exaggeration}
                     color={airspaceHitColor(volume.type)}
                     opacity={opacity}
+                    showEdges={airspaceVolumes.length <= 18}
+                    interactionPaused={interactionPaused}
                     onClick={(event) => {
                       event.stopPropagation();
                       onSelect({ kind: "airspace", info: volumeToInfo(volume) });
                     }}
                   />
-                  {c && idx < 18 ? (
+                  {c && idx < 12 && !labelsPaused ? (
                     <WorldLabel
                       position={[c.x, midY, c.z]}
                       worldScale={labelScale}
@@ -672,30 +902,50 @@ function SceneContent({
             })
         : null}
 
-      {toggles.route && path.length >= 2 ? (
+      {toggles.route && path.length >= 2 && routeVertexColors ? (
+        <Line points={path} vertexColors={routeVertexColors} lineWidth={3} />
+      ) : toggles.route && path.length >= 2 ? (
         <Line points={path} color="#22d3ee" lineWidth={2.5} />
+      ) : null}
+
+      {toggles.route && path.length >= 2 ? <RouteDirectionArrow path={path} spanM={spanM} /> : null}
+
+      {toggles.route && (currentAircraftRef || currentAircraft) ? (
+        <AircraftMarker
+          aircraft={currentAircraft}
+          aircraftRef={currentAircraftRef}
+          origin={origin}
+          exaggeration={exaggeration}
+          spanM={spanM}
+        />
       ) : null}
 
       {toggles.route
         ? markers.map((m, idx) => (
             <group key={`${m.kind}-${m.label}-${idx}`} position={[m.x, m.y, m.z]}>
               <mesh
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onSelect({
-                    kind: "waypoint",
-                    label: m.label,
-                    lat: m.lat,
-                    lng: m.lng,
-                    markerKind: m.kind,
-                  });
-                }}
-                onPointerOver={hover.onPointerOver}
-                onPointerOut={hover.onPointerOut}
+                raycast={interactionPaused ? () => {} : undefined}
+                onClick={
+                  interactionPaused
+                    ? undefined
+                    : (event) => {
+                        event.stopPropagation();
+                        onSelect({
+                          kind: "waypoint",
+                          label: m.label,
+                          lat: m.lat,
+                          lng: m.lng,
+                          markerKind: m.kind,
+                        });
+                      }
+                }
+                onPointerOver={interactionPaused ? undefined : hover.onPointerOver}
+                onPointerOut={interactionPaused ? undefined : hover.onPointerOut}
               >
                 <sphereGeometry args={[markerRadius * (m.kind === "waypoint" ? 0.75 : 1), 12, 12]} />
                 <meshStandardMaterial color={markerColor(m.kind)} roughness={0.4} />
               </mesh>
+              {!labelsPaused ? (
               <WorldLabel
                 position={[0, markerRadius * 4.2, 0]}
                 worldScale={labelScale}
@@ -710,6 +960,7 @@ function SceneContent({
               >
                 {m.label}
               </WorldLabel>
+              ) : null}
             </group>
           ))
         : null}
@@ -735,6 +986,7 @@ function SceneContent({
               <coneGeometry args={[size * 0.38, size, 4]} />
               <meshStandardMaterial color="#fbbf24" roughness={0.45} />
             </mesh>
+            {!labelsPaused ? (
             <WorldLabel
               position={[0, size * 0.95, 0]}
               worldScale={labelScale * 0.85}
@@ -746,6 +998,7 @@ function SceneContent({
             >
               {icao || ad.name}
             </WorldLabel>
+            ) : null}
           </group>
         );
       })}
@@ -886,20 +1139,59 @@ function ToggleChip({
   );
 }
 
+function MapToolIconMap({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden>
+      <path d="M9 18l-6 3V6l6-3 6 3 6-3v15l-6 3-6-3z" />
+      <path d="M9 3v15M15 6v15" />
+    </svg>
+  );
+}
+
+function MapToolIconAirspace({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <circle cx="3" cy="3" r="1.65" />
+      <circle cx="9" cy="3" r="1.65" />
+      <circle cx="15" cy="3" r="1.65" />
+      <circle cx="21" cy="3" r="1.65" />
+      <circle cx="3" cy="9" r="1.65" />
+      <circle cx="21" cy="9" r="1.65" />
+      <circle cx="3" cy="15" r="1.65" />
+      <circle cx="21" cy="15" r="1.65" />
+      <circle cx="3" cy="21" r="1.65" />
+      <circle cx="9" cy="21" r="1.65" />
+      <circle cx="15" cy="21" r="1.65" />
+      <circle cx="21" cy="21" r="1.65" />
+    </svg>
+  );
+}
+
 export function Route3DView({
   waypoints,
   totalDistanceNm,
   performance,
-  corridors = [],
-  airspaceVolumes = [],
-  aerodromes = [],
+  corridors = EMPTY_CORRIDORS,
+  airspaceVolumes = EMPTY_VOLUMES,
+  aerodromes = EMPTY_AERODROMES,
   onAerodromeDetails,
   variant = "embedded",
   className = "",
   canvasClassName,
+  markerMode = "all",
+  routeSegmentColors = EMPTY_COLORS,
+  currentAircraft = null,
+  currentAircraftRef,
+  navigationOptimized = false,
+  liteTerrain = false,
+  autoLoadAreaLayers = false,
+  defaultVisibleAirspaceTypes,
+  areaLayerKinds = DEFAULT_AREA_LAYER_KINDS,
+  chartsControl,
 }: Props) {
   const isSection = variant === "section";
   const [layersOpen, setLayersOpen] = useState(false);
+  const [mapToolPanel, setMapToolPanel] = useState<MapToolPanel3d>(null);
   const [toggles, setToggles] = useState<LayerToggles>(DEFAULT_TOGGLES);
   const [exaggeration, setExaggeration] = useState(20);
   const [terrainStyle, setTerrainStyle] = useState<TerrainStyle>("hypsometric");
@@ -911,14 +1203,21 @@ export function Route3DView({
   const [satError, setSatError] = useState<string | null>(null);
   const [satelliteTexture, setSatelliteTexture] = useState<THREE.Texture | null>(null);
   const [runways, setRunways] = useState<RunwayRecord[]>([]);
-  const [showAreaAirspaces, setShowAreaAirspaces] = useState(false);
+  const [showAreaAirspaces, setShowAreaAirspaces] = useState(autoLoadAreaLayers);
   const [areaVolumes, setAreaVolumes] = useState<AirspaceVolume[]>([]);
   const [areaCorridors, setAreaCorridors] = useState<LegCorridorInfo[]>([]);
   const [areaLoading, setAreaLoading] = useState(false);
   const [selection, setSelection] = useState<SceneSelection | null>(null);
   const viewRef = useRef<HTMLDivElement>(null);
+  const [enabledAreaLayerKinds, setEnabledAreaLayerKinds] = useState<Set<"rea" | "reh">>(
+    () => new Set(areaLayerKinds),
+  );
   const [hiddenAirspaceTypes, setHiddenAirspaceTypes] = useState<Set<AirspaceVolume["type"]>>(
-    () => new Set(AIRSPACE_OFF_BY_DEFAULT),
+    () => {
+      if (!defaultVisibleAirspaceTypes?.length) return new Set(AIRSPACE_OFF_BY_DEFAULT);
+      const visible = new Set(defaultVisibleAirspaceTypes);
+      return new Set(FT_TYPES.filter((type) => !visible.has(type)));
+    },
   );
 
   const origin = useMemo(() => computeRouteOrigin(waypoints), [waypoints]);
@@ -927,15 +1226,20 @@ export function Route3DView({
     [origin, waypoints],
   );
   const corridorVolumes = useMemo(() => uniqueCorridorVolumes(corridors), [corridors]);
+  const shouldLoadAreaLayers = showAreaAirspaces || autoLoadAreaLayers;
+  const enabledAreaLayerKindsList = useMemo(
+    () => REA_TOGGLES_3D.map((layer) => layer.id).filter((kind) => enabledAreaLayerKinds.has(kind)),
+    [enabledAreaLayerKinds],
+  );
   const displayedCorridors = useMemo(() => {
-    if (!showAreaAirspaces || !areaCorridors.length) return corridorVolumes;
+    if (!shouldLoadAreaLayers || !areaCorridors.length) return corridorVolumes;
     return uniqueCorridorVolumes([...corridorVolumes, ...areaCorridors]);
-  }, [areaCorridors, corridorVolumes, showAreaAirspaces]);
+  }, [areaCorridors, corridorVolumes, shouldLoadAreaLayers]);
   const displayedAirspaceVolumes = useMemo(() => {
-    if (!showAreaAirspaces || !areaVolumes.length) return airspaceVolumes;
+    if (!shouldLoadAreaLayers || !areaVolumes.length) return airspaceVolumes;
     const seen = new Set(airspaceVolumes.map((v) => `${v.type}:${v.ident}:${v.name}`));
     return [...airspaceVolumes, ...areaVolumes.filter((v) => !seen.has(`${v.type}:${v.ident}:${v.name}`))];
-  }, [airspaceVolumes, areaVolumes, showAreaAirspaces]);
+  }, [airspaceVolumes, areaVolumes, shouldLoadAreaLayers]);
   const presentAirspaceTypes = useMemo(() => {
     const set = new Set<AirspaceVolume["type"]>();
     for (const v of displayedAirspaceVolumes) set.add(v.type);
@@ -980,7 +1284,16 @@ export function Route3DView({
     const timer = window.setTimeout(() => {
       void fetchTerrainGrid(
         waypoints.map((w) => ({ lat: w.lat, lng: w.lng })),
-        { signal: controller.signal },
+        liteTerrain
+          ? {
+              signal: controller.signal,
+              padDeg: 0.35,
+              maxTiles: 24,
+              maxSatTiles: 12,
+              maxZoom: 11,
+              targetCells: 160,
+            }
+          : { signal: controller.signal },
       )
         .then((grid) => {
           if (cancelled) return;
@@ -1001,7 +1314,7 @@ export function Route3DView({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [waypoints]);
+  }, [liteTerrain, waypoints]);
 
   useEffect(() => {
     if (!terrain || terrainStyle !== "satellite") {
@@ -1016,7 +1329,12 @@ export function Route3DView({
     const controller = new AbortController();
     setSatLoading(true);
     setSatError(null);
-    void fetchSatelliteCanvas(terrain, { signal: controller.signal })
+    void fetchSatelliteCanvas(
+      terrain,
+      liteTerrain
+        ? { signal: controller.signal, maxSatTiles: 12, maxZoom: 11 }
+        : { signal: controller.signal },
+    )
       .then((canvas) => {
         if (cancelled) return;
         if (!canvas) {
@@ -1055,10 +1373,10 @@ export function Route3DView({
       cancelled = true;
       controller.abort();
     };
-  }, [terrain, terrainStyle]);
+  }, [liteTerrain, terrain, terrainStyle]);
 
   useEffect(() => {
-    if (!showAreaAirspaces || !terrain) {
+    if (!shouldLoadAreaLayers || !terrain) {
       setAreaVolumes([]);
       setAreaCorridors([]);
       return;
@@ -1071,18 +1389,20 @@ export function Route3DView({
       maxLng: terrain.east,
       maxLat: terrain.north,
     };
+    const corridorBbox = {
+      minLng: terrain.west - 0.15,
+      minLat: terrain.south - 0.15,
+      maxLng: terrain.east + 0.15,
+      maxLat: terrain.north + 0.15,
+    };
     void Promise.all([
-      loadAirspaceVolumesInBbox(bbox),
-      loadReaRoutesInBbox("rea", bbox),
-      loadReaRoutesInBbox("reh", bbox),
+      loadAirspaceVolumesInBbox(bbox, { maxTotal: 180 }),
+      ...enabledAreaLayerKindsList.map((kind) => loadReaRoutesInBbox(kind, corridorBbox)),
     ])
-      .then(([volumes, rea, reh]) => {
+      .then(([volumes, ...corridorSets]) => {
         if (cancelled) return;
         setAreaVolumes(volumes);
-        const nearby = [...rea, ...reh]
-          .map(reaFeatureToCorridor)
-          .filter((c): c is LegCorridorInfo => c != null)
-          .slice(0, 60);
+        const nearby = uniqueCorridorVolumes(corridorSets.flat().map(reaFeatureToCorridor));
         setAreaCorridors(nearby);
       })
       .catch(() => {
@@ -1097,7 +1417,7 @@ export function Route3DView({
     return () => {
       cancelled = true;
     };
-  }, [showAreaAirspaces, terrain]);
+  }, [enabledAreaLayerKindsList, shouldLoadAreaLayers, terrain]);
 
   useEffect(() => {
     const icaos = [
@@ -1131,6 +1451,16 @@ export function Route3DView({
   }, [ready]);
 
   const canvasHeightClass = canvasClassName ?? (isSection ? "min-h-0 flex-1" : "h-[480px]");
+  const canvasGl = useMemo(
+    () => ({
+      antialias: !navigationOptimized,
+      alpha: false,
+      powerPreference: "default" as const,
+      stencil: false,
+    }),
+    [navigationOptimized],
+  );
+  const canvasDpr = navigationOptimized ? 1 : ([1, 1.25] as [number, number]);
 
   const typeFilters =
     toggles.airspaces && presentAirspaceTypes.length > 0 ? (
@@ -1203,18 +1533,19 @@ export function Route3DView({
       </ToggleChip>
       <ToggleChip
         active={toggles.corridors}
-        disabled={displayedCorridors.length === 0 && !showAreaAirspaces}
+        disabled={displayedCorridors.length === 0 && !shouldLoadAreaLayers}
         onClick={() => setToggles((t) => ({ ...t, corridors: !t.corridors }))}
       >
         Corredores
       </ToggleChip>
       <ToggleChip
         active={toggles.airspaces}
-        disabled={displayedAirspaceVolumes.length === 0 && !showAreaAirspaces}
+        disabled={displayedAirspaceVolumes.length === 0 && !shouldLoadAreaLayers}
         onClick={() => setToggles((t) => ({ ...t, airspaces: !t.airspaces }))}
       >
         Espaços aéreos
       </ToggleChip>
+      {!autoLoadAreaLayers ? (
       <ToggleChip
         active={showAreaAirspaces}
         onClick={() => {
@@ -1227,6 +1558,7 @@ export function Route3DView({
       >
         Fora da rota
       </ToggleChip>
+      ) : null}
       <button
         type="button"
         onClick={() => setResetNonce((n) => n + 1)}
@@ -1245,6 +1577,7 @@ export function Route3DView({
           : `shrink-0 rounded-2xl border border-slate-700/70 bg-slate-950/60 ${className}`
       }`}
     >
+      {false ? embeddedToolbar : null}
       <div
         className={`relative z-10 flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2 ${
           isSection ? "bg-slate-950" : ""
@@ -1271,27 +1604,240 @@ export function Route3DView({
             </button>
           </div>
         ) : (
-          embeddedToolbar
+          <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+            {terrainLoading ? <span className="text-cyan-300/80">Carregando relevo...</span> : null}
+            {satLoading ? <span className="text-cyan-300/80">Carregando satelite...</span> : null}
+            {areaLoading ? <span className="text-cyan-300/80">Carregando espacos da area...</span> : null}
+            {terrainError ? <span className="text-amber-300/90">{terrainError}</span> : null}
+            {satError ? <span className="text-amber-300/90">{satError}</span> : null}
+          </div>
         )}
       </div>
-      {!isSection ? typeFilters : null}
       <div
         ref={viewRef}
         className={`relative w-full overflow-hidden overscroll-none touch-none ${
           isSection ? "min-h-0 flex-1" : canvasHeightClass
         }`}
       >
+        {ready ? (
+          <div className="pointer-events-none absolute bottom-3 right-2 top-2 z-20 flex items-start justify-end gap-2">
+            {mapToolPanel ? (
+              <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-200">
+                    {mapToolPanel === "basemap" ? "Tipo de mapa" : "Espacos aereos"}
+                  </p>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                    onClick={() => setMapToolPanel(null)}
+                    aria-label="Fechar"
+                  >
+                    x
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+                  {mapToolPanel === "basemap" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ["hypsometric", "Relevo"],
+                        ["satellite", "Satelite"],
+                      ] as const).map(([id, label]) => {
+                        const on = terrainStyle === id && toggles.terrain;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => {
+                              setToggles((t) => ({ ...t, terrain: true }));
+                              setTerrainStyle(id);
+                            }}
+                            className={`rounded-xl border px-2 py-3 text-center text-[11px] font-semibold transition ${
+                              on
+                                ? "border-cyan-400/70 bg-cyan-500/15 text-cyan-100"
+                                : "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {mapToolPanel === "layers" ? (
+                    <div className="space-y-3">
+                      {chartsControl?.available ? (
+                        <button
+                          type="button"
+                          onClick={chartsControl.onToggle}
+                          className={`w-full rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                            chartsControl.active
+                              ? "border-sky-400/50 bg-sky-500/25 text-sky-50"
+                              : "border-slate-700 bg-slate-900/50 text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          Graficos
+                        </button>
+                      ) : null}
+                      <label className="block rounded-lg border border-slate-800 bg-slate-900/35 px-2 py-2">
+                        <span className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          Exagero vertical
+                          <span className="font-mono text-slate-300">{exaggeration}x</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={40}
+                          step={1}
+                          value={exaggeration}
+                          onChange={(e) => setExaggeration(Number(e.target.value))}
+                          className="h-1.5 w-full accent-cyan-500"
+                        />
+                      </label>
+                      <div>
+                        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          Espaco aereo
+                        </p>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {AIRSPACE_TOGGLES_3D.map((layer) => {
+                            const on = !hiddenAirspaceTypes.has(layer.type);
+                            const available = presentAirspaceTypes.includes(layer.type);
+                            return (
+                              <button
+                                key={layer.id}
+                                type="button"
+                                title={layer.label}
+                                disabled={!available}
+                                onClick={() => {
+                                  setToggles((t) => ({ ...t, airspaces: true }));
+                                  setHiddenAirspaceTypes((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(layer.type)) next.delete(layer.type);
+                                    else next.add(layer.type);
+                                    return next;
+                                  });
+                                }}
+                                className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                                  on && available
+                                    ? "border-white/25 text-white"
+                                    : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+                                }`}
+                                style={on && available ? { backgroundColor: `${layer.color}55` } : undefined}
+                              >
+                                {layer.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          Rotas especiais
+                        </p>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {REA_TOGGLES_3D.map((layer) => {
+                            const on = enabledAreaLayerKinds.has(layer.id) && toggles.corridors;
+                            return (
+                              <button
+                                key={layer.id}
+                                type="button"
+                                title={layer.title}
+                                onClick={() => {
+                                  setToggles((t) => ({ ...t, corridors: true }));
+                                  setEnabledAreaLayerKinds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(layer.id)) next.delete(layer.id);
+                                    else next.add(layer.id);
+                                    return next;
+                                  });
+                                }}
+                                className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                                  on
+                                    ? "border-amber-400/50 bg-amber-500/25 text-amber-50"
+                                    : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300"
+                                }`}
+                              >
+                                {layer.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {([
+                          ["terrain", "Terreno"],
+                          ["route", "Rota"],
+                        ] as const).map(([key, label]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setToggles((t) => ({ ...t, [key]: !t[key] }))}
+                            className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                              toggles[key]
+                                ? "border-cyan-400/50 bg-cyan-500/20 text-cyan-50"
+                                : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setResetNonce((n) => n + 1)}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-300 hover:border-slate-500"
+                      >
+                        Resetar camera
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <div className="pointer-events-auto flex flex-col gap-1 rounded-2xl border border-slate-600/80 bg-slate-950/85 p-1 shadow-2xl shadow-black/40 backdrop-blur-md">
+              {([
+                { id: "basemap" as const, title: "Tipo de mapa", icon: <MapToolIconMap /> },
+                { id: "layers" as const, title: "Espacos aereos", icon: <MapToolIconAirspace /> },
+              ] as const).map((btn) => {
+                const on = mapToolPanel === btn.id;
+                return (
+                  <button
+                    key={btn.id}
+                    type="button"
+                    title={btn.title}
+                    onClick={() => setMapToolPanel((prev) => (prev === btn.id ? null : btn.id))}
+                    className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition ${
+                      on
+                        ? "bg-cyan-500/30 text-cyan-100 ring-1 ring-cyan-400/50"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    {btn.icon}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {!ready || !origin ? (
           <p className="grid h-full place-items-center text-[11px] text-slate-600">
             Defina origem e destino para ver a rota em 3D
           </p>
         ) : (
           <>
+            <CanvasErrorBoundary resetKey={resetNonce}>
             <Canvas
-              gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-              dpr={[1, 1.25]}
+              gl={canvasGl}
+              dpr={canvasDpr}
               camera={{ fov: 50, near: 10, far: 500_000, position: [0, 2_000, 2_000] }}
               onPointerMissed={() => setSelection(null)}
+              onCreated={({ gl }) => {
+                const canvas = gl.domElement;
+                const onLost = (event: Event) => {
+                  event.preventDefault();
+                };
+                canvas.addEventListener("webglcontextlost", onLost, false);
+              }}
               style={{ width: "100%", height: "100%", display: "block" }}
               className="h-full w-full"
             >
@@ -1311,10 +1857,21 @@ export function Route3DView({
                 visibleAerodromes={visibleAerodromes}
                 runways={runways}
                 onSelect={setSelection}
+                markerMode={markerMode}
+                routeSegmentColors={routeSegmentColors}
+                currentAircraft={currentAircraft}
+                currentAircraftRef={currentAircraftRef}
+                labelsPaused={Boolean(selection || mapToolPanel)}
+                interactionPaused={false}
               />
             </Canvas>
+            </CanvasErrorBoundary>
             {selection ? (
-              <div className="pointer-events-none absolute right-2 top-2 z-10 max-h-[calc(100%-1rem)] overflow-y-auto">
+              <div
+                className={`pointer-events-none absolute top-2 z-30 max-h-[calc(100%-1rem)] overflow-y-auto ${
+                  mapToolPanel ? "right-[18.75rem]" : "right-16"
+                }`}
+              >
                 <div className="pointer-events-auto">
                   {selection.kind === "airspace" ? (
                     <AirspaceInfoPanel info={selection.info} onClose={() => setSelection(null)} />
@@ -1454,18 +2011,19 @@ export function Route3DView({
                 </ToggleChip>
                 <ToggleChip
                   active={toggles.corridors}
-                  disabled={displayedCorridors.length === 0 && !showAreaAirspaces}
+                  disabled={displayedCorridors.length === 0 && !shouldLoadAreaLayers}
                   onClick={() => setToggles((t) => ({ ...t, corridors: !t.corridors }))}
                 >
                   Corredores
                 </ToggleChip>
                 <ToggleChip
                   active={toggles.airspaces}
-                  disabled={displayedAirspaceVolumes.length === 0 && !showAreaAirspaces}
+                  disabled={displayedAirspaceVolumes.length === 0 && !shouldLoadAreaLayers}
                   onClick={() => setToggles((t) => ({ ...t, airspaces: !t.airspaces }))}
                 >
                   Espaços aéreos
                 </ToggleChip>
+                {!autoLoadAreaLayers ? (
                 <ToggleChip
                   active={showAreaAirspaces}
                   onClick={() => {
@@ -1478,6 +2036,7 @@ export function Route3DView({
                 >
                   Fora da rota
                 </ToggleChip>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setResetNonce((n) => n + 1)}
@@ -1502,4 +2061,4 @@ export function Route3DView({
   );
 }
 
-export default Route3DView;
+export default memo(Route3DView);
