@@ -2,7 +2,7 @@
  * Deploy the lightweight FlightRadar fleet watch cron function.
  *
  * Reuses the admin-users package (same source tree) with entrypoint
- * src/flightRadarWatchCron.js and schedule every 10 minutes.
+ * src/flightRadarWatchCron.js and schedule every 5 minutes.
  *
  * Usage:
  *   node scripts/deploy-flight-radar-watch.mjs
@@ -20,7 +20,7 @@ const envPath = path.join(root, ".env.local");
 const archivePath = path.join(root, ".tmp", "admin-users-function.tar.gz");
 const sourceFunctionId = process.env.ADMIN_USERS_FUNCTION_ID || "admin-users";
 const functionId = process.env.FLIGHT_RADAR_WATCH_FUNCTION_ID || "flight-radar-watch";
-const schedule = process.env.FLIGHT_RADAR_WATCH_SCHEDULE || "*/10 * * * *";
+const schedule = process.env.FLIGHT_RADAR_WATCH_SCHEDULE || "*/5 * * * *";
 const timeout = Number(process.env.FLIGHT_RADAR_WATCH_TIMEOUT || 60);
 
 function parseEnvFile(filePath) {

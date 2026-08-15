@@ -2,7 +2,7 @@
 
 /**
  * Entrypoint leve só para avisos WPP de decolagem/pouso (FlightRadar watch).
- * Agendar esta function a cada 10 min (separado do cron pesado de listSummaries).
+ * Agendar esta function a cada 5 min (separado do cron pesado de listSummaries).
  */
 module.exports = async (context) => {
   const payload = { action: "runFlightRadarWatchScan" };
