@@ -28,7 +28,10 @@ import { WindyIsobarsIcon, WindyOverlayIcon } from "../lib/windyOverlayIcons";
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
 import { REA_LAYER_TOGGLES_PLANNING, ReaRoutesOverlay, ReaRoutesOverlayBoundary } from "./ReaRoutesOverlay";
 import { AerodromeMapPopupContent } from "./AerodromePlanningModals";
-import type { AiswebAirportBundle } from "../types/aisweb";
+import { fetchAiswebMetBatch } from "../lib/aiswebDb";
+import { parseMetar } from "../lib/aiswebMetar";
+import { isValidMetar, metarFlightRule, metarFlightRuleColor, type MetarFlightRule } from "../lib/route3dWeather";
+import type { AiswebAirportBundle, AiswebMetarTaf } from "../types/aisweb";
 
 type MapStyle = "satellite" | "roads" | "terrain" | "windy" | "wac";
 type BaseMapStyle = Exclude<MapStyle, "windy" | "wac">;
@@ -191,6 +194,10 @@ export type MapPickCandidate = {
   altitude?: string;
   operation?: string;
 };
+
+const METAR_MARKER_BATCH_SIZE = 40;
+const METAR_MARKER_MAX_ICAOS = 120;
+const METAR_MARKER_CACHE = new Map<string, AiswebMetarTaf>();
 
 function pendingViewportTiles(layer: L.GridLayer): number {
   const tiles = (layer as unknown as { _tiles?: Record<string, { loaded?: boolean; current?: boolean; el?: HTMLElement }> })
@@ -825,13 +832,97 @@ function aerodromeIcon(icao: string, showLabel: boolean) {
   });
 }
 
+function metarRuleLabel(rule: MetarFlightRule): string {
+  if (rule === "ifr") return "IFR";
+  if (rule === "mvfr") return "MVFR";
+  if (rule === "vfr") return "VFR";
+  return "METAR";
+}
+
+function metarDotSizeForZoom(zoom: number): number {
+  if (zoom < 5.5) return 6;
+  if (zoom < 6.5) return 8;
+  if (zoom < 7.5) return 10;
+  return 12;
+}
+
+function metarDotIcon(icao: string, rule: MetarFlightRule, showLabel: boolean, zoom: number) {
+  const safe = icao.replace(/[<>&"]/g, "");
+  const color = metarFlightRuleColor(rule);
+  const dot = metarDotSizeForZoom(zoom);
+  const halo = Math.max(2, Math.round(dot / 3));
+  const iconSide = dot + halo * 2 + 2;
+  const label = showLabel
+    ? `<span style="margin-top:2px;font:800 8px/1 ui-monospace,monospace;color:#f8fafc;background:rgba(15,23,42,.86);padding:1px 3px;border-radius:3px">${safe}</span>`
+    : "";
+  return L.divIcon({
+    className: "",
+    html: `<div title="${safe} ${metarRuleLabel(rule)}" style="display:flex;flex-direction:column;align-items:center;cursor:pointer;line-height:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))">
+      <span style="display:block;width:${dot}px;height:${dot}px;border-radius:9999px;background:${color};box-shadow:0 0 0 1.5px rgba(15,23,42,.85),0 0 0 ${halo}px ${color}30"></span>
+      ${label}
+    </div>`,
+    iconSize: showLabel ? [58, 28] : [iconSide, iconSide],
+    iconAnchor: showLabel ? [29, dot / 2] : [iconSide / 2, iconSide / 2],
+  });
+}
+
+function formatMetarTooltipTime(value: string | null | undefined): string {
+  if (!value) return "";
+  if (/^\d{6}Z$/i.test(value)) return value.toUpperCase();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${date.toISOString().slice(11, 16)}Z`;
+}
+
+function MetarHoverCard({
+  icao,
+  met,
+  rule,
+}: {
+  icao: string;
+  met: AiswebMetarTaf;
+  rule: MetarFlightRule;
+}) {
+  const observed = formatMetarTooltipTime(met.parsed?.observedAt);
+  return (
+    <div className="w-[min(84vw,25rem)] rounded-2xl border border-slate-500/50 bg-slate-950/85 p-3 text-slate-100 shadow-2xl shadow-black/40 backdrop-blur-md">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <p className="font-mono text-[15px] font-bold tracking-widest text-cyan-200">{icao}</p>
+          {observed ? <p className="text-[11px] font-medium text-slate-400">{observed}</p> : null}
+        </div>
+        <span
+          className="rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white"
+          style={{ backgroundColor: metarFlightRuleColor(rule) }}
+        >
+          {metarRuleLabel(rule)}
+        </span>
+      </div>
+      <div className="space-y-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">METAR</p>
+          <p className="mt-1 whitespace-normal break-words font-mono text-[13px] leading-relaxed text-slate-100">
+            {met.metar?.trim() || "-"}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">TAF</p>
+          <p className="mt-1 whitespace-normal break-words font-mono text-[13px] leading-relaxed text-slate-200">
+            {met.taf?.trim() || "-"}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SoftScrollZoom() {
   const map = useMap();
   useEffect(() => {
     // Zoom contínuo mais leve: menos snaps fracionários = menos troca de tiles.
-    map.options.wheelPxPerZoomLevel = 120;
+    map.options.wheelPxPerZoomLevel = 90;
     map.options.zoomSnap = 0;
-    map.options.zoomDelta = 0.5;
+    map.options.zoomDelta = 0.65;
     const scroll = map.scrollWheelZoom as L.Handler & { _delta?: number };
     if (scroll && typeof scroll.enable === "function") {
       scroll.disable();
@@ -1031,6 +1122,8 @@ function VisibleAerodromes({
   onOpenDetails,
   onSuppressMapPick,
   hideIcaos,
+  hideLabelIcaos,
+  onLoadingChange,
 }: {
   aerodromes: Aerodrome[];
   show: boolean;
@@ -1041,6 +1134,8 @@ function VisibleAerodromes({
   onSuppressMapPick?: () => void;
   /** ICAOs já na rota — não desenha label/ícone de fundo (evita sobreposição). */
   hideIcaos?: Set<string>;
+  hideLabelIcaos?: Set<string>;
+  onLoadingChange?: (loading: boolean) => void;
 }) {
   const map = useMap();
   const [bounds, setBounds] = useState(() => map.getBounds());
@@ -1049,12 +1144,19 @@ function VisibleAerodromes({
   const boundsTimer = useRef<number | null>(null);
 
   useMapEvents({
+    movestart: () => {
+      onLoadingChange?.(true);
+    },
+    zoomstart: () => {
+      onLoadingChange?.(true);
+    },
     moveend: () => {
       if (boundsTimer.current != null) window.clearTimeout(boundsTimer.current);
       boundsTimer.current = window.setTimeout(() => {
         boundsTimer.current = null;
         setBounds(map.getBounds());
         setZoom(map.getZoom());
+        onLoadingChange?.(false);
       }, 150);
     },
     zoomend: () => {
@@ -1063,6 +1165,7 @@ function VisibleAerodromes({
         boundsTimer.current = null;
         setBounds(map.getBounds());
         setZoom(map.getZoom());
+        onLoadingChange?.(false);
       }, 150);
     },
   });
@@ -1070,8 +1173,9 @@ function VisibleAerodromes({
   useEffect(() => {
     return () => {
       if (boundsTimer.current != null) window.clearTimeout(boundsTimer.current);
+      onLoadingChange?.(false);
     };
-  }, []);
+  }, [onLoadingChange]);
 
   const needsOpsEnrichment = filter.nightOpsOnly || filter.avgasOnly || filter.jetOnly;
 
@@ -1099,7 +1203,7 @@ function VisibleAerodromes({
       if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       if (lat < south || lat > north || lng < west || lng > east) continue;
       out.push(ad);
-      if (out.length >= max) break;
+      if (out.length > max) return [];
     }
     return out;
   }, [aerodromes, bounds, filter, needsOpsEnrichment, show, zoom]);
@@ -1126,7 +1230,7 @@ function VisibleAerodromes({
       if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       if (lat < south || lat > north || lng < west || lng > east) continue;
       out.push(ad);
-      if (out.length >= max) break;
+      if (out.length > max) return [];
     }
     return out;
   }, [filtered, bounds, show, zoom]);
@@ -1163,7 +1267,7 @@ function VisibleAerodromes({
           <Marker
             key={ad.id}
             position={[lat, lng]}
-            icon={aerodromeIcon(code, showLabels)}
+            icon={aerodromeIcon(code, showLabels && !hideLabelIcaos?.has(codeUpper))}
             eventHandlers={{
               click: (e) => {
                 L.DomEvent.stopPropagation(e);
@@ -1206,6 +1310,202 @@ function VisibleAerodromes({
                 </div>
               </Popup>
             )}
+          </Marker>
+        );
+      })}
+    </>
+  );
+}
+
+function VisibleMetarAerodromes({
+  aerodromes,
+  show,
+  filter,
+  priorityIcaos,
+  onVisibleMetarIcaosChange,
+  onLoadingChange,
+}: {
+  aerodromes: Aerodrome[];
+  show: boolean;
+  filter: AerodromeMapFilter;
+  priorityIcaos?: Set<string>;
+  onVisibleMetarIcaosChange?: (icaos: Set<string>) => void;
+  onLoadingChange?: (loading: boolean) => void;
+}) {
+  const map = useMap();
+  const [bounds, setBounds] = useState(() => map.getBounds());
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  const [mets, setMets] = useState<AiswebMetarTaf[]>([]);
+  const boundsTimer = useRef<number | null>(null);
+
+  useMapEvents({
+    moveend: () => {
+      if (boundsTimer.current != null) window.clearTimeout(boundsTimer.current);
+      boundsTimer.current = window.setTimeout(() => {
+        boundsTimer.current = null;
+        setBounds(map.getBounds());
+        setZoom(map.getZoom());
+      }, 250);
+    },
+    zoomend: () => {
+      if (boundsTimer.current != null) window.clearTimeout(boundsTimer.current);
+      boundsTimer.current = window.setTimeout(() => {
+        boundsTimer.current = null;
+        setBounds(map.getBounds());
+        setZoom(map.getZoom());
+      }, 250);
+    },
+  });
+
+  useEffect(() => {
+    return () => {
+      if (boundsTimer.current != null) window.clearTimeout(boundsTimer.current);
+    };
+  }, []);
+
+  const visibleAerodromes = useMemo(() => {
+    if (!show || zoom < 5) return [] as Aerodrome[];
+    const filtered = filterAerodromesForMap(aerodromes, filter);
+    const pad = 0.12;
+    const south = bounds.getSouth() - pad;
+    const north = bounds.getNorth() + pad;
+    const west = bounds.getWest() - pad;
+    const east = bounds.getEast() + pad;
+    const out: Aerodrome[] = [];
+    for (const ad of filtered) {
+      const lat = ad.latitudeGeoPoint;
+      const lng = ad.longitudeGeoPoint;
+      const code = String(ad.icao || "").trim().toUpperCase();
+      if (!/^[A-Z0-9]{4}$/.test(code)) continue;
+      if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      if (lat < south || lat > north || lng < west || lng > east) continue;
+      out.push(ad);
+      if (out.length > METAR_MARKER_MAX_ICAOS) return [];
+    }
+    out.sort((a, b) => {
+      const ac = String(a.icao || "").trim().toUpperCase();
+      const bc = String(b.icao || "").trim().toUpperCase();
+      const ap = priorityIcaos?.has(ac) ? 0 : 1;
+      const bp = priorityIcaos?.has(bc) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return ac.localeCompare(bc);
+    });
+    return out;
+  }, [aerodromes, bounds, filter, priorityIcaos, show, zoom]);
+
+  const visibleIcaos = useMemo(
+    () =>
+      visibleAerodromes
+        .map((ad) => String(ad.icao || "").trim().toUpperCase())
+        .filter((code) => /^[A-Z0-9]{4}$/.test(code)),
+    [visibleAerodromes],
+  );
+  const icaoKey = visibleIcaos.join("|");
+
+  useEffect(() => {
+    if (!show || !icaoKey) {
+      setMets([]);
+      onLoadingChange?.(false);
+      return;
+    }
+    let cancelled = false;
+    const cached = visibleIcaos
+      .map((icao) => METAR_MARKER_CACHE.get(icao))
+      .filter((met): met is AiswebMetarTaf => Boolean(met));
+    const missing = visibleIcaos.filter((icao) => !METAR_MARKER_CACHE.has(icao));
+    if (!missing.length) {
+      setMets(cached);
+      onLoadingChange?.(false);
+      return;
+    }
+    onLoadingChange?.(true);
+    setMets([]);
+    const timer = window.setTimeout(() => {
+      const chunks: string[][] = [];
+      for (let i = 0; i < missing.length; i += METAR_MARKER_BATCH_SIZE) {
+        chunks.push(missing.slice(i, i + METAR_MARKER_BATCH_SIZE));
+      }
+      void Promise.all(chunks.map((chunk) => fetchAiswebMetBatch(chunk)))
+        .then((list) => {
+          for (const met of list.flat()) {
+            const code = String(met.icao || "").trim().toUpperCase();
+            if (/^[A-Z0-9]{4}$/.test(code)) METAR_MARKER_CACHE.set(code, met);
+          }
+          if (!cancelled) {
+            setMets(
+              visibleIcaos
+                .map((icao) => METAR_MARKER_CACHE.get(icao))
+                .filter((met): met is AiswebMetarTaf => Boolean(met)),
+            );
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setMets([]);
+        })
+        .finally(() => {
+          if (!cancelled) onLoadingChange?.(false);
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      onLoadingChange?.(false);
+      window.clearTimeout(timer);
+    };
+  }, [icaoKey, onLoadingChange, show, visibleIcaos]);
+
+  const metarByIcao = useMemo(() => {
+    const mapByIcao = new Map<string, { met: AiswebMetarTaf; rule: MetarFlightRule }>();
+    for (const met of mets) {
+      const parsed = met.parsed || parseMetar(met.metar);
+      if (!isValidMetar(met, parsed)) continue;
+      mapByIcao.set(String(met.icao || "").trim().toUpperCase(), {
+        met: parsed === met.parsed ? met : { ...met, parsed },
+        rule: metarFlightRule(parsed),
+      });
+    }
+    return mapByIcao;
+  }, [mets]);
+
+  useEffect(() => {
+    if (!show || !metarByIcao.size) {
+      onVisibleMetarIcaosChange?.(new Set());
+      return;
+    }
+    onVisibleMetarIcaosChange?.(new Set(metarByIcao.keys()));
+    return () => onVisibleMetarIcaosChange?.(new Set());
+  }, [metarByIcao, onVisibleMetarIcaosChange, show]);
+
+  if (!show || !metarByIcao.size) return null;
+
+  const showLabels = zoom >= 9;
+  return (
+    <>
+      {visibleAerodromes.map((ad) => {
+        const code = String(ad.icao || "").trim().toUpperCase();
+        const entry = metarByIcao.get(code);
+        if (!entry || ad.latitudeGeoPoint == null || ad.longitudeGeoPoint == null) return null;
+        const lat = ad.latitudeGeoPoint;
+        const lng = ad.longitudeGeoPoint;
+        return (
+          <Marker
+            key={`metar-${code}`}
+            position={[lat, lng]}
+            icon={metarDotIcon(code, entry.rule, showLabels, zoom)}
+            zIndexOffset={900}
+            eventHandlers={{
+              click: (e) => {
+                L.DomEvent.stopPropagation(e);
+              },
+            }}
+          >
+            <Tooltip
+              direction="top"
+              offset={[0, -10]}
+              opacity={1}
+              className="metar-hover-tooltip"
+            >
+              <MetarHoverCard icao={code} met={entry.met} rule={entry.rule} />
+            </Tooltip>
           </Marker>
         );
       })}
@@ -1670,6 +1970,9 @@ export function FlightPlanMap({
   const mapShellRef = useRef<HTMLDivElement>(null);
   const [mapZoom, setMapZoom] = useState(5);
   const [chartManifest, setChartManifest] = useState<ChartTilesManifest | null>(null);
+  const [visibleMetarIcaos, setVisibleMetarIcaos] = useState<Set<string>>(() => new Set());
+  const [aerodromeLoading, setAerodromeLoading] = useState(false);
+  const [metarLoading, setMetarLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1734,6 +2037,13 @@ export function FlightPlanMap({
     return set;
   }, [waypoints]);
 
+  const updateVisibleMetarIcaos = useCallback((next: Set<string>) => {
+    setVisibleMetarIcaos((prev) => {
+      if (prev.size === next.size && [...prev].every((icao) => next.has(icao))) return prev;
+      return next;
+    });
+  }, []);
+
   const legs = useMemo(
     () =>
       showLegBubbles && positions.length >= 2
@@ -1755,6 +2065,12 @@ export function FlightPlanMap({
     [interactive, isWindy],
   );
   const activeOverlay = WINDY_OVERLAYS.find((o) => o.id === windyOverlay);
+  const mapLoadingLabel =
+    showAerodromes && aerodromeLoading
+      ? "Carregando aeroportos"
+      : showAerodromes && metarLoading
+        ? "Carregando metar"
+        : "";
 
   const [committedView, setCommittedView] = useState<WindyView | null>(null);
   const [slotA, setSlotA] = useState<string | null>(null);
@@ -1909,6 +2225,12 @@ export function FlightPlanMap({
             >
               {mapOverlay}
             </div>
+          </div>
+        ) : null}
+
+        {mapLoadingLabel ? (
+          <div className="pointer-events-none absolute bottom-3 right-14 z-[540] rounded-full border border-slate-600/70 bg-slate-950/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 shadow-xl shadow-black/35 backdrop-blur-md">
+            {mapLoadingLabel}
           </div>
         ) : null}
 
@@ -2269,7 +2591,7 @@ export function FlightPlanMap({
           scrollWheelZoom
           zoomSnap={isWac ? 1 : 0}
           zoomDelta={isWac ? 1 : 0.5}
-          wheelPxPerZoomLevel={isWac ? 80 : 120}
+          wheelPxPerZoomLevel={isWac ? 70 : 90}
           zoomAnimation
           fadeAnimation={!isWac}
           markerZoomAnimation
@@ -2457,11 +2779,21 @@ export function FlightPlanMap({
             show={showAerodromes && aerodromes.length > 0}
             filter={aerodromeFilter}
             hideIcaos={routeIcaos}
+            hideLabelIcaos={visibleMetarIcaos}
             onPick={handlePick}
             onOpenDetails={onAerodromeDetails}
+            onLoadingChange={setAerodromeLoading}
             onSuppressMapPick={() => {
               suppressMapPickUntil.current = Date.now() + 400;
             }}
+          />
+          <VisibleMetarAerodromes
+            aerodromes={aerodromes}
+            show={showAerodromes && aerodromes.length > 0}
+            filter={aerodromeFilter}
+            priorityIcaos={routeIcaos}
+            onVisibleMetarIcaosChange={updateVisibleMetarIcaos}
+            onLoadingChange={setMetarLoading}
           />
           <VisibleReaFixes
             fixes={reaFixes}
@@ -2606,6 +2938,16 @@ export function FlightPlanMap({
         .leaflet-popup-content {
           margin: 10px 12px !important;
           line-height: 1.25 !important;
+        }
+        .metar-hover-tooltip {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          padding: 0 !important;
+          opacity: 1 !important;
+        }
+        .metar-hover-tooltip::before {
+          display: none !important;
         }
       `}</style>
     </div>

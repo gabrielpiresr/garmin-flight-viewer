@@ -21,16 +21,18 @@ export const ROUTE_CLOUD_WIDTH_NM = 8;
 /** Abaixo de meio oitavo (~6%) não desenha. */
 export const ROUTE_CLOUD_MIN_COVER = 6.25;
 
-/** Teto / vis ICAO-ish para pintar o anel 8 NM (não usa mínimos da escola). */
-const IFR_CEILING_FT = 1500;
-const IFR_VIS_KM = 5;
+/** FAA/Windy-style flight categories for METAR station markers. */
+const VFR_CEILING_FT = 3000;
+const VFR_VIS_KM = 5 * 1.609344;
+const IFR_CEILING_FT = 1000;
+const IFR_VIS_KM = 3 * 1.609344;
 
 const NM_IN_M = 1852;
 const FT_TO_M = 0.3048;
 const ICAO_RE = /^[A-Z]{4}$/;
 
 export type MetarCloudKind = "puff" | "disc" | "tower" | "fog" | "ceiling" | "ring";
-export type MetarFlightRule = "vfr" | "ifr" | "unknown";
+export type MetarFlightRule = "vfr" | "mvfr" | "ifr" | "unknown";
 export type RouteCloudLane = "center" | "left" | "right";
 
 export type MetarCloudInstance = {
@@ -146,7 +148,10 @@ export function metarFlightRule(parsed: AiswebParsedMetar | null | undefined): M
   const visIfr = parsed.visibilityKm != null && parsed.visibilityKm < IFR_VIS_KM;
   const ceilIfr = parsed.ceilingFt != null && parsed.ceilingFt < IFR_CEILING_FT;
   if (visIfr || ceilIfr) return "ifr";
-  if (parsed.visibilityKm == null && (parsed.ceilingFt == null || parsed.ceilingFt >= 10_000)) {
+  const visMvfr = parsed.visibilityKm != null && parsed.visibilityKm <= VFR_VIS_KM;
+  const ceilMvfr = parsed.ceilingFt != null && parsed.ceilingFt <= VFR_CEILING_FT;
+  if (visMvfr || ceilMvfr) return "mvfr";
+  if (parsed.visibilityKm == null && parsed.ceilingFt == null) {
     return "unknown";
   }
   return "vfr";
@@ -154,6 +159,7 @@ export function metarFlightRule(parsed: AiswebParsedMetar | null | undefined): M
 
 export function metarFlightRuleColor(rule: MetarFlightRule): string {
   if (rule === "ifr") return "#ef4444";
+  if (rule === "mvfr") return "#3b82f6";
   if (rule === "vfr") return "#22c55e";
   return "#64748b";
 }
@@ -337,7 +343,7 @@ function coverFillFraction(cover: string): number {
   }
 }
 
-function isValidMetar(
+export function isValidMetar(
   met: AiswebMetarTaf | undefined,
   parsed: AiswebParsedMetar | null,
 ): boolean {

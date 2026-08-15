@@ -1369,6 +1369,9 @@ function flightRuleBadge(rule: MetarFlightRule): { label: string; className: str
   if (rule === "ifr") {
     return { label: "IFR", className: "bg-red-500/20 text-red-300 ring-red-500/50" };
   }
+  if (rule === "mvfr") {
+    return { label: "MVFR", className: "bg-blue-500/20 text-blue-300 ring-blue-500/50" };
+  }
   if (rule === "vfr") {
     return { label: "VFR", className: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/50" };
   }
