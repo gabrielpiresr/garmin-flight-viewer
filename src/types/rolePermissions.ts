@@ -30,6 +30,10 @@ export type AdminTabKey =
   | "contents.ajuda-instrutor"
   | "contents.painel"
   | "contents.exercicios"
+  | "contents.fpl-sim"
+  | "provas"
+  | "provas.banco"
+  | "provas.liberacoes"
   | "users"
   | "import"
   | "disparos"
@@ -125,7 +129,9 @@ export type StudentTabKey =
   | "whatsapp"
   | "album"
   | "painel"
-  | "marketplace";
+  | "marketplace"
+  | "provas"
+  | "fpl-sim";
 /** Todas as chaves de aba possíveis */
 export type AnyTabKey = AdminTabKey | InstructorTabKey | StudentTabKey;
 
@@ -230,6 +236,10 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "contents.ajuda-instrutor": "Conteúdos › Manual do Instrutor",
   "contents.painel": "Conteúdos › Painel",
   "contents.exercicios": "Conteúdos › Critérios",
+  "contents.fpl-sim": "Conteúdos › Simulador FPL",
+  "provas": "Provas",
+  "provas.banco": "Provas › Banco",
+  "provas.liberacoes": "Provas › Liberações",
   "users": "Usuários",
   "import": "Import",
   "disparos": "Disparos",
@@ -328,4 +338,6 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "album": "Álbum",
   "painel": "Painel",
   "marketplace": "Marketplace",
+  "provas": "Provas",
+  "fpl-sim": "Simulador FPL",
 };

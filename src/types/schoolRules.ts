@@ -121,6 +121,8 @@ export type StudentPortalTab =
   | "album"
   | "painel"
   | "marketplace"
+  | "provas"
+  | "fpl-sim"
   | "dre"       // EDB — opcional, desativado por padrão
   | "fuelings"  // Abastecimentos — opcional, desativado por padrão
   | "contratos"; // Contratos — opcional, desativado por padrão
@@ -227,6 +229,8 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "avisos", label: "Avisos" },
   { id: "manuais", label: "Manuais" },
   { id: "manobras", label: "Manobras" },
+  { id: "provas", label: "Provas" },
+  { id: "fpl-sim", label: "Simulador FPL" },
   { id: "ajuda", label: "Ajuda" },
   { id: "endossos", label: "Endossos" },
   { id: "perfil", label: "Perfil" },

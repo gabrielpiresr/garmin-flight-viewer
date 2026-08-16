@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { FlightReviewClubProvider } from "../contexts/FlightReviewClubContext";
@@ -56,6 +56,10 @@ const PlanejamentoTab = lazy(() =>
 );
 const MarketplaceStorefront = lazy(() =>
   import("./marketplace/MarketplaceStorefront").then((module) => ({ default: module.MarketplaceStorefront })),
+);
+const ProvasTab = lazy(() => import("./student/ProvasTab").then((module) => ({ default: module.ProvasTab })));
+const FplSimSideDrawer = lazy(() =>
+  import("./fpl-sim/FplSimStudentTab").then((module) => ({ default: module.FplSimSideDrawer })),
 );
 const FlightReviewClubPage = lazy(() =>
   import("../pages/FlightReviewClubPage").then((module) => ({ default: module.FlightReviewClubPage })),
@@ -164,6 +168,26 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm0 8.625a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25zM15.375 12a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0zM7.5 10.875a1.125 1.125 0 100 2.25 1.125 1.125 0 000-2.25z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: "provas",
+    label: "Provas",
+    sublabel: "Testes liberados e resultados",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
+      </svg>
+    ),
+  },
+  {
+    id: "fpl-sim",
+    label: "Simulador FPL",
+    sublabel: "Treino de plano de voo",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path fillRule="evenodd" d="M1.5 6.375c0-1.036.84-1.875 1.875-1.875h17.25c1.035 0 1.875.84 1.875 1.875v3.026a.75.75 0 01-.375.65 2.249 2.249 0 000 3.898.75.75 0 01.375.65v3.026c0 1.035-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 011.5 17.625v-3.026a.75.75 0 01.374-.65 2.249 2.249 0 000-3.898.75.75 0 01-.374-.65V6.375zm15-1.125a.75.75 0 01.75.75v.75a.75.75 0 01-1.5 0V6a.75.75 0 01.75-.75zm.75 4.5a.75.75 0 00-1.5 0v.75a.75.75 0 001.5 0v-.75zm-.75 3a.75.75 0 01.75.75v.75a.75.75 0 01-1.5 0v-.75a.75.75 0 01.75-.75zm.75 4.5a.75.75 0 00-1.5 0V18a.75.75 0 001.5 0v-.75zM6 12a.75.75 0 01.75-.75H12a.75.75 0 010 1.5H6.75A.75.75 0 016 12zm.75 2.25a.75.75 0 000 1.5H12a.75.75 0 000-1.5H6.75z" clipRule="evenodd" />
       </svg>
     ),
   },
@@ -313,6 +337,8 @@ const SECTION_ROUTES = [
   { id: "avisos", path: "/aluno/avisos" },
   { id: "manuais", path: "/aluno/manuais" },
   { id: "manobras", path: "/aluno/manobras" },
+  { id: "provas", path: "/aluno/provas" },
+  { id: "fpl-sim", path: "/aluno/simulador-fpl" },
   { id: "painel", path: "/aluno/painel" },
   { id: "perfil", path: "/aluno/perfil" },
   { id: "endossos", path: "/aluno/endossos" },
@@ -331,7 +357,7 @@ const SECTION_ROUTES = [
 
 const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: StudentSection[] }> = [
   { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb", "planejamento", "whatsapp"] },
-  { label: "Evoluir", ids: ["jornada", "manobras", "painel", "manuais", "avisos", "album"] },
+  { label: "Evoluir", ids: ["jornada", "manobras", "provas", "fpl-sim", "painel", "manuais", "avisos", "album"] },
   { label: "Conta", ids: ["creditos", "marketplace", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe"] },
   { label: "Suporte", ids: ["ajuda"] },
 ];
@@ -492,7 +518,11 @@ export function MainLayout() {
   const { user, signOut } = useAuth();
   const { canTab, isLoading: permissionsLoading } = usePermissions();
   const [section, setSection] = useRoutedTab(SECTION_ROUTES, "home");
-  const openedSections = useOpenedTabs(section);
+  const [contentSection, setContentSection] = useState<Section>(() => (section === "fpl-sim" ? "home" : section));
+  const pageSection = section === "fpl-sim" ? contentSection : section;
+  const openedSections = useOpenedTabs(pageSection);
+  const fplSimOpen = section === "fpl-sim";
+  const [fplSimMounted, setFplSimMounted] = useState(fplSimOpen);
   const [rules, setRules] = useState<SchoolRules>(DEFAULT_SCHOOL_RULES);
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const {
@@ -556,6 +586,18 @@ export function MainLayout() {
     setMobileMoreOpen(false);
     setSection("flight-review-club");
   }
+
+  useEffect(() => {
+    if (section !== "fpl-sim") setContentSection(section);
+  }, [section]);
+
+  useEffect(() => {
+    if (fplSimOpen) setFplSimMounted(true);
+  }, [fplSimOpen]);
+
+  const closeFplSim = useCallback(() => {
+    setSection(contentSection === "fpl-sim" ? "home" : contentSection);
+  }, [contentSection, setSection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -904,7 +946,7 @@ export function MainLayout() {
 
         <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
           {openedSections.has("home") && (
-            <div hidden={section !== "home"}>
+            <div hidden={pageSection !== "home"}>
               <StudentSectionTab section="home" locked={isStudentTabLocked("home")}>
                 <StudentHome
                   onOpenFlights={() => openSection("meus-voos")}
@@ -917,105 +959,112 @@ export function MainLayout() {
             </div>
           )}
           {openedSections.has("jornada") && (
-            <div hidden={section !== "jornada"}>
+            <div hidden={pageSection !== "jornada"}>
               <StudentSectionTab section="jornada" locked={isStudentTabLocked("jornada")}>
                 <JornadaTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("meus-voos") && (
-            <div hidden={section !== "meus-voos"}>
+            <div hidden={pageSection !== "meus-voos"}>
               <StudentSectionTab section="meus-voos" locked={isStudentTabLocked("meus-voos")}>
                 <MeusVoosTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("agendamento") && (
-            <div hidden={section !== "agendamento"}>
+            <div hidden={pageSection !== "agendamento"}>
               <StudentSectionTab section="agendamento" locked={isStudentTabLocked("agendamento")}>
                 <AgendamentoTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("schedule") && (
-            <div hidden={section !== "schedule"}>
+            <div hidden={pageSection !== "schedule"}>
               <StudentSectionTab section="schedule" locked={isStudentTabLocked("schedule")}>
                 <StudentScheduleTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("creditos") && (
-            <div hidden={section !== "creditos"}>
+            <div hidden={pageSection !== "creditos"}>
               <StudentSectionTab section="creditos" locked={isStudentTabLocked("creditos")}>
                 <CreditosSectionRouter />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("avisos") && (
-            <div hidden={section !== "avisos"}>
+            <div hidden={pageSection !== "avisos"}>
               <StudentSectionTab section="avisos" locked={isStudentTabLocked("avisos")}>
                 <NoticeFeed className="w-full max-w-4xl" showHeader={false} />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("manuais") && (
-            <div hidden={section !== "manuais"}>
+            <div hidden={pageSection !== "manuais"}>
               <StudentSectionTab section="manuais" locked={isStudentTabLocked("manuais")}>
                 <ManuaisTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("manobras") && (
-            <div hidden={section !== "manobras"}>
+            <div hidden={pageSection !== "manobras"}>
               <StudentSectionTab section="manobras" locked={isStudentTabLocked("manobras")}>
                 <ManobrasTab />
               </StudentSectionTab>
             </div>
           )}
+          {openedSections.has("provas") && (
+            <div hidden={pageSection !== "provas"}>
+              <StudentSectionTab section="provas" locked={isStudentTabLocked("provas")}>
+                <ProvasTab />
+              </StudentSectionTab>
+            </div>
+          )}
           {openedSections.has("painel") && (
-            <div hidden={section !== "painel"}>
+            <div hidden={pageSection !== "painel"}>
               <StudentSectionTab section="painel" locked={isStudentTabLocked("painel")}>
                 <PanelTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("perfil") && (
-            <div hidden={section !== "perfil"}>
+            <div hidden={pageSection !== "perfil"}>
               <StudentSectionTab section="perfil" locked={isStudentTabLocked("perfil")}>
                 <AlunoProfileDashboard />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("endossos") && (
-            <div hidden={section !== "endossos"}>
+            <div hidden={pageSection !== "endossos"}>
               <StudentSectionTab section="endossos" locked={isStudentTabLocked("endossos")}>
                 <StudentEndorsementsTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("ajuda") && (
-            <div hidden={section !== "ajuda"}>
+            <div hidden={pageSection !== "ajuda"}>
               <StudentSectionTab section="ajuda" locked={isStudentTabLocked("ajuda")}>
                 <HelpCenterTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("dre") && (
-            <div hidden={section !== "dre"}>
+            <div hidden={pageSection !== "dre"}>
               <StudentSectionTab section="dre" locked={isStudentTabLocked("dre")}>
                 <StudentDreTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("fuelings") && (
-            <div hidden={section !== "fuelings"}>
+            <div hidden={pageSection !== "fuelings"}>
               <StudentSectionTab section="fuelings" locked={isStudentTabLocked("fuelings")}>
                 <FuelingsTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("contratos") && (
-            <div hidden={section !== "contratos"}>
+            <div hidden={pageSection !== "contratos"}>
               <StudentSectionTab section="contratos" locked={isStudentTabLocked("contratos")}>
                 <ContractsUserTab
                   userId={user?.id ?? ""}
@@ -1026,49 +1075,49 @@ export function MainLayout() {
             </div>
           )}
           {openedSections.has("indique-ganhe") && (
-            <div hidden={section !== "indique-ganhe"}>
+            <div hidden={pageSection !== "indique-ganhe"}>
               <StudentSectionTab section="indique-ganhe" locked={isStudentTabLocked("indique-ganhe")}>
                 <ReferAndEarnTab portalRole="aluno" />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("aisweb") && (
-            <div hidden={section !== "aisweb"}>
+            <div hidden={pageSection !== "aisweb"}>
               <StudentSectionTab section="aisweb" locked={isStudentTabLocked("aisweb")}>
                 <AiswebTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("planejamento") && (
-            <div hidden={section !== "planejamento"} className="-m-4 md:-m-6">
+            <div hidden={pageSection !== "planejamento"} className="-m-4 md:-m-6">
               <StudentSectionTab section="planejamento" locked={isStudentTabLocked("planejamento")}>
                 <PlanejamentoTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("whatsapp") && (
-            <div hidden={section !== "whatsapp"}>
+            <div hidden={pageSection !== "whatsapp"}>
               <StudentSectionTab section="whatsapp" locked={isStudentTabLocked("whatsapp")}>
                 <WhatsAppHubTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("album") && (
-            <div hidden={section !== "album"}>
+            <div hidden={pageSection !== "album"}>
               <StudentSectionTab section="album" locked={isStudentTabLocked("album")}>
                 <MediaAlbumTab />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("marketplace") && (
-            <div hidden={section !== "marketplace"}>
+            <div hidden={pageSection !== "marketplace"}>
               <StudentSectionTab section="marketplace" locked={isStudentTabLocked("marketplace")}>
                 <MarketplaceStorefront />
               </StudentSectionTab>
             </div>
           )}
           {openedSections.has("flight-review-club") && (
-            <div hidden={section !== "flight-review-club"} className="-m-4 md:-m-6">
+            <div hidden={pageSection !== "flight-review-club"} className="-m-4 md:-m-6">
               <Suspense fallback={<StudentTabSkeleton kind="default" />}>
                 <FlightReviewClubPage />
               </Suspense>
@@ -1222,6 +1271,15 @@ export function MainLayout() {
         </nav>
       </div>
     </div>
+    {fplSimMounted ? (
+      <Suspense fallback={null}>
+        <FplSimSideDrawer
+          open={fplSimOpen}
+          onClose={closeFplSim}
+          locked={isStudentTabLocked("fpl-sim")}
+        />
+      </Suspense>
+    ) : null}
     {pendingEvaluationFlight && !pendingEvaluationFormOpen ? (
       <PendingFlightEvaluationPrompt
         flight={pendingEvaluationFlight}

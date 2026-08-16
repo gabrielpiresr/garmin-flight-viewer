@@ -14,7 +14,8 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "students",
   "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
-  "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda", "contents.ajuda-instrutor", "contents.painel",
+  "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda", "contents.ajuda-instrutor", "contents.painel", "contents.exercicios", "contents.fpl-sim",
+  "provas", "provas.banco", "provas.liberacoes",
   "aisweb",
   "whatsapp",
   "planejamento",
@@ -92,12 +93,12 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
   "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
-  "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "planejamento", "whatsapp", "album", "painel", "marketplace",
+  "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "planejamento", "whatsapp", "album", "painel", "marketplace", "provas", "fpl-sim",
 ];
 
 /** Abas ativadas por padrão para o aluno */
 const STUDENT_DEFAULT_ON_TABS: Set<StudentTabKey> = new Set([
-  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda", "endossos", "aisweb", "album",
+  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda", "endossos", "aisweb", "album", "provas", "fpl-sim",
 ]);
 export const DEFAULT_ALUNO_PERMISSIONS: RolePermissions = {
   // Todas as abas declaradas explicitamente

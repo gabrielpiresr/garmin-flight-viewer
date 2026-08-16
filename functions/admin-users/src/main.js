@@ -18,9 +18,12 @@ const flightRadarService = require("./flightRadar");
 const routeElevationService = require("./routeElevation");
 const wppMetar = require("./wppMetar");
 const wppFlightRadar = require("./wppFlightRadar");
+const wppFlightRadarEnrich = require("./wppFlightRadarEnrich");
 const wppBooking = require("./wppBooking");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
+const { PROVA_ACTIONS, createProvaService } = require("./provas");
+const memberkit = require("./memberkit");
 
 let sharpModule = undefined;
 
@@ -109,6 +112,8 @@ const FINANCIAL_MONTHLY_CLOSING_LINES_COLLECTION_ID =
   process.env.APPWRITE_FINANCIAL_MONTHLY_CLOSING_LINES_COL_ID ||
   "financial_monthly_closing_lines";
 const AIRCRAFTS_COLLECTION_ID = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFTS_COL_ID;
+const AERODROMES_COLLECTION_ID =
+  process.env.APPWRITE_AERODROMES_COLLECTION_ID || process.env.APPWRITE_AERODROMES_COL_ID || "aerodromes";
 const AIRCRAFT_MODELS_COLLECTION_ID =
   process.env.APPWRITE_AIRCRAFT_MODELS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFT_MODELS_COL_ID;
 const FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID =
@@ -15750,6 +15755,74 @@ function defaultEmailBrandSettings() {
   };
 }
 
+const DEFAULT_LP_SECTIONS = [
+  { id: "revisao", eyebrow: "Revisão do voo", title: "Cada aula vira dado, gráfico e um link para mostrar o voo.", copy: "Telemetria, Flight Review e página pública — o mesmo fluxo que o aluno já usa no portal, agora no pacote do clube." },
+  { id: "agenda", eyebrow: "Planejamento e agenda", title: "Prepare a navegação e reserve com 30 dias de antecedência.", copy: "Rotas, METAR e AISWEB no planejamento. Na agenda, o FRC abre a janela que o aluno comum não vê." },
+  { id: "jornada", eyebrow: "Jornada, figurinhas e álbum", title: "Histórico da formação, cards para WhatsApp e o acervo do voo.", copy: "Missões da trilha, figurinhas com rota e altitude, vídeos com fonia e fotos — tudo no mesmo lugar." },
+  { id: "escola", eyebrow: "Kit da escola", title: "Camiseta, crachá, curso EAD e webinar todo mês.", copy: "Entregas manuais da escola entram no checklist do FRC: o aluno assina, a operação registra cada item." },
+  { id: "vantagens", eyebrow: "Parcerias e marketplace", title: "NexAtlas, Clube 360 e preço FRC na loja da escola.", copy: "Parcerias liberadas no fluxo interno. No marketplace, o desconto do clube aparece no card do produto." },
+  { id: "assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago. Benefícios como NexAtlas e Clube 360 entram no fluxo manual da escola." },
+];
+
+const DEFAULT_LP_SCREENSHOT_ITEMS = [
+  { id: "telemetry", title: "Telemetria", description: "Dados do voo em gráficos.", imageUrl: "" },
+  { id: "share", title: "Link público", description: "Página compartilhável do Flight Review.", imageUrl: "" },
+  { id: "review", title: "Flight Review", description: "Manobras e pontos de melhoria.", imageUrl: "" },
+  { id: "planning", title: "Planejamento", description: "Rotas, aeródromos e meteorologia.", imageUrl: "" },
+  { id: "schedule", title: "Agenda", description: "Reserva com antecedência de 30 dias.", imageUrl: "" },
+  { id: "journey", title: "Jornada", description: "Missões e progresso da formação.", imageUrl: "" },
+  { id: "stickers", title: "Figurinhas", description: "Cards e animações do voo.", imageUrl: "" },
+  { id: "album", title: "Álbum", description: "Vídeos com fonia e fotos.", imageUrl: "" },
+  { id: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "" },
+];
+
+const LEGACY_LP_SCREENSHOT_IDS = ["telemetry", "share", "planning", "journey", "album", "marketplace"];
+
+function sanitizeLpScreenshotItems(raw, defaults = DEFAULT_LP_SCREENSHOT_ITEMS) {
+  const list = Array.isArray(raw) ? raw : [];
+  const byId = new Map();
+  list.forEach((item, index) => {
+    const id = (cleanString(item?.id) || LEGACY_LP_SCREENSHOT_IDS[index] || `shot-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+    const title = cleanString(item?.title).slice(0, 120);
+    const imageUrl = cleanString(item?.imageUrl).slice(0, 2048);
+    if (!title && !imageUrl) return;
+    byId.set(id, {
+      id,
+      title: title || id,
+      description: cleanString(item?.description).slice(0, 400),
+      imageUrl,
+    });
+  });
+  return defaults.map((slot) => {
+    const saved = byId.get(slot.id);
+    return saved ? { ...slot, ...saved, id: slot.id } : { ...slot };
+  });
+}
+
+function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
+  const list = Array.isArray(raw) ? raw : [];
+  const byId = new Map();
+  list.forEach((item) => {
+    const id = cleanString(item?.id);
+    if (!defaults.some((section) => section.id === id)) return;
+    byId.set(id, {
+      id,
+      eyebrow: cleanString(item?.eyebrow).slice(0, 80),
+      title: cleanString(item?.title).slice(0, 180),
+      copy: cleanString(item?.copy).slice(0, 600),
+    });
+  });
+  return defaults.map((section) => {
+    const saved = byId.get(section.id);
+    return {
+      id: section.id,
+      eyebrow: saved?.eyebrow || section.eyebrow,
+      title: saved?.title || section.title,
+      copy: saved?.copy || section.copy,
+    };
+  });
+}
+
 function defaultSchoolRules() {
   return {
     studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, !["planejamento", "whatsapp"].includes(tab)])),
@@ -15851,14 +15924,8 @@ function defaultSchoolRules() {
         { text: "Jornada gamificada com histórico detalhado", imageUrl: "" },
         { text: "Vídeos com fonia e fotos dos voos", imageUrl: "" },
       ],
-      lpScreenshotItems: [
-        { title: "Telemetria e Flight Review", description: "Dados, manobras e pontos de melhoria do voo em uma revisão visual.", imageUrl: "" },
-        { title: "Link público do voo", description: "Compartilhe a experiência com uma página pública do Flight Review.", imageUrl: "" },
-        { title: "Planejamento e AISWEB", description: "Rotas, aeródromos, meteorologia e materiais para preparar a próxima navegação.", imageUrl: "" },
-        { title: "Jornada e figurinhas", description: "Histórico gamificado, marcos da formação e cards para celebrar evolução.", imageUrl: "" },
-        { title: "Álbum, vídeos e fotos", description: "Acervo de vídeos com fonia, fotos e registros completos dos voos.", imageUrl: "" },
-        { title: "Marketplace e vantagens", description: "Descontos e benefícios comerciais exclusivos para integrantes.", imageUrl: "" },
-      ],
+      lpScreenshotItems: DEFAULT_LP_SCREENSHOT_ITEMS.map((item) => ({ ...item })),
+      lpSections: DEFAULT_LP_SECTIONS.map((item) => ({ ...item })),
       checklistTemplate: [
         { id: "nexatlas", title: "Liberar NexAtlas", description: "Criar ou liberar o acesso gratuito do aluno ao NexAtlas.", enabled: true },
         { id: "clube-360", title: "Liberar Clube 360", description: "Criar ou liberar o acesso gratuito do aluno ao Clube 360.", enabled: true },
@@ -16252,8 +16319,8 @@ function publicSchoolRules(settings, updatedAt) {
       ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
       adhesionTermUrl: cleanString(settings?.flightReviewClub?.adhesionTermUrl).slice(0, 2048),
       trialFlightCount: (() => { const n = Number(settings?.flightReviewClub?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
-      lpHeroTitle: cleanString(settings?.flightReviewClub?.lpHeroTitle).slice(0, 120) || defaults.flightReviewClub.lpHeroTitle,
-      lpHeroSubtitle: cleanString(settings?.flightReviewClub?.lpHeroSubtitle).slice(0, 500) || defaults.flightReviewClub.lpHeroSubtitle,
+      lpHeroTitle: cleanString(settings?.flightReviewClub?.lpHeroTitle).slice(0, 180) || defaults.flightReviewClub.lpHeroTitle,
+      lpHeroSubtitle: cleanString(settings?.flightReviewClub?.lpHeroSubtitle).slice(0, 600) || defaults.flightReviewClub.lpHeroSubtitle,
       lpCoverImageUrl: cleanString(settings?.flightReviewClub?.lpCoverImageUrl).slice(0, 2048),
       lpCtaLabel: cleanString(settings?.flightReviewClub?.lpCtaLabel).slice(0, 80) || defaults.flightReviewClub.lpCtaLabel,
       lpValueProps: Array.isArray(settings?.flightReviewClub?.lpValueProps)
@@ -16268,16 +16335,8 @@ function publicSchoolRules(settings, updatedAt) {
             .filter((item) => item.text)
             .slice(0, 20)
         : defaults.flightReviewClub.lpBenefitItems,
-      lpScreenshotItems: Array.isArray(settings?.flightReviewClub?.lpScreenshotItems)
-        ? settings.flightReviewClub.lpScreenshotItems
-            .map((item) => ({
-              title: cleanString(item?.title).slice(0, 120),
-              description: cleanString(item?.description).slice(0, 400),
-              imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
-            }))
-            .filter((item) => item.title)
-            .slice(0, 12)
-        : defaults.flightReviewClub.lpScreenshotItems,
+      lpScreenshotItems: sanitizeLpScreenshotItems(settings?.flightReviewClub?.lpScreenshotItems, defaults.flightReviewClub.lpScreenshotItems),
+      lpSections: sanitizeLpSections(settings?.flightReviewClub?.lpSections, defaults.flightReviewClub.lpSections),
       checklistTemplate: Array.isArray(settings?.flightReviewClub?.checklistTemplate)
         ? settings.flightReviewClub.checklistTemplate
             .map((item, index) => ({
@@ -18435,10 +18494,13 @@ async function ensureAiswebAlertWppTemplate() {
     language: "pt_BR",
     headerText: "Alerta AISWEB",
     bodyText:
-      "*{{1}}* para *{{2}}*\n\n" +
-      "{{3}}\n\n" +
-      "{{4}}\n\n" +
-      "Valido: {{5}}",
+      "Alerta operacional AISWEB (NOTAM, suplemento AIP ou aviso de aerodromo).\n\n" +
+      "Tipo do alerta: {{1}}\n" +
+      "Aerodromo (ICAO): {{2}}\n" +
+      "Identificador: {{3}}\n\n" +
+      "Conteudo:\n{{4}}\n\n" +
+      "Periodo de validade: {{5}}\n\n" +
+      "Abra o aplicativo para ver o detalhe completo do aerodromo.",
     footerText: "Mensagem automatica",
     bodyExamples: [
       "NOTAM",
@@ -23930,6 +23992,133 @@ async function studentHasLegacyFlightReviewClub(studentUserId) {
   return rows.some((row) => row.status === "active" && row.is_flight_review_club_member === true);
 }
 
+async function resolveMemberkitContact(studentUserId, fallback = {}) {
+  const [profile, user] = await Promise.all([
+    getProfileByUserId(studentUserId).catch(() => null),
+    users.get({ userId: studentUserId }).catch(() => null),
+  ]);
+  const email = cleanString(user?.email) || cleanString(profile?.email) || cleanString(fallback.email);
+  const fullName =
+    cleanString(user?.name) ||
+    cleanString(profile?.full_name) ||
+    cleanString(profile?.nickname) ||
+    cleanString(fallback.name) ||
+    email;
+  return { email, fullName };
+}
+
+async function persistMemberkitMetadata(membershipId, previousMetadata, patch) {
+  if (!membershipId || !FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID || !patch) return;
+  const metadataJson = memberkit.mergeMemberkitMetadata(previousMetadata, patch);
+  await databases.updateDocument(
+    DATABASE_ID,
+    FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+    membershipId,
+    { metadata_json: metadataJson },
+  ).catch(() => undefined);
+}
+
+async function syncFlightReviewClubMemberkitForStudent(studentUserId, options = {}) {
+  const safeUserId = cleanString(studentUserId);
+  if (!safeUserId) return { skipped: true, reason: "missing_student" };
+  if (!memberkit.memberkitConfigured()) return { skipped: true, reason: "not_configured" };
+
+  let membershipDoc = options.membershipDoc || null;
+  if (!membershipDoc && cleanString(options.membershipId) && FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID) {
+    membershipDoc = await databases
+      .getDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, cleanString(options.membershipId))
+      .catch(() => null);
+  }
+  if (!membershipDoc) {
+    const docs = await listStudentFlightReviewClubMemberships(safeUserId);
+    const preferred = selectPreferredFlightReviewClubMembership(docs.map(mapFlightReviewClubMembership).filter(Boolean));
+    membershipDoc = docs.find((doc) => doc.$id === preferred?.id) || docs[0] || null;
+  }
+
+  const mapped = mapFlightReviewClubMembership(membershipDoc);
+  const legacyAccess = options.forceRevoke === true ? false : await studentHasLegacyFlightReviewClub(safeUserId);
+  const hasAccess = options.forceRevoke === true
+    ? false
+    : options.forceGrant === true
+      ? true
+      : Boolean(legacyAccess || hasFlightReviewClubMembershipAccess(mapped));
+  const canceled = mapped?.status === "canceled";
+  const contact = await resolveMemberkitContact(safeUserId, options.fallback || {});
+  const result = await memberkit.syncMemberkitAccess({
+    email: contact.email,
+    fullName: contact.fullName,
+    hasAccess,
+    canceled,
+    accessUntil: mapped?.accessUntil || "",
+    previousMetadata: membershipDoc?.metadata_json,
+  });
+  if (membershipDoc?.$id && result?.reason !== "already_synced" && result?.reason !== "not_configured") {
+    await persistMemberkitMetadata(membershipDoc.$id, membershipDoc.metadata_json, result.memberkit);
+  }
+  return result;
+}
+
+async function syncAllFlightReviewClubMemberkitAccess(log = () => undefined) {
+  if (!memberkit.memberkitConfigured()) {
+    log("[memberkit] skip: MEMBERKIT_API_KEY nao configurada");
+    return { skipped: true, reason: "not_configured", granted: 0, revoked: 0, unchanged: 0, failed: 0 };
+  }
+  const summary = { skipped: false, reason: "", granted: 0, revoked: 0, unchanged: 0, failed: 0 };
+  const seen = new Set();
+  const docs = await listAllFlightReviewClubMembershipDocs();
+  const byStudent = new Map();
+  for (const doc of docs) {
+    const studentUserId = cleanString(doc.student_user_id);
+    if (!studentUserId) continue;
+    const list = byStudent.get(studentUserId) || [];
+    list.push(doc);
+    byStudent.set(studentUserId, list);
+  }
+  for (const [studentUserId, studentDocs] of byStudent) {
+    seen.add(studentUserId);
+    const preferred = selectPreferredFlightReviewClubMembership(
+      studentDocs.map(mapFlightReviewClubMembership).filter(Boolean),
+    );
+    const membershipDoc = studentDocs.find((doc) => doc.$id === preferred?.id) || studentDocs[0];
+    try {
+      const result = await syncFlightReviewClubMemberkitForStudent(studentUserId, { membershipDoc });
+      if (result?.reason === "error" || result?.memberkit?.error) summary.failed += 1;
+      else if (result?.skipped) summary.unchanged += 1;
+      else if (result?.memberkit?.status === "expired") summary.revoked += 1;
+      else summary.granted += 1;
+    } catch (err) {
+      summary.failed += 1;
+      log(`[memberkit] fail ${studentUserId}: ${cleanString(err?.message || err)}`);
+    }
+  }
+  if (STUDENT_TRACKS_COLLECTION_ID) {
+    const tracks = await listAllDocuments(STUDENT_TRACKS_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      sdk.Query.equal("is_flight_review_club_member", [true]),
+      sdk.Query.equal("status", ["active"]),
+      sdk.Query.limit(5000),
+    ]).catch(() => []);
+    for (const track of tracks) {
+      const studentUserId = cleanString(track.student_user_id);
+      if (!studentUserId || seen.has(studentUserId)) continue;
+      seen.add(studentUserId);
+      try {
+        const result = await syncFlightReviewClubMemberkitForStudent(studentUserId, { forceGrant: true });
+        if (result?.reason === "error" || result?.memberkit?.error) summary.failed += 1;
+        else if (result?.skipped) summary.unchanged += 1;
+        else summary.granted += 1;
+      } catch (err) {
+        summary.failed += 1;
+        log(`[memberkit] fail legacy ${studentUserId}: ${cleanString(err?.message || err)}`);
+      }
+    }
+  }
+  log(
+    `[memberkit] scan granted=${summary.granted} revoked=${summary.revoked} unchanged=${summary.unchanged} failed=${summary.failed}`,
+  );
+  return summary;
+}
+
 async function getFlightReviewClubStatus(actorUserId, targetUserId = "") {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const studentUserId = cleanString(targetUserId) || actorUserId;
@@ -24250,6 +24439,7 @@ async function forceFlightReviewClubAccess(actorUserId, input = {}) {
       updated_at: now,
     });
     await ensureFlightReviewClubTasksForMembership(membership, rules).catch(() => []);
+    await syncFlightReviewClubMemberkitForStudent(studentUserId, { forceGrant: true }).catch(() => undefined);
     return [await flightReviewClubMemberRow(membership, rules)];
   }
 
@@ -24287,6 +24477,7 @@ async function forceFlightReviewClubAccess(actorUserId, input = {}) {
     });
     updatedMemberships.push(membership);
   }
+  await syncFlightReviewClubMemberkitForStudent(studentUserId, { forceRevoke: true }).catch(() => undefined);
   return Promise.all(updatedMemberships.filter(Boolean).map((membership) => flightReviewClubMemberRow(membership, rules)));
 }
 
@@ -24621,6 +24812,7 @@ async function cancelFlightReviewClubSubscription(actorUserId) {
     access_until: accessUntil,
     updated_at: now,
   });
+  await syncFlightReviewClubMemberkitForStudent(actorUserId).catch(() => undefined);
   return getFlightReviewClubStatus(actorUserId);
 }
 
@@ -29372,6 +29564,289 @@ async function runAiswebMetarWatchScan(log = () => {}) {
   return { ok: true, scanned, notified, expired, errors };
 }
 
+let radarWatchAerodromeCache = { at: 0, rows: [] };
+
+function radarWatchScheduleBuffers(schoolRules) {
+  const schedule = schoolRules?.schedule || {};
+  return {
+    before: Math.max(0, Math.round(Number(schedule.bufferBeforeMinutes) || 30)),
+    after: Math.max(0, Math.round(Number(schedule.bufferAfterMinutes) || 15)),
+  };
+}
+
+function radarWatchSlotFromSaga(schedule, buffers, mapping, catalogs) {
+  const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+  const end = sagaLocalDateTimeParts(schedule.endAtRaw || schedule.endAt);
+  if (!start.date || !start.time) return null;
+  const aircraftIdent =
+    resolveScheduleAircraftIdent(schedule, mapping, catalogs) || cleanString(schedule.aircraft);
+  if (!aircraftIdent) return null;
+  const times = wppFlightRadarEnrich.applyScheduleBuffers(start.time, end.time, buffers.before, buffers.after);
+  const notes = wppFlightRadarEnrich.cleanScheduleNotes(schedule.notes);
+  return {
+    id: cleanString(schedule.id),
+    aircraftIdent,
+    flightDate: start.date,
+    studentUserId: cleanString(schedule.studentUserId) || null,
+    instructorUserId: cleanString(schedule.instructorUserId) || null,
+    studentName: cleanString(schedule.studentName),
+    instructorName: cleanString(schedule.instructorName),
+    notes,
+    mission: "",
+    trainingMissionId: null,
+    blockStart: start.time,
+    blockEnd: end.time,
+    scheduledTakeoff: times.takeoff,
+    scheduledLanding: times.landing,
+    takeoffIcao: "",
+    landingIcao: "",
+    applyBuffers: true,
+  };
+}
+
+function radarWatchSlotFromLocalFlight(flight, buffers) {
+  const aircraftIdent = cleanString(flight.aircraftIdent);
+  if (!aircraftIdent || !cleanString(flight.flightDate)) return null;
+  const notes = wppFlightRadarEnrich.cleanScheduleNotes(
+    flight.trainingSnapshot?.notes || "",
+  );
+  const blockStart = cleanString(flight.startTime).slice(0, 5);
+  const durationMin = Number(flight.durationSec) > 0 ? Math.round(Number(flight.durationSec) / 60) : 90;
+  const startMinutes = wppFlightRadarEnrich.parseClockMinutes(blockStart);
+  const rawEnd =
+    startMinutes != null ? wppFlightRadarEnrich.clockFromMinutes(startMinutes + Math.max(30, durationMin)) : "";
+  const isSagaImport = Boolean(cleanString(flight.sagaScheduleId || flight.sourceFilename).match(/saga/i));
+  const times = isSagaImport
+    ? wppFlightRadarEnrich.applyScheduleBuffers(blockStart, rawEnd, buffers.before, buffers.after)
+    : { takeoff: blockStart, landing: rawEnd };
+  return {
+    id: cleanString(flight.id),
+    aircraftIdent,
+    flightDate: cleanString(flight.flightDate),
+    studentUserId: cleanString(flight.studentUserId) || null,
+    instructorUserId: cleanString(flight.instructorUserId) || null,
+    studentName: cleanString(flight.studentName),
+    instructorName: cleanString(flight.instructorName),
+    notes,
+    mission: cleanString(flight.trainingSnapshot?.missionName || flight.trainingSnapshot?.name),
+    trainingMissionId: cleanString(flight.trainingMissionId) || null,
+    blockStart,
+    blockEnd: rawEnd,
+    scheduledTakeoff: times.takeoff,
+    scheduledLanding: times.landing,
+    takeoffIcao: cleanString(flight.firstDepIcao),
+    landingIcao: cleanString(flight.lastArrIcao),
+    applyBuffers: isSagaImport,
+  };
+}
+
+async function listRadarWatchLocalSlots(targetDate, buffers) {
+  if (!FLIGHTS_COLLECTION_ID || !targetDate) return [];
+  const docs = await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("flight_date", [targetDate]),
+    sdk.Query.equal("flight_status", ["Confirmado", "Pendente", "Previsto"]),
+    sdk.Query.orderAsc("start_time"),
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+  ]).catch(() => []);
+  return docs
+    .map((doc) => toFlight(doc))
+    .map((flight) => radarWatchSlotFromLocalFlight(flight, buffers))
+    .filter(Boolean);
+}
+
+async function listRadarWatchSagaSlots(targetDate, buffers) {
+  const logs = [];
+  const cookieJar = await resolveSagaCookieJarForReminder(logs);
+  const schedules = await fetchSagaScheduledFlights(cookieJar, logs, { monthCount: 1 });
+  const [mapping, catalogs] = await Promise.all([
+    loadSagaImportMapping().catch(() => ({ aircraftBySaga: {} })),
+    listSagaImportCatalogs().catch(() => ({ aircrafts: [] })),
+  ]);
+  const mapped = (schedules || [])
+    .filter((schedule) => {
+      if (!cleanString(schedule?.id)) return false;
+      if (sagaScheduleIsCancelledStatus(schedule.status)) return false;
+      if (isSagaScheduleBlockForReminder(schedule)) return false;
+      const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+      return start.date === cleanString(targetDate);
+    })
+    .map((schedule) => {
+      const ident = resolveScheduleAircraftIdent(schedule, mapping, catalogs);
+      return ident ? { ...schedule, aircraft: ident } : schedule;
+    });
+  const withUsers = await attachLocalUsersToSagaSchedules(mapped);
+  return withUsers
+    .map((schedule) => radarWatchSlotFromSaga(schedule, buffers, mapping, catalogs))
+    .filter(Boolean);
+}
+
+async function listRadarWatchScheduleSlots(targetDate) {
+  const { publicSettings: schoolRules } = await loadSchoolRules().catch(() => ({ publicSettings: null }));
+  const buffers = radarWatchScheduleBuffers(schoolRules);
+  const sagaOnly = schoolRules?.schedule?.sagaOnlySchedule === true;
+  try {
+    if (sagaOnly) {
+      const sagaSlots = await listRadarWatchSagaSlots(targetDate, buffers);
+      if (sagaSlots.length) return sagaSlots;
+    }
+  } catch (err) {
+    console.warn(`[flight-radar-watch] saga schedule failed: ${cleanString(err?.message).slice(0, 240)}`);
+  }
+  return listRadarWatchLocalSlots(targetDate, buffers);
+}
+
+async function loadRadarWatchAerodromes() {
+  const now = Date.now();
+  if (radarWatchAerodromeCache.rows.length && now - radarWatchAerodromeCache.at < 6 * 60 * 60 * 1000) {
+    return radarWatchAerodromeCache.rows;
+  }
+  if (!AERODROMES_COLLECTION_ID) return radarWatchAerodromeCache.rows;
+  const docs = await listAllDocuments(AERODROMES_COLLECTION_ID, [
+    ...selectQuery(["$id", "icao", "name", "municipality", "uf", "latitude_geopoint", "longitude_geopoint"]),
+  ]).catch(() => []);
+  const rows = [];
+  for (const doc of docs) {
+    const icao = cleanString(doc.icao).toUpperCase();
+    if (!icao || icao.length !== 4) continue;
+    const lat = Number(doc.latitude_geopoint);
+    const lon = Number(doc.longitude_geopoint);
+    rows.push({
+      icao,
+      name: cleanString(doc.name) || cleanString(doc.municipality),
+      city: cleanString(doc.municipality),
+      uf: cleanString(doc.uf).toUpperCase(),
+      lat: Number.isFinite(lat) ? lat : null,
+      lon: Number.isFinite(lon) ? lon : null,
+    });
+  }
+  if (rows.length) radarWatchAerodromeCache = { at: now, rows };
+  return rows;
+}
+
+function radarWatchAdFromCatalog(icao, aerodromes) {
+  const code = cleanString(icao).toUpperCase();
+  if (!code) return "";
+  const match = (aerodromes || []).find((ad) => ad.icao === code);
+  const place = match ? [match.name || match.city, match.uf].filter(Boolean).join("/") : "";
+  return wppFlightRadarEnrich.formatAdLabel(code, place);
+}
+
+async function resolveRadarWatchAdLabel(icao, aerodromes) {
+  const code = cleanString(icao).toUpperCase();
+  if (!code) return "";
+  const fromCatalog = radarWatchAdFromCatalog(code, aerodromes);
+  if (fromCatalog && fromCatalog !== code) return fromCatalog;
+  try {
+    const rotaer = await aiswebService.fetchRotaer(code);
+    const name = [cleanString(rotaer?.name) || cleanString(rotaer?.city), cleanString(rotaer?.uf)]
+      .filter(Boolean)
+      .join("/");
+    if (name) return wppFlightRadarEnrich.formatAdLabel(code, name);
+  } catch {
+    // keep ICAO
+  }
+  return fromCatalog || code;
+}
+
+async function resolveRadarWatchMission(slot) {
+  const explicit = cleanString(slot?.mission);
+  if (explicit) return explicit;
+  const studentUserId = cleanString(slot?.studentUserId);
+  if (!studentUserId) return "";
+  const wantedMissionId = cleanString(slot?.trainingMissionId);
+  try {
+    if (wantedMissionId) {
+      const assignmentsByUser = await getTrainingAssignmentsByUserIds([studentUserId]);
+      for (const assignment of assignmentsByUser.get(studentUserId) || []) {
+        for (const stage of assignment.track?.stages || []) {
+          for (const mission of Array.isArray(stage?.missions) ? stage.missions : []) {
+            if (cleanString(mission?.id) === wantedMissionId) {
+              return cleanString(mission?.name || mission?.title || mission?.id);
+            }
+          }
+        }
+      }
+    }
+    const next = await loadWppNextJourneyMission(studentUserId);
+    return cleanString(next?.mission?.missionName);
+  } catch {
+    return "";
+  }
+}
+
+async function enrichFlightRadarWatchEvents(events, atIso, log = () => {}) {
+  if (!Array.isArray(events) || !events.length) return events;
+  const today = saoPauloDateParts(new Date(atIso || Date.now())).date;
+  const [slots, aerodromes] = await Promise.all([
+    listRadarWatchScheduleSlots(today).catch((err) => {
+      log(`[flight-radar-watch] schedule lookup failed: ${err?.message || err}`);
+      return [];
+    }),
+    loadRadarWatchAerodromes().catch(() => []),
+  ]);
+  const withCoords = aerodromes.filter((ad) => ad.lat != null && ad.lon != null);
+  const userIds = [...new Set(slots.flatMap((slot) => [slot.studentUserId, slot.instructorUserId]).filter(Boolean))];
+  const profilesByUserId = userIds.length
+    ? await getProfilesByUserIds(userIds, ["$id", "user_id", "full_name", "nickname"]).catch(() => new Map())
+    : new Map();
+
+  const enriched = [];
+  for (const event of events) {
+    const slot = wppFlightRadarEnrich.matchScheduleSlot(slots, event.reg, atIso);
+    const lookupLat = event.type === "takeoff" ? event.groundLat ?? event.lat : event.lat;
+    const lookupLon = event.type === "takeoff" ? event.groundLon ?? event.lon : event.lon;
+    const nearest = wppFlightRadarEnrich.nearestAerodrome(withCoords, lookupLat, lookupLon);
+    const takeoffIcao =
+      wppFlightRadarEnrich.pickTakeoffIcao(event, slot) ||
+      (event.type === "takeoff" ? cleanString(nearest?.icao) : "");
+    const landingIcao =
+      event.type === "landing"
+        ? wppFlightRadarEnrich.pickLandingIcao(event, slot) || cleanString(nearest?.icao)
+        : wppFlightRadarEnrich.pickLandingIcao(event, slot);
+    const [takeoffAd, landingAd] = await Promise.all([
+      resolveRadarWatchAdLabel(takeoffIcao, aerodromes),
+      event.type === "landing" ? resolveRadarWatchAdLabel(landingIcao, aerodromes) : Promise.resolve(""),
+    ]);
+    const studentProfile = profilesByUserId.get(cleanString(slot?.studentUserId));
+    const instructorProfile = profilesByUserId.get(cleanString(slot?.instructorUserId));
+    const mission = event.type === "takeoff" && slot ? await resolveRadarWatchMission(slot) : "";
+    enriched.push({
+      ...event,
+      studentName: studentProfile
+        ? wppReminderProfileName(studentProfile, slot?.studentName)
+        : cleanString(slot?.studentName),
+      instructorName: instructorProfile
+        ? wppReminderProfileName(instructorProfile, slot?.instructorName)
+        : cleanString(slot?.instructorName),
+      notes: cleanString(slot?.notes),
+      mission,
+      takeoffAd,
+      landingAd,
+      takeoffIcao,
+      landingIcao,
+      scheduledTakeoff: cleanString(slot?.scheduledTakeoff),
+      scheduledLanding: cleanString(slot?.scheduledLanding),
+      duration: wppFlightRadarEnrich.formatDurationFromIso(event.lastTakeoffAt, atIso),
+    });
+  }
+  return enriched;
+}
+
+function applyEnrichedTakeoffToFleetState(state, events) {
+  const aircraft = { ...(state?.aircraft || {}) };
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type !== "takeoff") continue;
+    const reg = flightRadarService.normalizeRegistration(event.reg);
+    if (!reg || !aircraft[reg]) continue;
+    aircraft[reg] = {
+      ...aircraft[reg],
+      lastTakeoffAt: event.lastTakeoffAt || aircraft[reg].lastTakeoffAt,
+      lastTakeoffIcao: cleanString(event.takeoffIcao).toUpperCase() || aircraft[reg].lastTakeoffIcao,
+    };
+  }
+  return { ...state, aircraft };
+}
+
 async function runFlightRadarWatchScan(log = () => {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scanned: 0, notified: 0 };
@@ -29512,13 +29987,18 @@ async function runFlightRadarWatchScan(log = () => {}) {
     live?.positions || [],
     trackedRegistrations,
   );
-  await flightRadarService.saveWatchFleetState(deps, state);
+  const at = nowIso();
+  const enrichedEvents = events.length
+    ? await enrichFlightRadarWatchEvents(events, at, log)
+    : events;
+  const nextState = applyEnrichedTakeoffToFleetState(state, enrichedEvents);
+  await flightRadarService.saveWatchFleetState(deps, nextState);
 
   let notified = 0;
-  for (const event of events) {
+  for (const event of enrichedEvents) {
     const body = wppFlightRadar.formatWppFlightRadarEventMessage({
       ...event,
-      at: nowIso(),
+      at,
     });
     for (const watch of activeWatches) {
       try {
@@ -31284,6 +31764,10 @@ module.exports = async ({ req, res, log, error }) => {
         await recordSagaAllUsersSyncFailure(cronSyncInput, err);
         return { ok: false, message: String(err?.message || err) };
       });
+      const memberkitSync = await syncAllFlightReviewClubMemberkitAccess(log).catch((err) => ({
+        ok: false,
+        message: String(err?.message || err),
+      }));
       return jsonResponse(res, 200, {
         ok: true,
         ...reminderResult,
@@ -31294,6 +31778,7 @@ module.exports = async ({ req, res, log, error }) => {
         aiswebNotamAlerts,
         aiswebSupplementAlerts,
         aiswebAdWarningAlerts,
+        memberkitSync,
       });
     }
 
@@ -31794,6 +32279,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "forceFlightReviewClubAccess") {
       const members = await forceFlightReviewClubAccess(actorUserId, payload);
       return jsonResponse(res, 200, { members });
+    }
+
+    if (action === "syncFlightReviewClubMemberkitAccess") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const memberkitSync = await syncAllFlightReviewClubMemberkitAccess(log);
+      return jsonResponse(res, 200, { ok: true, memberkitSync });
     }
 
     if (action === "adminCreateFlightCreditCheckout") {
@@ -32362,6 +32853,19 @@ module.exports = async ({ req, res, log, error }) => {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const watches = await stopMyMetarWatch(actorUserId, payload.icao);
       return jsonResponse(res, 200, { watches });
+    }
+
+    if (PROVA_ACTIONS.has(action)) {
+      const provaService = createProvaService({
+        databases,
+        sdk,
+        DATABASE_ID,
+        PROFILES_COLLECTION_ID,
+        requireAdmin,
+        schoolId: SCHOOL_ID,
+      });
+      const result = await provaService.handle(action, payload, actorUserId);
+      return jsonResponse(res, 200, result);
     }
 
     await requireAdmin(actorUserId);

@@ -310,9 +310,19 @@ async function main() {
   const meteoblueAsl = process.env.METEOBLUE_ASL || env.METEOBLUE_ASL || "2";
   const flightradar24ApiToken =
     process.env.FLIGHTRADAR24_API_TOKEN || env.FLIGHTRADAR24_API_TOKEN || "";
+  const memberkitApiKey = process.env.MEMBERKIT_API_KEY || env.MEMBERKIT_API_KEY || "";
+  const memberkitMembershipLevelId =
+    process.env.MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID || env.MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID || "";
+  const memberkitClassroomId =
+    process.env.MEMBERKIT_NAPROA360_CLASSROOM_ID || env.MEMBERKIT_NAPROA360_CLASSROOM_ID || "";
   // Identificador da escola — isola dados em ambiente multi-tenant.
   const schoolId = process.env.SCHOOL_ID || env.VITE_SCHOOL_ID || "escola_principal";
   const schoolTimezone = process.env.SCHOOL_TIMEZONE || env.SCHOOL_TIMEZONE || "America/Sao_Paulo";
+  const provasColId = process.env.APPWRITE_PROVAS_COL_ID || env.VITE_APPWRITE_PROVAS_COL_ID || "provas";
+  const provaCategoriesColId = process.env.APPWRITE_PROVA_CATEGORIES_COL_ID || env.VITE_APPWRITE_PROVA_CATEGORIES_COL_ID || "prova_categories";
+  const provaQuestionsColId = process.env.APPWRITE_PROVA_QUESTIONS_COL_ID || env.VITE_APPWRITE_PROVA_QUESTIONS_COL_ID || "prova_questions";
+  const provaAssignmentsColId = process.env.APPWRITE_PROVA_ASSIGNMENTS_COL_ID || env.VITE_APPWRITE_PROVA_ASSIGNMENTS_COL_ID || "prova_assignments";
+  const provaAttemptsColId = process.env.APPWRITE_PROVA_ATTEMPTS_COL_ID || env.VITE_APPWRITE_PROVA_ATTEMPTS_COL_ID || "prova_attempts";
   const adminUsersSecurityModeRaw =
     process.env.ADMIN_USERS_SECURITY_MODE ||
     env.ADMIN_USERS_SECURITY_MODE ||
@@ -443,6 +453,11 @@ async function main() {
   }
   await upsertVariable(functions, "SCHOOL_ID", schoolId);
   await upsertVariable(functions, "SCHOOL_TIMEZONE", schoolTimezone);
+  await upsertVariable(functions, "APPWRITE_PROVAS_COL_ID", provasColId);
+  await upsertVariable(functions, "APPWRITE_PROVA_CATEGORIES_COL_ID", provaCategoriesColId);
+  await upsertVariable(functions, "APPWRITE_PROVA_QUESTIONS_COL_ID", provaQuestionsColId);
+  await upsertVariable(functions, "APPWRITE_PROVA_ASSIGNMENTS_COL_ID", provaAssignmentsColId);
+  await upsertVariable(functions, "APPWRITE_PROVA_ATTEMPTS_COL_ID", provaAttemptsColId);
   await upsertVariable(functions, "ADMIN_USERS_SECURITY_MODE", adminUsersSecurityMode);
   const aiswebApiKey = process.env.AISWEB_API_KEY || env.AISWEB_API_KEY || "1729957010";
   const aiswebApiPass =
@@ -461,6 +476,13 @@ async function main() {
   await upsertVariable(functions, "METEOBLUE_ASL", String(meteoblueAsl));
   if (flightradar24ApiToken) {
     await upsertVariable(functions, "FLIGHTRADAR24_API_TOKEN", flightradar24ApiToken, true);
+  }
+  if (memberkitApiKey) await upsertVariable(functions, "MEMBERKIT_API_KEY", memberkitApiKey, true);
+  if (memberkitMembershipLevelId) {
+    await upsertVariable(functions, "MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID", memberkitMembershipLevelId);
+  }
+  if (memberkitClassroomId) {
+    await upsertVariable(functions, "MEMBERKIT_NAPROA360_CLASSROOM_ID", memberkitClassroomId);
   }
 
   const buffer = fs.readFileSync(archivePath);

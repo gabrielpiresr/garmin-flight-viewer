@@ -36,6 +36,8 @@ type Props = {
   enabled: boolean;
   /** Desenha triângulos nos extremos (desligar se outro layer já plota pontos clicáveis). */
   showEndpointMarkers?: boolean;
+  /** Nomes, rumos e altitudes dos corredores. */
+  showLabels?: boolean;
 };
 
 function calcBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -439,7 +441,7 @@ function makeLabelIcon(html: string, rotationDeg = 0): L.DivIcon {
  * Overlay estilo carta CCV: bordas amarelo escuro, fill amarelo leve, nome fora,
  * altitudes com traço acima/abaixo, rumo magnético + seta.
  */
-export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: Props) {
+export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true, showLabels = true }: Props) {
   const map = useMap();
   const featuresRef = useRef<ReaRouteFeature[]>([]);
   const groupRef = useRef<L.LayerGroup | null>(null);
@@ -448,6 +450,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
   const enabledRef = useRef(enabled);
   const kindRef = useRef(kind);
   const showEndpointsRef = useRef(showEndpointMarkers);
+  const showLabelsRef = useRef(showLabels);
   const redrawTimer = useRef<number | null>(null);
   const interactingRef = useRef(false);
   const lastDrawSignatureRef = useRef<string | null>(null);
@@ -459,6 +462,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
   enabledRef.current = enabled;
   kindRef.current = kind;
   showEndpointsRef.current = showEndpointMarkers;
+  showLabelsRef.current = showLabels;
 
   const redrawRef = useRef(() => {});
   redrawRef.current = () => {
@@ -490,9 +494,9 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
       const zoom = map.getZoom();
       const bounds = map.getBounds().pad(0.12);
       const currentKind = kindRef.current;
-      const showLabels = zoom >= LABEL_MIN_ZOOM;
+      const labelsOn = showLabelsRef.current && zoom >= LABEL_MIN_ZOOM;
       const showPoints = showEndpointsRef.current && zoom >= POINT_MIN_ZOOM;
-      const showHdg = zoom >= HDG_MIN_ZOOM;
+      const showHdg = showLabelsRef.current && zoom >= HDG_MIN_ZOOM;
       const seenPoints = new Set<string>();
       const nameShowCount = new Map<string, number>();
       const fillRenderer = fillRendererRef.current;
@@ -516,7 +520,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
       const drawSignature = [
         currentKind,
         zoomBucket,
-        showLabels ? 1 : 0,
+        labelsOn ? 1 : 0,
         showPoints ? 1 : 0,
         showHdg ? 1 : 0,
         drawList.map(featureIdentity).join("|"),
@@ -605,7 +609,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
         if (ring.length >= 2) L.polyline(ring, edgeOpts).addTo(group);
       }
 
-      if (!showLabels && !showPoints && !showHdg) return;
+      if (!labelsOn && !showPoints && !showHdg) return;
 
       // Caps de HTML markers — DivIcons são o maior custo em SP.
       const maxNameLabels = zoom >= 12 ? 50 : 28;
@@ -635,7 +639,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
         const hdgPx = mapFontPx(10, zoom, 14);
         const ptPx = mapFontPx(11, zoom, 17);
 
-        if (showLabels && namePx != null && nameDrawn < maxNameLabels) {
+        if (labelsOn && namePx != null && nameDrawn < maxNameLabels) {
           const name = corridorDisplayName(props.nome);
           if (name) {
             const shown = nameShowCount.get(name) ?? 0;
@@ -652,7 +656,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
           }
         }
 
-        if (showLabels && altPx != null && altDrawn < maxAltLabels) {
+        if (labelsOn && altPx != null && altDrawn < maxAltLabels) {
           const { max, min } = resolveReaAltitudes(props);
           const alt = altLimitsHtml(max, min, altPx);
           if (alt) {
@@ -735,7 +739,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true }: 
 
   useEffect(() => {
     scheduleRedraw(0);
-  }, [showEndpointMarkers]);
+  }, [showEndpointMarkers, showLabels]);
 
   useEffect(() => {
     if (!groupRef.current) {

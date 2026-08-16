@@ -671,3 +671,19 @@ body {
 .aisweb-haze-veil {
   animation: aisweb-haze-pulse 5s ease-in-out infinite;
 }
+
+.prova-ad-tooltip,
+.prova-rea-tooltip {
+  background: rgba(15, 23, 42, 0.88) !important;
+  border: 1px solid rgba(148, 163, 184, 0.35) !important;
+  color: #e2e8f0 !important;
+  font-size: 10px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.02em;
+  box-shadow: none !important;
+  padding: 2px 6px !important;
+}
+.prova-ad-tooltip::before,
+.prova-rea-tooltip::before {
+  display: none !important;
+}

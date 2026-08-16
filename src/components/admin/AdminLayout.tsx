@@ -70,6 +70,7 @@ const FlightReviewAdminTab = lazy(() =>
   import("./FlightReviewAdminTab").then((module) => ({ default: module.FlightReviewAdminTab })),
 );
 const PanelAdminTab = lazy(() => import("./PanelAdminTab").then((module) => ({ default: module.PanelAdminTab })));
+const FplSimAdminTab = lazy(() => import("./FplSimAdminTab").then((module) => ({ default: module.FplSimAdminTab })));
 const ContractsAdminTab = lazy(() =>
   import("./ContractsAdminTab").then((module) => ({ default: module.ContractsAdminTab })),
 );
@@ -93,6 +94,12 @@ const MediaAlbumTab = lazy(() => import("../MediaAlbumTab").then((module) => ({ 
 const AdminSoloFlightTab = lazy(() => import("./AdminSoloFlightTab").then((module) => ({ default: module.AdminSoloFlightTab })));
 const MarketplaceAdminTab = lazy(() =>
   import("./MarketplaceAdminTab").then((module) => ({ default: module.MarketplaceAdminTab })),
+);
+const ProvasBankTab = lazy(() =>
+  import("./provas/ProvasBankTab").then((module) => ({ default: module.ProvasBankTab })),
+);
+const ProvasAssignmentsTab = lazy(() =>
+  import("./provas/ProvasAssignmentsTab").then((module) => ({ default: module.ProvasAssignmentsTab })),
 );
 
 type AdminSection =
@@ -120,12 +127,14 @@ type AdminSection =
   | "planejamento"
   | "radar"
   | "album"
-  | "marketplace";
+  | "marketplace"
+  | "provas";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
 type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
-type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review" | "painel";
+type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review" | "painel" | "fpl-sim";
 type DisparosSubTab = "email-mkt" | "notices";
+type ProvasSubTab = "banco" | "liberacoes";
 
 type NavItem = {
   id: AdminSection;
@@ -235,6 +244,16 @@ const NAV_ITEMS: NavItem[] = [
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
         <path d="M3.75 3A.75.75 0 003 3.75v16.5c0 .414.336.75.75.75h16.5a.75.75 0 000-1.5H4.5V3.75A.75.75 0 003.75 3z" />
         <path d="M8.25 17.25a.75.75 0 01-.75-.75v-4.25a.75.75 0 011.5 0v4.25a.75.75 0 01-.75.75zM12 17.25a.75.75 0 01-.75-.75V8.75a.75.75 0 011.5 0v7.75a.75.75 0 01-.75.75zM15.75 17.25a.75.75 0 01-.75-.75v-6a.75.75 0 011.5 0v6a.75.75 0 01-.75.75zM19.5 17.25a.75.75 0 01-.75-.75V6.75a.75.75 0 011.5 0v9.75a.75.75 0 01-.75.75z" />
+      </svg>
+    ),
+  },
+  {
+    id: "provas",
+    label: "Provas",
+    sublabel: "Banco de questões e liberações",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M11.25 4.533A9.707 9.707 0 006 3a9.735 9.735 0 00-3.25.555.75.75 0 00-.5.707v14.25a.75.75 0 001 .707A8.237 8.237 0 016 18.75c1.995 0 3.823.707 5.25 1.886V4.533zM12.75 20.636A8.214 8.214 0 0118 18.75c.966 0 1.89.166 2.75.47a.75.75 0 001-.708V4.262a.75.75 0 00-.5-.707A9.735 9.735 0 0018 3a9.707 9.707 0 00-5.25 1.533v16.103z" />
       </svg>
     ),
   },
@@ -403,7 +422,7 @@ const NAV_ITEMS: NavItem[] = [
 const NAV_GROUPS: Array<{ title: string; ids: AdminSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "students", "users", "atualizacoes", "solo-flight", "aisweb", "whatsapp", "planejamento", "radar", "album", "reports", "contents"],
+    ids: ["home", "schedule", "students", "users", "provas", "atualizacoes", "solo-flight", "aisweb", "whatsapp", "planejamento", "radar", "album", "reports", "contents"],
   },
   {
     title: "Frota",
@@ -588,6 +607,15 @@ const CONTENTS_TABS = [
       </svg>
     ),
   },
+  {
+    id: "fpl-sim",
+    label: "Simulador FPL",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path fillRule="evenodd" d="M1.5 6.375c0-1.036.84-1.875 1.875-1.875h17.25c1.035 0 1.875.84 1.875 1.875v3.026a.75.75 0 01-.375.65 2.249 2.249 0 000 3.898.75.75 0 01.375.65v3.026c0 1.035-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 011.5 17.625v-3.026a.75.75 0 01.374-.65 2.249 2.249 0 000-3.898.75.75 0 01-.374-.65V6.375z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
 ] satisfies Array<{ id: ContentsSubTab; label: string; icon: ReactNode }>;
 
 const DISPAROS_TABS = [
@@ -611,6 +639,11 @@ const DISPAROS_TABS = [
     ),
   },
 ] satisfies Array<{ id: DisparosSubTab; label: string; icon: ReactNode }>;
+
+const PROVAS_TABS = [
+  { id: "banco", label: "Banco" },
+  { id: "liberacoes", label: "Liberações" },
+] satisfies Array<{ id: ProvasSubTab; label: string }>;
 
 const FLEET_ROUTES = [
   { id: "aircraft", path: "/admin/frota/avioes", aliases: ["/admin/frota", "/admin/fleet"] },
@@ -644,7 +677,13 @@ const CONTENTS_ROUTES = [
   { id: "exercises", path: "/admin/conteudos/exercicios", aliases: ["/admin/configuracoes/exercicios", "/admin/exercicios"] },
   { id: "flight-review", path: "/admin/conteudos/flight-review", aliases: ["/admin/flight-review"] },
   { id: "painel", path: "/admin/conteudos/painel" },
+  { id: "fpl-sim", path: "/admin/conteudos/simulador-fpl" },
 ] satisfies readonly TabRoute<ContentsSubTab>[];
+
+const PROVAS_ROUTES = [
+  { id: "banco", path: "/admin/provas", aliases: ["/admin/provas/banco"] },
+  { id: "liberacoes", path: "/admin/provas/liberacoes" },
+] satisfies readonly TabRoute<ProvasSubTab>[];
 
 const DISPAROS_ROUTES = [
   { id: "email-mkt", path: "/admin/disparos/email-mkt", aliases: ["/admin/email-mkt"] },
@@ -677,6 +716,7 @@ const ADMIN_ROUTES = [
   { id: "schedule", path: "/admin/escala/voos", aliases: SCHEDULE_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "reports", path: "/admin/todos-os-voos", aliases: REPORTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "contents", path: "/admin/conteudos/manobras", aliases: CONTENTS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
+  { id: "provas", path: "/admin/provas", aliases: PROVAS_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "students", path: "/admin/alunos" },
   { id: "fleet", path: "/admin/frota/avioes", aliases: FLEET_ROUTES.flatMap((r) => [r.path, ...(r.aliases ?? [])]) },
   { id: "users", path: "/admin/usuarios" },
@@ -748,10 +788,15 @@ const CONTENTS_TAB_KEYS: Record<string, AdminTabKey> = {
   exercises: "contents.exercicios",
   "flight-review": "flight-review",
   painel: "contents.painel",
+  "fpl-sim": "contents.fpl-sim",
 };
 const DISPAROS_TAB_KEYS: Record<string, AdminTabKey> = {
   "email-mkt": "disparos.email-mkt",
   notices: "disparos.avisos",
+};
+const PROVAS_TAB_KEYS: Record<string, AdminTabKey> = {
+  banco: "provas.banco",
+  liberacoes: "provas.liberacoes",
 };
 
 function resolveAdminPageTitle(
@@ -761,6 +806,7 @@ function resolveAdminPageTitle(
   reportsTab: ReportsSubTab,
   contentsTab: ContentsSubTab,
   disparosTab: DisparosSubTab,
+  provasTab: ProvasSubTab,
   settingsTab: SettingsSubTab,
   fallback: string,
 ): string {
@@ -773,6 +819,8 @@ function resolveAdminPageTitle(
       return REPORTS_TABS.find((tab) => tab.id === reportsTab)?.label ?? fallback;
     case "contents":
       return CONTENTS_TABS.find((tab) => tab.id === contentsTab)?.label ?? fallback;
+    case "provas":
+      return PROVAS_TABS.find((tab) => tab.id === provasTab)?.label ?? fallback;
     case "disparos":
       return DISPAROS_TABS.find((tab) => tab.id === disparosTab)?.label ?? fallback;
     case "settings":
@@ -836,6 +884,10 @@ export function AdminLayout() {
     () => DISPAROS_TABS.filter((t) => canTab(DISPAROS_TAB_KEYS[t.id] ?? ("disparos.email-mkt" as AdminTabKey))),
     [canTab],
   );
+  const visibleProvasTabs = useMemo(
+    () => PROVAS_TABS.filter((t) => canTab(PROVAS_TAB_KEYS[t.id] ?? ("provas.banco" as AdminTabKey))),
+    [canTab],
+  );
   const [fleetTab, setFleetTab] = useState<FleetSubTab>(() => resolveRouteId(FLEET_ROUTES, "aircraft"));
   const openedFleetTabs = useOpenedTabs(fleetTab);
   const [scheduleTab, setScheduleTab] = useState<ScheduleSubTab>(() => resolveRouteId(SCHEDULE_ROUTES, "flights"));
@@ -845,6 +897,8 @@ export function AdminLayout() {
   const openedContentsTabs = useOpenedTabs(contentsTab);
   const [disparosTab, setDisparosTab] = useState<DisparosSubTab>(() => resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
   const openedDisparosTabs = useOpenedTabs(disparosTab);
+  const [provasTab, setProvasTab] = useState<ProvasSubTab>(() => resolveRouteId(PROVAS_ROUTES, "banco"));
+  const openedProvasTabs = useOpenedTabs(provasTab);
   const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "rules"));
   const [atualizacoesTab, setAtualizacoesTab] = useState<AtualizacoesSubTab>(() => resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
   const [planejamentoEditorOpen, setPlanejamentoEditorOpen] = useState(false);
@@ -857,6 +911,7 @@ export function AdminLayout() {
     reportsTab,
     contentsTab,
     disparosTab,
+    provasTab,
     settingsTab,
     activeNav.label,
   );
@@ -867,6 +922,7 @@ export function AdminLayout() {
       if (routeMatches(SCHEDULE_ROUTES)) setScheduleTab(resolveRouteId(SCHEDULE_ROUTES, "flights"));
       if (routeMatches(REPORTS_ROUTES)) setReportsTab(resolveRouteId(REPORTS_ROUTES, "all-flights"));
       if (routeMatches(CONTENTS_ROUTES)) setContentsTab(resolveRouteId(CONTENTS_ROUTES, "maneuvers"));
+      if (routeMatches(PROVAS_ROUTES)) setProvasTab(resolveRouteId(PROVAS_ROUTES, "banco"));
       if (routeMatches(DISPAROS_ROUTES)) setDisparosTab(resolveRouteId(DISPAROS_ROUTES, "email-mkt"));
       if (routeMatches(SETTINGS_ROUTES)) setSettingsTab(resolveRouteId(SETTINGS_ROUTES, "rules"));
       if (routeMatches(ATUALIZACOES_ROUTES)) setAtualizacoesTab(resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
@@ -881,6 +937,7 @@ export function AdminLayout() {
     if (target === "schedule") { setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) }); return; }
     if (target === "reports") { setSection(target, { path: pathForRoute(REPORTS_ROUTES, reportsTab) }); return; }
     if (target === "contents") { setSection(target, { path: pathForRoute(CONTENTS_ROUTES, contentsTab) }); return; }
+    if (target === "provas") { setSection(target, { path: pathForRoute(PROVAS_ROUTES, provasTab) }); return; }
     if (target === "crm") { setSection(target, { path: "/admin/crm" }); return; }
     if (target === "instructor-admission") { setSection(target, { path: "/admin/admissao-instrutores" }); return; }
     if (target === "disparos") { setSection(target, { path: pathForRoute(DISPAROS_ROUTES, disparosTab) }); return; }
@@ -908,6 +965,7 @@ export function AdminLayout() {
   function changeScheduleTab(next: ScheduleSubTab) { setScheduleTab(next); setSection("schedule", { path: pathForRoute(SCHEDULE_ROUTES, next) }); }
   function changeReportsTab(next: ReportsSubTab) { setReportsTab(next); setSection("reports", { path: pathForRoute(REPORTS_ROUTES, next) }); }
   function changeContentsTab(next: ContentsSubTab) { setContentsTab(next); setSection("contents", { path: pathForRoute(CONTENTS_ROUTES, next) }); }
+  function changeProvasTab(next: ProvasSubTab) { setProvasTab(next); setSection("provas", { path: pathForRoute(PROVAS_ROUTES, next) }); }
   function changeDisparosTab(next: DisparosSubTab) { setDisparosTab(next); setSection("disparos", { path: pathForRoute(DISPAROS_ROUTES, next) }); }
   function changeSettingsTab(next: SettingsSubTab) { setSettingsTab(next); setSection("settings", { path: pathForRoute(SETTINGS_ROUTES, next) }); }
   function changeAtualizacoesTab(next: AtualizacoesSubTab) { setAtualizacoesTab(next); setSection("atualizacoes", { path: pathForRoute(ATUALIZACOES_ROUTES, next) }); }
@@ -1161,6 +1219,20 @@ export function AdminLayout() {
               ) : null}
               {openedContentsTabs.has("painel") ? (
                 <div hidden={contentsTab !== "painel"}><LazyTab><PanelAdminTab /></LazyTab></div>
+              ) : null}
+              {openedContentsTabs.has("fpl-sim") ? (
+                <div hidden={contentsTab !== "fpl-sim"}><LazyTab><FplSimAdminTab /></LazyTab></div>
+              ) : null}
+            </div>
+          )}
+          {openedSections.has("provas") && (
+            <div hidden={section !== "provas"} className="space-y-4">
+              <Tabs items={visibleProvasTabs} value={provasTab} onChange={changeProvasTab} ariaLabel="Subabas de provas" accent="sky" />
+              {openedProvasTabs.has("banco") ? (
+                <div hidden={provasTab !== "banco"}><LazyTab><ProvasBankTab /></LazyTab></div>
+              ) : null}
+              {openedProvasTabs.has("liberacoes") ? (
+                <div hidden={provasTab !== "liberacoes"}><LazyTab><ProvasAssignmentsTab /></LazyTab></div>
               ) : null}
             </div>
           )}

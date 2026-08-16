@@ -75,6 +75,16 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "contents.ajuda-instrutor", label: "Manual do Instrutor" },
       { key: "settings.onboarding", label: "Manual do Aluno" },
       { key: "contents.exercicios", label: "Critérios" },
+      { key: "contents.painel", label: "Painel" },
+      { key: "contents.fpl-sim", label: "Simulador FPL" },
+    ],
+  },
+  {
+    label: "Provas",
+    parentKey: "provas",
+    children: [
+      { key: "provas.banco", label: "Banco" },
+      { key: "provas.liberacoes", label: "Liberações" },
     ],
   },
   { label: "Usuários", parentKey: "users" },

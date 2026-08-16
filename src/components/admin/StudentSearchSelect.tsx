@@ -9,6 +9,10 @@ type StudentSearchSelectProps = {
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  /** Quando a lista já vem filtrada do servidor. */
+  disableLocalFilter?: boolean;
+  onQueryChange?: (query: string) => void;
+  loading?: boolean;
 };
 
 function studentDisplayName(student: StudentIdentity): string {
@@ -16,7 +20,7 @@ function studentDisplayName(student: StudentIdentity): string {
 }
 
 function formatStudentLabel(student: StudentIdentity): string {
-  const email = student.email || "sem email";
+  const email = student.email || "sem e-mail";
   const anac = student.anacCode || "sem ANAC";
   return `${studentDisplayName(student)} · ${email} · ${anac}`;
 }
@@ -41,8 +45,11 @@ export function StudentSearchSelect({
   value,
   onChange,
   disabled = false,
-  placeholder = "Pesquise por nickname, nome, email ou ANAC",
+  placeholder = "Pesquise por nickname, nome, e-mail ou ANAC",
   className = "",
+  disableLocalFilter = false,
+  onQueryChange,
+  loading = false,
 }: StudentSearchSelectProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -57,15 +64,16 @@ export function StudentSearchSelect({
   }, [selectedStudent, value]);
 
   const filteredStudents = useMemo(() => {
-    const normalizedQuery = normalizeSearch(query);
     const sorted = [...students].sort((a, b) =>
       studentDisplayName(a).localeCompare(studentDisplayName(b), "pt-BR"),
     );
+    if (disableLocalFilter) return sorted.slice(0, 30);
+    const normalizedQuery = normalizeSearch(query);
     if (!normalizedQuery || (selectedStudent?.userId === value && query === formatStudentLabel(selectedStudent))) {
       return sorted.slice(0, 30);
     }
     return sorted.filter((student) => studentSearchText(student).includes(normalizedQuery)).slice(0, 30);
-  }, [query, selectedStudent, students, value]);
+  }, [disableLocalFilter, query, selectedStudent, students, value]);
 
   return (
     <label className={`relative text-xs text-slate-400 ${className}`}>
@@ -75,6 +83,7 @@ export function StudentSearchSelect({
         onChange={(event) => {
           setQuery(event.target.value);
           setOpen(true);
+          onQueryChange?.(event.target.value);
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => window.setTimeout(() => setOpen(false), 120)}
@@ -84,7 +93,9 @@ export function StudentSearchSelect({
       />
       {open && !disabled ? (
         <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 shadow-xl">
-          {filteredStudents.length === 0 ? (
+          {loading ? (
+            <div className="px-3 py-2 text-sm text-slate-500">Buscando…</div>
+          ) : filteredStudents.length === 0 ? (
             <div className="px-3 py-2 text-sm text-slate-500">Nenhum aluno encontrado.</div>
           ) : (
             filteredStudents.map((student) => (
@@ -101,7 +112,7 @@ export function StudentSearchSelect({
               >
                 <p className="font-medium text-slate-100">{studentDisplayName(student)}</p>
                 <p className="text-xs text-slate-500">
-                  {student.email || "Sem email"} · ANAC {student.anacCode || "—"}
+                  {student.email || "Sem e-mail"} · ANAC {student.anacCode || "—"}
                 </p>
               </button>
             ))

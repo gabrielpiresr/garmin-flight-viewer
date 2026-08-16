@@ -90,6 +90,20 @@ export const FLIGHT_DISCREPANCIES_COL_ID =
 export const AUDIT_EVENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_AUDIT_EVENTS_COL_ID as string | undefined) ?? "audit_events";
 export const TRAINING_EXERCISES_COL_ID = import.meta.env.VITE_APPWRITE_TRAINING_EXERCISES_COL_ID as string | undefined;
+export const PROVAS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVAS_COL_ID as string | undefined) ?? "provas";
+export const PROVA_CATEGORIES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVA_CATEGORIES_COL_ID as string | undefined) ?? "prova_categories";
+export const PROVA_QUESTIONS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVA_QUESTIONS_COL_ID as string | undefined) ?? "prova_questions";
+export const PROVA_ASSIGNMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVA_ASSIGNMENTS_COL_ID as string | undefined) ?? "prova_assignments";
+export const PROVA_ATTEMPTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVA_ATTEMPTS_COL_ID as string | undefined) ?? "prova_attempts";
+export const FPL_SIM_PLANS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FPL_SIM_PLANS_COL_ID as string | undefined) ?? "fpl_sim_plans";
+export const FPL_SIM_TIPS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_FPL_SIM_TIPS_COL_ID as string | undefined) ?? "fpl_sim_tips";
 export const TRAINING_TRACKS_COL_ID =
   (import.meta.env.VITE_APPWRITE_TRAINING_TRACKS_COL_ID as string | undefined) ?? "training_tracks";
 export const STUDENT_TRACKS_COL_ID =
