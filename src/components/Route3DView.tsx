@@ -98,6 +98,8 @@ type Props = {
     active: boolean;
     onToggle: () => void;
   };
+  /** Old flights skip live weather clouds/METAR layers. */
+  enableWeatherLayers?: boolean;
 };
 
 const EMPTY_CORRIDORS: Array<LegCorridorInfo | null> = [];
@@ -263,7 +265,7 @@ function AircraftMarker({
   const groupRef = useRef<THREE.Group>(null);
   const fallbackRef = useRef<Props["currentAircraft"]>(aircraft ?? null);
   if (!aircraftRef) fallbackRef.current = aircraft ?? null;
-  const size = Math.min(360, Math.max(90, spanM * 0.00135));
+  const size = Math.min(280, Math.max(80, spanM * 0.0011));
   useFrame(() => {
     const pose = (aircraftRef ?? fallbackRef).current;
     const group = groupRef.current;
@@ -280,13 +282,17 @@ function AircraftMarker({
   });
   return (
     <group ref={groupRef} visible={false}>
-      <mesh rotation={[Math.PI / 2, 0, 0]} raycast={() => {}}>
-        <coneGeometry args={[size * 0.42, size * 1.25, 3]} />
-        <meshStandardMaterial color="#f8fafc" emissive="#38bdf8" emissiveIntensity={0.35} roughness={0.35} />
+      <mesh raycast={() => {}}>
+        <sphereGeometry args={[size * 0.62, 20, 20]} />
+        <meshStandardMaterial color="#f8fafc" emissive="#38bdf8" emissiveIntensity={1.1} roughness={0.18} />
       </mesh>
-      <mesh position={[0, 0, -size * 0.28]} raycast={() => {}}>
-        <sphereGeometry args={[size * 0.16, 12, 12]} />
-        <meshStandardMaterial color="#0ea5e9" emissive="#0ea5e9" emissiveIntensity={0.25} roughness={0.25} />
+      <mesh raycast={() => {}}>
+        <sphereGeometry args={[size * 1.05, 16, 16]} />
+        <meshStandardMaterial color="#38bdf8" emissive="#38bdf8" emissiveIntensity={0.35} transparent opacity={0.22} roughness={0.12} />
+      </mesh>
+      <mesh position={[0, 0, size * 0.85]} rotation={[Math.PI / 2, 0, 0]} raycast={() => {}}>
+        <coneGeometry args={[size * 0.28, size * 0.7, 3]} />
+        <meshStandardMaterial color="#e0f2fe" emissive="#22d3ee" emissiveIntensity={0.55} roughness={0.3} />
       </mesh>
     </group>
   );
@@ -297,27 +303,37 @@ function routePointVec(point: THREE.Vector3 | [number, number, number]): THREE.V
 }
 
 function RouteDirectionArrow({ path, spanM }: { path: Array<THREE.Vector3 | [number, number, number]>; spanM: number }) {
-  const arrow = useMemo(() => {
-    if (path.length < 2) return null;
-    const targetIndex = Math.max(1, Math.min(path.length - 1, Math.round((path.length - 1) * 0.58)));
-    const from = routePointVec(path[targetIndex - 1]!);
-    const to = routePointVec(path[targetIndex]!);
-    const dx = to.x - from.x;
-    const dz = to.z - from.z;
-    if (Math.hypot(dx, dz) < 1) return null;
-    return {
-      position: new THREE.Vector3((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2),
-      yaw: Math.atan2(dx, dz),
-    };
+  const arrows = useMemo(() => {
+    if (path.length < 2) return [];
+    const count = Math.min(12, Math.max(4, Math.floor(path.length / 6)));
+    const out: Array<{ position: THREE.Vector3; yaw: number }> = [];
+    for (let i = 1; i <= count; i += 1) {
+      const t = i / (count + 1);
+      const targetIndex = Math.max(1, Math.min(path.length - 1, Math.round(t * (path.length - 1))));
+      const from = routePointVec(path[targetIndex - 1]!);
+      const to = routePointVec(path[targetIndex]!);
+      const dx = to.x - from.x;
+      const dz = to.z - from.z;
+      if (Math.hypot(dx, dz) < 1) continue;
+      out.push({
+        position: new THREE.Vector3((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2),
+        yaw: Math.atan2(dx, dz),
+      });
+    }
+    return out;
   }, [path]);
-  if (!arrow) return null;
-  const size = Math.min(300, Math.max(70, spanM * 0.0012));
+  if (!arrows.length) return null;
+  const size = Math.min(220, Math.max(55, spanM * 0.0009));
   return (
-    <group position={arrow.position} rotation={[0, arrow.yaw, 0]} raycast={() => {}}>
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[size * 0.38, size * 1.05, 3]} />
-        <meshStandardMaterial color="#f8fafc" emissive="#22d3ee" emissiveIntensity={0.45} roughness={0.35} />
-      </mesh>
+    <group raycast={() => {}}>
+      {arrows.map((arrow, index) => (
+        <group key={`dir-${index}`} position={arrow.position} rotation={[0, arrow.yaw, 0]}>
+          <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[size * 0.34, size * 0.95, 3]} />
+            <meshStandardMaterial color="#f8fafc" emissive="#22d3ee" emissiveIntensity={0.55} roughness={0.32} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
@@ -368,11 +384,16 @@ function OrbitGuard({
     if (terrain) {
       const camLl = enuToLngLat(camera.position.x, camera.position.z, origin);
       const camGround = sampleGridHeightM(terrain, camLl.lat, camLl.lng) * exaggeration;
-      if (camera.position.y < camGround + 18) {
-        camera.position.y = camGround + 18;
+      const minY = camGround + 18;
+      if (camera.position.y < minY) {
+        const lift = minY - camera.position.y;
+        camera.position.y = minY;
+        controls.target.y += lift;
       }
     } else if (camera.position.y < 18) {
+      const lift = 18 - camera.position.y;
       camera.position.y = 18;
+      controls.target.y += lift;
     }
     const dist = camera.position.distanceTo(controls.target);
     const near = Math.max(1.2, Math.min(40, dist / 220));
@@ -513,49 +534,9 @@ function TerrainZoom({
       applyZoomAt(event.clientX, event.clientY, event.deltaY < 0, notches);
     };
 
-    let pinchDist = 0;
-    const readPinch = (touches: TouchList) => {
-      const a = touches.item(0);
-      const b = touches.item(1);
-      if (!a || !b) return null;
-      return {
-        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
-        x: (a.clientX + b.clientX) / 2,
-        y: (a.clientY + b.clientY) / 2,
-      };
-    };
-    const onTouchStart = (event: TouchEvent) => {
-      const pinch = event.touches.length >= 2 ? readPinch(event.touches) : null;
-      pinchDist = pinch?.dist ?? 0;
-    };
-    const onTouchMove = (event: TouchEvent) => {
-      if (event.touches.length < 2 || pinchDist <= 0) return;
-      const pinch = readPinch(event.touches);
-      if (!pinch) return;
-      event.preventDefault();
-      const ratio = pinch.dist / pinchDist;
-      if (Math.abs(ratio - 1) > 0.008) {
-        const notches = Math.min(2.4, Math.abs(Math.log2(ratio)) * 4);
-        applyZoomAt(pinch.x, pinch.y, ratio > 1, notches);
-      }
-      pinchDist = pinch.dist;
-    };
-    const onTouchEnd = (event: TouchEvent) => {
-      const pinch = event.touches.length >= 2 ? readPinch(event.touches) : null;
-      pinchDist = pinch?.dist ?? 0;
-    };
-
     root.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    root.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
-    root.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
-    root.addEventListener("touchend", onTouchEnd, { capture: true });
-    root.addEventListener("touchcancel", onTouchEnd, { capture: true });
     return () => {
       root.removeEventListener("wheel", onWheel, { capture: true });
-      root.removeEventListener("touchstart", onTouchStart, { capture: true });
-      root.removeEventListener("touchmove", onTouchMove, { capture: true });
-      root.removeEventListener("touchend", onTouchEnd, { capture: true });
-      root.removeEventListener("touchcancel", onTouchEnd, { capture: true });
     };
   }, [camera, controls, exaggeration, gl, origin, spanM, terrain]);
   return null;
@@ -609,13 +590,13 @@ const TerrainMesh = forwardRef<
       {satelliteTexture ? (
         <meshStandardMaterial
           map={satelliteTexture}
-          roughness={0.9}
+          roughness={0.96}
           metalness={0}
           toneMapped={false}
           side={THREE.DoubleSide}
         />
       ) : (
-        <meshStandardMaterial vertexColors roughness={0.8} metalness={0} side={THREE.DoubleSide} />
+        <meshStandardMaterial vertexColors roughness={0.96} metalness={0} side={THREE.DoubleSide} />
       )}
     </mesh>
   );
@@ -906,8 +887,14 @@ function SceneContent({
       <OrbitControls
         makeDefault
         enableDamping={!interactionPaused}
-        dampingFactor={0.12}
-        enableZoom={false}
+        dampingFactor={0.08}
+        enablePan
+        enableRotate
+        enableZoom
+        zoomToCursor
+        zoomSpeed={0.85}
+        panSpeed={1.1}
+        rotateSpeed={0.85}
         screenSpacePanning={false}
         mouseButtons={{
           LEFT: THREE.MOUSE.PAN,
@@ -1455,11 +1442,14 @@ export function Route3DView({
   defaultVisibleAirspaceTypes,
   areaLayerKinds = DEFAULT_AREA_LAYER_KINDS,
   chartsControl,
+  enableWeatherLayers = true,
 }: Props) {
   const isSection = variant === "section";
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapToolPanel, setMapToolPanel] = useState<MapToolPanel3d>(null);
-  const [toggles, setToggles] = useState<LayerToggles>(DEFAULT_TOGGLES);
+  const [toggles, setToggles] = useState<LayerToggles>(() =>
+    enableWeatherLayers ? DEFAULT_TOGGLES : { ...DEFAULT_TOGGLES, metar: false, routeClouds: false },
+  );
   const [exaggeration, setExaggeration] = useState(20);
   const [terrainStyle, setTerrainStyle] = useState<TerrainStyle>("hypsometric");
   const [resetNonce, setResetNonce] = useState(0);
@@ -1673,7 +1663,7 @@ export function Route3DView({
               maxTiles: 80,
               maxSatTiles: 48,
               maxZoom: 13,
-              targetCells: 512,
+              targetCells: 640,
             },
       )
         .then((grid) => {
@@ -1823,12 +1813,25 @@ export function Route3DView({
   useEffect(() => {
     const el = viewRef.current;
     if (!el) return;
+    const scrollable = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return false;
+      return Boolean(target.closest("button, a, input, textarea, select, [data-allow-touch-scroll], .overflow-y-auto"));
+    };
     const blockPageScroll = (event: WheelEvent) => {
+      if (scrollable(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
     };
+    const blockPageTouch = (event: TouchEvent) => {
+      if (scrollable(event.target)) return;
+      event.preventDefault();
+    };
     el.addEventListener("wheel", blockPageScroll, { passive: false });
-    return () => el.removeEventListener("wheel", blockPageScroll);
+    el.addEventListener("touchmove", blockPageTouch, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", blockPageScroll);
+      el.removeEventListener("touchmove", blockPageTouch);
+    };
   }, [ready]);
 
   const canvasHeightClass = canvasClassName ?? (isSection ? "min-h-0 flex-1" : "h-[480px]");
@@ -1916,15 +1919,19 @@ export function Route3DView({
       <ToggleChip active={toggles.route} onClick={() => setToggles((t) => ({ ...t, route: !t.route }))}>
         Rota
       </ToggleChip>
-      <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
-        METAR
-      </ToggleChip>
-      <ToggleChip
-        active={toggles.routeClouds}
-        onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
-      >
-        Nuvens rota
-      </ToggleChip>
+      {enableWeatherLayers ? (
+        <>
+          <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
+            METAR
+          </ToggleChip>
+          <ToggleChip
+            active={toggles.routeClouds}
+            onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
+          >
+            Nuvens rota
+          </ToggleChip>
+        </>
+      ) : null}
       <ToggleChip
         active={toggles.corridors}
         disabled={displayedCorridors.length === 0 && !shouldLoadAreaLayers}
@@ -2160,12 +2167,18 @@ export function Route3DView({
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-1.5">
-                        {([
-                          ["terrain", "Terreno"],
-                          ["route", "Rota"],
-                          ["metar", "METAR"],
-                          ["routeClouds", "Nuvens rota"],
-                        ] as const).map(([key, label]) => (
+                        {(enableWeatherLayers
+                          ? ([
+                              ["terrain", "Terreno"],
+                              ["route", "Rota"],
+                              ["metar", "METAR"],
+                              ["routeClouds", "Nuvens rota"],
+                            ] as const)
+                          : ([
+                              ["terrain", "Terreno"],
+                              ["route", "Rota"],
+                            ] as const)
+                        ).map(([key, label]) => (
                           <button
                             key={key}
                             type="button"
@@ -2231,13 +2244,18 @@ export function Route3DView({
               onPointerMissed={() => setSelection(null)}
               onCreated={({ gl }) => {
                 const canvas = gl.domElement;
+                canvas.style.touchAction = "none";
                 const onLost = (event: Event) => {
                   event.preventDefault();
                 };
+                const preventTouchScroll = (event: TouchEvent) => {
+                  event.preventDefault();
+                };
                 canvas.addEventListener("webglcontextlost", onLost, false);
+                canvas.addEventListener("touchmove", preventTouchScroll, { passive: false });
               }}
-              style={{ width: "100%", height: "100%", display: "block" }}
-              className="h-full w-full"
+              style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
+              className="h-full w-full touch-none"
             >
               <SceneContent
                 waypoints={waypoints}
@@ -2501,15 +2519,19 @@ export function Route3DView({
                 <ToggleChip active={toggles.route} onClick={() => setToggles((t) => ({ ...t, route: !t.route }))}>
                   Rota
                 </ToggleChip>
-                <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
-                  METAR
-                </ToggleChip>
-                <ToggleChip
-                  active={toggles.routeClouds}
-                  onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
-                >
-                  Nuvens rota
-                </ToggleChip>
+                {enableWeatherLayers ? (
+                  <>
+                    <ToggleChip active={toggles.metar} onClick={() => setToggles((t) => ({ ...t, metar: !t.metar }))}>
+                      METAR
+                    </ToggleChip>
+                    <ToggleChip
+                      active={toggles.routeClouds}
+                      onClick={() => setToggles((t) => ({ ...t, routeClouds: !t.routeClouds }))}
+                    >
+                      Nuvens rota
+                    </ToggleChip>
+                  </>
+                ) : null}
                 <ToggleChip
                   active={toggles.corridors}
                   disabled={displayedCorridors.length === 0 && !shouldLoadAreaLayers}

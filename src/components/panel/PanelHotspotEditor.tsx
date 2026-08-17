@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPanelInstrument } from "../../lib/panelPayload";
 import type { InstrumentShape, PanelInstrument } from "../../types/panel";
 
 type Props = {
@@ -14,10 +15,6 @@ type DragMode = "move" | "resize" | null;
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
-}
-
-function newId() {
-  return `inst_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function PanelHotspotEditor({
@@ -89,18 +86,15 @@ export function PanelHotspotEditor({
   function addInstrument() {
     if (disabled) return;
     const size = draftShape === "circle" ? 10 : 14;
-    const next: PanelInstrument = {
-      id: newId(),
+    const next = createPanelInstrument({
       name: "Novo instrumento",
-      description: "",
       shape: draftShape,
       x: 40,
       y: 35,
       w: size,
       h: draftShape === "circle" ? size : 12,
-      zoom_image_url: null,
       sort_order: instruments.length + 1,
-    };
+    });
     onChange([...instruments, next]);
     onSelect(next.id);
   }

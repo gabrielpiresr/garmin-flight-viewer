@@ -9,7 +9,16 @@ import {
   useRoutedTab,
   type TabRoute,
 } from "../../lib/routedTabs";
-import { sidebarMotionClass, sidebarRevealClass, useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
+import {
+  sidebarCompactIconClass,
+  sidebarCompactItemClass,
+  sidebarCompactLabelClass,
+  sidebarGroupLabelClass,
+  sidebarMotionClass,
+  sidebarNavScrollClass,
+  sidebarRevealClass,
+  useCollapsibleSidebar,
+} from "../../hooks/useCollapsibleSidebar";
 import { PortalShellHeader } from "../PortalShellHeader";
 import { AdminCommandBar } from "./AdminCommandBar";
 import { UserEmailWithRoleSwitcher } from "../RoleSwitcher";
@@ -178,7 +187,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "aisweb",
-    label: "AISWEB",
+    label: "Meteorologia",
     sublabel: "METAR, TAF e NOTAMs",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -759,7 +768,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsSubTab, string> = {
   propostas: "Propostas",
   wpp: "WPP",
   gopro: "GoPro",
-  aisweb: "AISWEB",
+  aisweb: "Meteorologia",
   "solo-flight": "Voo solo",
   importacoes: "Importações",
 };
@@ -853,10 +862,7 @@ export function AdminLayout() {
   const {
     collapsed: sidebarPinned,
     compact: sidebarCollapsed,
-    isPeeking,
     toggleCollapsed,
-    onSidebarMouseEnter,
-    onSidebarMouseLeave,
     railWidthClass,
     panelWidthClass,
   } = useCollapsibleSidebar();
@@ -977,11 +983,7 @@ export function AdminLayout() {
         className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
       >
       <aside
-        onMouseEnter={onSidebarMouseEnter}
-        onMouseLeave={onSidebarMouseLeave}
-        className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950/95 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
-          isPeeking ? "z-10 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
-        }`}
+        className={`absolute inset-y-0 left-0 z-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950 transition-[width] ${sidebarMotionClass} ${panelWidthClass}`}
       >
         <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
@@ -1011,11 +1013,11 @@ export function AdminLayout() {
           <p className={`${sidebarRevealClass(sidebarCollapsed, "")} text-sm font-semibold text-slate-200`}>Gestão de Frota</p>
         </div>
 
-        <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
+        <nav className={`flex min-h-0 flex-1 flex-col gap-1 py-3 ${sidebarNavScrollClass(sidebarCollapsed)} ${sidebarCollapsed ? "px-2" : "px-3"}`}>
           {permissionsLoading ? (
             // Skeleton enquanto permissões do role customizado carregam
             Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className={`flex items-center rounded-lg py-2.5 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}>
+              <div key={i} className={`flex items-center rounded-lg py-1.5 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}>
                 <div className="h-4 w-4 animate-pulse rounded bg-slate-800" />
                 {!sidebarCollapsed ? <div className="h-3 w-24 animate-pulse rounded bg-slate-800" /> : null}
               </div>
@@ -1028,8 +1030,8 @@ export function AdminLayout() {
                   .filter(Boolean) as NavItem[];
                 if (!groupItems.length) return null;
                 return (
-                  <div key={group.title} className="mb-2">
-                    <p className={`px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500 ${sidebarRevealClass(sidebarCollapsed, "")}`}>{group.title}</p>
+                  <div key={group.title} className="mb-1.5">
+                    <p className={sidebarGroupLabelClass(sidebarCollapsed)}>{group.title}</p>
                     <div className="space-y-1">
                       {groupItems.map((item) => {
                         const isActive = section === item.id;
@@ -1040,16 +1042,17 @@ export function AdminLayout() {
                             onClick={() => openSection(item.id)}
                             title={sidebarCollapsed ? item.label : undefined}
                             aria-label={sidebarCollapsed ? item.label : undefined}
-                            className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                            className={`group flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                               isActive
                                 ? SELECTED_NAV_CLASS
                                 : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
                             }`}
                           >
-                            <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
+                            <span className={sidebarCompactIconClass(sidebarCollapsed, isActive ? "" : "opacity-60 group-hover:opacity-100")}>{item.icon}</span>
                             <div className={sidebarRevealClass(sidebarCollapsed)}>
                               <p className="text-sm font-medium leading-none">{item.label}</p>
                             </div>
+                            <span className={sidebarCompactLabelClass(sidebarCollapsed)}>{item.label}</span>
                           </button>
                         );
                       })}
@@ -1068,16 +1071,17 @@ export function AdminLayout() {
                     onClick={() => openSection(settingsItem.id)}
                     title={sidebarCollapsed ? settingsItem.label : undefined}
                     aria-label={sidebarCollapsed ? settingsItem.label : undefined}
-                    className={`group mt-2 flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                    className={`group mt-1 flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                       isActive
                         ? SELECTED_NAV_CLASS
                         : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
                     }`}
                   >
-                    <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{settingsItem.icon}</span>
+                    <span className={sidebarCompactIconClass(sidebarCollapsed, isActive ? "" : "opacity-60 group-hover:opacity-100")}>{settingsItem.icon}</span>
                     <div className={sidebarRevealClass(sidebarCollapsed)}>
                       <p className="text-sm font-medium leading-none">{settingsItem.label}</p>
                     </div>
+                    <span className={sidebarCompactLabelClass(sidebarCollapsed)}>{settingsItem.label}</span>
                   </button>
                 );
               })()}

@@ -117,11 +117,29 @@ export type FlightReviewClubMembership = {
   updatedAt: string | null;
 };
 
+export type FlightReviewClubMemberkitStatus = {
+  configured: boolean;
+  granted: boolean;
+  email: string;
+  syncedAt: string | null;
+  error: string;
+  membersUrl: string;
+};
+
+export type FlightReviewClubMemberkitAccess = {
+  email: string;
+  granted: boolean;
+  authenticatedUrl: string;
+  membersUrl: string;
+  message: string;
+};
+
 export type FlightReviewClubStatus = {
   enabled: boolean;
   hasAccess: boolean;
   legacyTrackMember: boolean;
   membership: FlightReviewClubMembership | null;
+  memberkit?: FlightReviewClubMemberkitStatus | null;
 };
 
 export type FlightReviewClubTaskStatus =

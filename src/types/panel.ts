@@ -12,6 +12,10 @@ export type PanelInstrument = {
   h: number;
   zoom_image_url: string | null;
   sort_order: number;
+  /** Posição do hotspot no modelo GLB (espaço do modelo). */
+  pos_x?: number | null;
+  pos_y?: number | null;
+  pos_z?: number | null;
 };
 
 export type AircraftPanel = {
@@ -21,6 +25,8 @@ export type AircraftPanel = {
   title: string;
   panel_image_url: string;
   panel_image_file_id: string | null;
+  panel_model_url: string | null;
+  panel_model_file_id: string | null;
   instruments: PanelInstrument[];
   published: boolean;
   updated_at: string;
@@ -33,6 +39,8 @@ export type AircraftPanelInput = {
   title: string;
   panel_image_url: string;
   panel_image_file_id?: string | null;
+  panel_model_url?: string | null;
+  panel_model_file_id?: string | null;
   instruments: PanelInstrument[];
   published?: boolean;
 };

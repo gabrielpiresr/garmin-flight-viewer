@@ -8,10 +8,12 @@ import { getFlightLockStatus, signFlight } from "../lib/flightSignaturesDb";
 import { decodeFlightRecord } from "../lib/flightRecordCodec";
 import { validateFlightForInstructorSign } from "../lib/flightSignValidation";
 import { createFlightPublicShare, notifyStudentFlightReviewReady } from "../lib/publicFlightReviewShare";
+import { getCachedFlightShareData, loadFlightShareData, type FlightShareData } from "../lib/flightShareStickers";
 import { getWppDeliveryStatus } from "../lib/wppDb";
 import { StudentFlightContextPanel } from "./instructor/StudentFlightContextPanel";
 import { FlightAuditLogPanel } from "./admin/FlightAuditLogPanel";
-import { FlightShareStickersModal } from "./FlightShareStickersModal";
+import { FlightReviewClubGate } from "./FlightReviewClubGate";
+import { FlightShareStickersPanel } from "./FlightShareStickersPanel";
 import { FlightReviewTab } from "./FlightReviewTab";
 import { NovoVooFlow, type NovoVooStepId } from "./NovoVooFlow";
 import { TelemetriaTab } from "./TelemetriaTab";
@@ -23,7 +25,7 @@ const FlightRoute3DTab = lazy(() =>
   import("./FlightRoute3DTab").then((mod) => ({ default: mod.FlightRoute3DTab })),
 );
 
-export type FlightDetailSubTab = "telemetria" | "rota-3d" | "videos" | "fotos" | "ficha" | "aluno" | "auditoria" | "flight-review";
+export type FlightDetailSubTab = "telemetria" | "rota-3d" | "videos" | "fotos" | "figurinhas" | "ficha" | "aluno" | "auditoria" | "flight-review";
 type SubTab = FlightDetailSubTab;
 
 type SubTabConfig = { id: SubTab; label: string; icon: ReactNode };
@@ -67,6 +69,16 @@ const SUB_TAB_CONFIG: Record<SubTab, Omit<SubTabConfig, "id">> = {
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path d="M4.75 3.5A1.75 1.75 0 003 5.25v9.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0017 14.75v-9.5a1.75 1.75 0 00-1.75-1.75H4.75zm0 1.5h10.5c.138 0 .25.112.25.25v5.44l-2.02-2.02a1.75 1.75 0 00-2.475 0L8.5 10.174l-.52-.52a1.75 1.75 0 00-2.475 0L4.5 10.659V5.25c0-.138.112-.25.25-.25zM15.5 14.75a.25.25 0 01-.25.25H4.75a.25.25 0 01-.25-.25v-1.97l1.066-1.066a.25.25 0 01.354 0l.874.873a1 1 0 001.414 0l1.858-1.858a.25.25 0 01.354 0l3.08 3.08v.94zM13 6.75a1.25 1.25 0 11-2.5 0 1.25 1.25 0 012.5 0z" />
+      </svg>
+    ),
+  },
+  figurinhas: {
+    label: "Figurinhas",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <rect x="3" y="3" width="14" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <circle cx="13.8" cy="6.2" r="0.9" fill="currentColor" />
       </svg>
     ),
   },
@@ -135,7 +147,9 @@ export function FlightDetailView({
   const defaultSubTab = initialSubTab ?? "ficha";
   const [activeSubTab, setActiveSubTab] = useState<SubTab>(defaultSubTab);
   const [visitedSubTabs, setVisitedSubTabs] = useState<Set<SubTab>>(() => new Set([defaultSubTab]));
-  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [stickerShareData, setStickerShareData] = useState<FlightShareData | null>(null);
+  const [stickersLoading, setStickersLoading] = useState(false);
+  const [stickersError, setStickersError] = useState<string | null>(null);
   const [publicShareBusy, setPublicShareBusy] = useState(false);
   const [publicShareStatus, setPublicShareStatus] = useState<string | null>(null);
   const [studentNotifyBusy, setStudentNotifyBusy] = useState(false);
@@ -188,6 +202,42 @@ export function FlightDetailView({
     });
   }, [flightId, isInstructorUser]);
 
+  const stickersTabVisited = visitedSubTabs.has("figurinhas") || activeSubTab === "figurinhas";
+
+  useEffect(() => {
+    if (!flightId || !stickersTabVisited || gatedByClub) {
+      if (!flightId) {
+        setStickerShareData(null);
+        setStickersError(null);
+        setStickersLoading(false);
+      }
+      return;
+    }
+    const cached = getCachedFlightShareData(flightId);
+    if (cached) {
+      setStickerShareData(cached);
+      setStickersError(null);
+      setStickersLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setStickersLoading(true);
+    setStickersError(null);
+    void loadFlightShareData(flightId)
+      .then((next) => {
+        if (!cancelled) setStickerShareData(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setStickersError((err as Error).message || "Não foi possível preparar as figurinhas.");
+      })
+      .finally(() => {
+        if (!cancelled) setStickersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flightId, gatedByClub, stickersTabVisited]);
+
   const subTabs: SubTabConfig[] = useMemo(() => {
     const buildTab = (id: SubTab): SubTabConfig => ({ id, ...SUB_TAB_CONFIG[id] });
     const tabs: SubTabConfig[] = [
@@ -198,6 +248,7 @@ export function FlightDetailView({
     if (flightId) tabs.push(buildTab("flight-review"));
     tabs.push(buildTab("videos"));
     tabs.push(buildTab("fotos"));
+    if (flightId) tabs.push(buildTab("figurinhas"));
     if (canSeeStudentContext && studentUserId) tabs.push(buildTab("aluno"));
     if (canSeeAuditLog) tabs.push(buildTab("auditoria"));
     if (!allowedSubTabs?.length) return tabs;
@@ -322,22 +373,6 @@ export function FlightDetailView({
         <p className="text-sm text-slate-400">
           {flightId ? "Detalhes do voo" : "Novo voo"}
         </p>
-        {canShareFlight && (
-          <>
-            <button
-              type="button"
-              onClick={() => setShareModalOpen(true)}
-              className="inline-flex items-center gap-2 rounded-full border border-pink-500/30 bg-gradient-to-r from-fuchsia-500/15 via-pink-500/15 to-orange-400/15 px-3 py-1.5 text-sm font-semibold text-pink-100 transition hover:border-pink-400/60 hover:from-fuchsia-500/25 hover:via-pink-500/25 hover:to-orange-400/25"
-            >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="3.25" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="12" cy="12" r="4.1" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="17.3" cy="6.8" r="1.1" fill="currentColor" />
-              </svg>
-              Compartilhar
-            </button>
-          </>
-        )}
         {canCreatePublicLink && (
           <>
             <button
@@ -468,6 +503,20 @@ export function FlightDetailView({
           </div>
         ) : null}
 
+        {visitedSubTabs.has("figurinhas") && flightId ? (
+          <div hidden={activeSubTab !== "figurinhas"} className="min-h-0 min-w-0">
+            {gatedByClub ? (
+              <FlightReviewClubGate feature="figurinhas" />
+            ) : (
+              <FlightShareStickersPanel
+                shareData={stickerShareData}
+                loading={stickersLoading || (!stickerShareData && !stickersError)}
+                error={stickersError}
+              />
+            )}
+          </div>
+        ) : null}
+
         {visitedSubTabs.has("aluno") && studentUserId ? (
           <div hidden={activeSubTab !== "aluno"} className="min-h-0 min-w-0">
             <StudentFlightContextPanel studentUserId={studentUserId} currentFlightId={flightId} />
@@ -486,10 +535,6 @@ export function FlightDetailView({
           </div>
         ) : null}
       </div>
-      {flightId && shareModalOpen ? (
-        <FlightShareStickersModal flightId={flightId} onClose={() => setShareModalOpen(false)} />
-      ) : null}
-
       {showSignModal && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 px-4 py-6 sm:items-center">
           <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">

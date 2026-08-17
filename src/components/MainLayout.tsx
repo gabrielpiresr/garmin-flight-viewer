@@ -18,7 +18,16 @@ import { isFlightEvaluationEligible } from "../lib/flightEvaluationEligibility";
 import { listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
 import { DEFAULT_SCHOOL_RULES, type SchoolRules } from "../types/schoolRules";
 import type { FlightEvaluation } from "../types/flightEvaluation";
-import { sidebarMotionClass, sidebarRevealClass, useCollapsibleSidebar } from "../hooks/useCollapsibleSidebar";
+import {
+  sidebarCompactIconClass,
+  sidebarCompactItemClass,
+  sidebarCompactLabelClass,
+  sidebarGroupLabelClass,
+  sidebarMotionClass,
+  sidebarNavScrollClass,
+  sidebarRevealClass,
+  useCollapsibleSidebar,
+} from "../hooks/useCollapsibleSidebar";
 import { PortalShellHeader } from "./PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
 import { SidebarBrand } from "./SidebarBrand";
@@ -39,6 +48,7 @@ const HelpCenterTab = lazy(() => import("./HelpCenterTab").then((module) => ({ d
 const JornadaTab = lazy(() => import("./JornadaTab").then((module) => ({ default: module.JornadaTab })));
 const ManobrasTab = lazy(() => import("./ManobrasTab").then((module) => ({ default: module.ManobrasTab })));
 const ManuaisTab = lazy(() => import("./ManuaisTab").then((module) => ({ default: module.ManuaisTab })));
+const FrcTrainingTab = lazy(() => import("./FrcTrainingTab").then((module) => ({ default: module.FrcTrainingTab })));
 const MeusVoosTab = lazy(() => import("./MeusVoosTab").then((module) => ({ default: module.MeusVoosTab })));
 const NoticeFeed = lazy(() => import("./NoticeFeed").then((module) => ({ default: module.NoticeFeed })));
 const StudentDreTab = lazy(() => import("./StudentDreTab").then((module) => ({ default: module.StudentDreTab })));
@@ -162,6 +172,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: "treinamento-frc",
+    label: "Treinamento FRC",
+    sublabel: "Cursos e e-books exclusivos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        <path d="M4.5 4.5A2.25 2.25 0 016.75 2.25h10.5A2.25 2.25 0 0119.5 4.5v15a.75.75 0 01-1.14.64L12 16.25l-6.36 3.89a.75.75 0 01-1.14-.64v-15z" />
+      </svg>
+    ),
+  },
+  {
     id: "manobras",
     label: "Manobras",
     sublabel: "Material de estudo",
@@ -267,7 +287,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "aisweb",
-    label: "AISWEB",
+    label: "Meteorologia",
     sublabel: "METAR, TAF e NOTAMs",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -336,6 +356,7 @@ const SECTION_ROUTES = [
   { id: "creditos", path: "/aluno/creditos", aliases: ["/aluno/creditos/comprar"] },
   { id: "avisos", path: "/aluno/avisos" },
   { id: "manuais", path: "/aluno/manuais" },
+  { id: "treinamento-frc", path: "/aluno/treinamento-frc" },
   { id: "manobras", path: "/aluno/manobras" },
   { id: "provas", path: "/aluno/provas" },
   { id: "fpl-sim", path: "/aluno/simulador-fpl" },
@@ -356,10 +377,10 @@ const SECTION_ROUTES = [
 ] satisfies readonly TabRoute<Section>[];
 
 const DESKTOP_NAV_GROUPS: Array<{ label: string; ids: StudentSection[] }> = [
-  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb", "planejamento", "whatsapp"] },
-  { label: "Evoluir", ids: ["jornada", "manobras", "provas", "fpl-sim", "painel", "manuais", "avisos", "album"] },
-  { label: "Conta", ids: ["creditos", "marketplace", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe"] },
-  { label: "Suporte", ids: ["ajuda"] },
+  { label: "Voar", ids: ["home", "schedule", "meus-voos", "agendamento", "aisweb", "planejamento", "painel"] },
+  { label: "Evoluir", ids: ["jornada", "treinamento-frc", "manobras", "manuais", "fpl-sim", "provas"] },
+  { label: "Conta", ids: ["creditos", "marketplace", "contratos", "dre", "fuelings", "perfil", "endossos", "indique-ganhe", "album"] },
+  { label: "Suporte", ids: ["ajuda", "whatsapp", "avisos"] },
 ];
 
 const MOBILE_PRIMARY_NAV: StudentSection[] = ["home", "schedule", "meus-voos", "jornada"];
@@ -379,7 +400,7 @@ function LazyTab({ section, children }: { section: StudentSection; children: Rea
 }
 
 function StudentSectionTab({ section, locked, children }: { section: StudentSection; locked: boolean; children: ReactNode }) {
-  if (locked) return <FlightReviewClubGate />;
+  if (locked) return <FlightReviewClubGate feature={section} />;
   return <LazyTab section={section}>{children}</LazyTab>;
 }
 
@@ -528,10 +549,7 @@ export function MainLayout() {
   const {
     collapsed: sidebarPinned,
     compact: sidebarCollapsed,
-    isPeeking,
     toggleCollapsed,
-    onSidebarMouseEnter,
-    onSidebarMouseLeave,
     railWidthClass,
     panelWidthClass,
   } = useCollapsibleSidebar();
@@ -777,11 +795,7 @@ export function MainLayout() {
         className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
       >
       <aside
-        onMouseEnter={onSidebarMouseEnter}
-        onMouseLeave={onSidebarMouseLeave}
-        className={`school-themed-surface absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
-          isPeeking ? "z-10 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
-        }`}
+        className={`school-themed-sidebar absolute inset-y-0 left-0 z-0 flex h-full flex-col overflow-hidden border-r border-slate-800 transition-[width] ${sidebarMotionClass} ${panelWidthClass}`}
       >
         <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center transition-[justify-content,gap] ${sidebarMotionClass} ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
@@ -811,10 +825,10 @@ export function MainLayout() {
           <p className={`${sidebarRevealClass(sidebarCollapsed, "")} text-sm font-semibold text-slate-200`}>Operação de voo</p>
         </div>
 
-        <nav className={`flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
+        <nav className={`flex min-h-0 flex-1 flex-col gap-2.5 py-3 ${sidebarNavScrollClass(sidebarCollapsed)} ${sidebarCollapsed ? "px-2" : "px-3"}`}>
           {desktopNavGroups.map((group) => (
             <div key={group.label} className="space-y-1">
-              <p className={`${sidebarCollapsed ? "sr-only" : "px-3 text-[10px] font-semibold uppercase tracking-widest text-slate-600"}`}>
+              <p className={sidebarGroupLabelClass(sidebarCollapsed)}>
                 {group.label}
               </p>
               {group.items.map((item) => {
@@ -826,16 +840,17 @@ export function MainLayout() {
                     onClick={() => openSection(item.id)}
                     title={sidebarCollapsed ? item.label : undefined}
                     aria-label={sidebarCollapsed ? item.label : undefined}
-                    className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                    className={`group flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                       isActive
                         ? SELECTED_NAV_CLASS
                         : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
                     }`}
                   >
-                    <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
+                    <span className={sidebarCompactIconClass(sidebarCollapsed, isActive ? "" : "opacity-60 group-hover:opacity-100")}>{item.icon}</span>
                     <div className={sidebarRevealClass(sidebarCollapsed)}>
                       <p className="text-sm font-medium leading-none">{item.label}</p>
                     </div>
+                    <span className={sidebarCompactLabelClass(sidebarCollapsed)}>{item.label}</span>
                   </button>
                 );
               })}
@@ -849,9 +864,9 @@ export function MainLayout() {
                 rel="noopener noreferrer"
                 title={sidebarCollapsed ? "Flight Review Club" : undefined}
                 aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
-                className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+                className={`group flex w-full items-center rounded-lg border border-transparent text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)}`}
               >
-                <span className="opacity-70 group-hover:opacity-100">
+                <span className={sidebarCompactIconClass(sidebarCollapsed, "opacity-70 group-hover:opacity-100")}>
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                     <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
                   </svg>
@@ -859,6 +874,7 @@ export function MainLayout() {
                 <div className={sidebarRevealClass(sidebarCollapsed)}>
                   <p className="text-sm font-medium leading-none">Flight Review Club</p>
                 </div>
+                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Flight Review Club</span>
               </a>
             ) : (
               <button
@@ -866,11 +882,11 @@ export function MainLayout() {
                 onClick={openClubSection}
                 title={sidebarCollapsed ? "Flight Review Club" : undefined}
                 aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
-                className={`group flex w-full items-center rounded-lg border py-2.5 text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                className={`group flex w-full items-center rounded-lg border text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)} ${
                   section === "flight-review-club" ? "border-amber-600/60 bg-amber-500/10 text-amber-200" : "border-transparent"
                 }`}
               >
-                <span className={section === "flight-review-club" ? "" : "opacity-70 group-hover:opacity-100"}>
+                <span className={sidebarCompactIconClass(sidebarCollapsed, section === "flight-review-club" ? "" : "opacity-70 group-hover:opacity-100")}>
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                     <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
                   </svg>
@@ -878,6 +894,7 @@ export function MainLayout() {
                 <div className={sidebarRevealClass(sidebarCollapsed)}>
                   <p className="text-sm font-medium leading-none">Flight Review Club</p>
                 </div>
+                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Flight Review Club</span>
               </button>
             )
           ) : null}
@@ -888,9 +905,9 @@ export function MainLayout() {
               rel="noopener noreferrer"
               title={sidebarCollapsed ? "Manual do Aluno" : undefined}
               aria-label={sidebarCollapsed ? "Manual do Aluno" : undefined}
-              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+              className={`group flex w-full items-center rounded-lg border border-transparent text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCompactItemClass(sidebarCollapsed)}`}
             >
-              <span className="opacity-70 group-hover:opacity-100">
+              <span className={sidebarCompactIconClass(sidebarCollapsed, "opacity-70 group-hover:opacity-100")}>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                 </svg>
@@ -898,6 +915,7 @@ export function MainLayout() {
               <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">Manual do Aluno</p>
               </div>
+              <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Manual do Aluno</span>
             </a>
           ) : null}
         </nav>
@@ -1004,6 +1022,13 @@ export function MainLayout() {
             <div hidden={pageSection !== "manuais"}>
               <StudentSectionTab section="manuais" locked={isStudentTabLocked("manuais")}>
                 <ManuaisTab />
+              </StudentSectionTab>
+            </div>
+          )}
+          {openedSections.has("treinamento-frc") && (
+            <div hidden={pageSection !== "treinamento-frc"}>
+              <StudentSectionTab section="treinamento-frc" locked={false}>
+                <FrcTrainingTab courses={rules.flightReviewClub.trainingCourses} loading={!rulesLoaded} />
               </StudentSectionTab>
             </div>
           )}

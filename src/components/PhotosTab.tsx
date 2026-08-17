@@ -551,7 +551,7 @@ export function PhotosTab({
 }
 
 function FlightReviewClubGateWrapper({ locked, children }: { locked: boolean; children: ReactNode }) {
-  return locked ? <FlightReviewClubGate>{children}</FlightReviewClubGate> : <>{children}</>;
+  return locked ? <FlightReviewClubGate feature="fotos">{children}</FlightReviewClubGate> : <>{children}</>;
 }
 
 function UploadStatus({ status }: { status: UploadItemStatus }) {

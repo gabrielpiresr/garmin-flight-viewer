@@ -2576,6 +2576,7 @@ var TELEMETRY_SERIES = [
   { key: "vnavAltFt", label: "VNAV alt", patterns: [/^vnav\s*altitude/i], color: "#f472b6" },
   { key: "densityAltFt", label: "Densidade", patterns: [/^density\s*altitude/i], color: "#94a3b8" },
   { key: "heightAglFt", label: "AGL", patterns: [/^height\s*above\s*ground/i], color: "#fb923c" },
+  { key: "terrainFt", label: "Terreno", patterns: [/^terrain$/i], color: "#ca8a04" },
   { key: "gsKt", label: "GS GPS", patterns: [/^gps\s*ground\s*speed/i], color: "#a78bfa" },
   { key: "iasKt", label: "IAS", patterns: [/^indicated\s*airspeed/i], color: "#22d3ee" },
   { key: "tasKt", label: "TAS", patterns: [/^true\s*airspeed/i], color: "#34d399" },
@@ -2623,7 +2624,7 @@ var TELEMETRY_SERIES = [
   { key: "apRollCmd", label: "AP roll", patterns: [/^ap\s*roll\s*command/i], color: "#f472b6" }
 ];
 var TELEMETRY_PANELS = [
-  { id: "alt", title: "Altitude", yUnit: "ft", seriesKeys: ["gpsAltFt", "pressAltFt", "baroAltFt", "selectedAltFt", "vnavAltFt", "densityAltFt", "heightAglFt"] },
+  { id: "alt", title: "Altitude", yUnit: "ft", seriesKeys: ["gpsAltFt", "pressAltFt", "baroAltFt", "selectedAltFt", "vnavAltFt", "densityAltFt", "heightAglFt", "terrainFt"] },
   { id: "spd", title: "Velocidade", yUnit: "kt", seriesKeys: ["gsKt", "iasKt", "tasKt", "selectedAsKt"] },
   { id: "vs", title: "Velocidade vertical", yUnit: "ft/min", seriesKeys: ["vertSpeedFpm", "selectedVsFpm", "apVsFpm"] },
   { id: "att", title: "Atitude", yUnit: "\xB0", seriesKeys: ["pitchDeg", "rollDeg", "pitchDeltaDeg", "rollDeltaDeg"] },

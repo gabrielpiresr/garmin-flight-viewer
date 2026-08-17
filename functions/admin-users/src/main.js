@@ -14736,7 +14736,10 @@ const STUDENT_PORTAL_TABS = [
   "creditos",
   "avisos",
   "manuais",
+  "treinamento-frc",
   "manobras",
+  "provas",
+  "fpl-sim",
   "ajuda",
   "endossos",
   "perfil",
@@ -14746,6 +14749,7 @@ const STUDENT_PORTAL_TABS = [
   "whatsapp",
   "album",
   "painel",
+  "marketplace",
   "dre",
   "fuelings",
   "contratos",
@@ -15755,48 +15759,74 @@ function defaultEmailBrandSettings() {
   };
 }
 
+const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "marketplace", "kit"];
+
 const DEFAULT_LP_SECTIONS = [
-  { id: "revisao", eyebrow: "Revisão do voo", title: "Cada aula vira dado, gráfico e um link para mostrar o voo.", copy: "Telemetria, Flight Review e página pública — o mesmo fluxo que o aluno já usa no portal, agora no pacote do clube." },
-  { id: "agenda", eyebrow: "Planejamento e agenda", title: "Prepare a navegação e reserve com 30 dias de antecedência.", copy: "Rotas, METAR e AISWEB no planejamento. Na agenda, o FRC abre a janela que o aluno comum não vê." },
-  { id: "jornada", eyebrow: "Jornada, figurinhas e álbum", title: "Histórico da formação, cards para WhatsApp e o acervo do voo.", copy: "Missões da trilha, figurinhas com rota e altitude, vídeos com fonia e fotos — tudo no mesmo lugar." },
-  { id: "escola", eyebrow: "Kit da escola", title: "Camiseta, crachá, curso EAD e webinar todo mês.", copy: "Entregas manuais da escola entram no checklist do FRC: o aluno assina, a operação registra cada item." },
-  { id: "vantagens", eyebrow: "Parcerias e marketplace", title: "NexAtlas, Clube 360 e preço FRC na loja da escola.", copy: "Parcerias liberadas no fluxo interno. No marketplace, o desconto do clube aparece no card do produto." },
-  { id: "assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago. Benefícios como NexAtlas e Clube 360 entram no fluxo manual da escola." },
+  { id: "gravacao", navLabel: "Gravação", eyebrow: "Gravação dos voos", title: "Fonia, telemetria, figurinhas, link público e fotos.", copy: "Cada voo vira um pacote completo: áudio, dados, cards para WhatsApp, página para compartilhar e o álbum de fotos." },
+  { id: "agenda", navLabel: "Agenda", eyebrow: "Agendamento", title: "Reserve com 30 dias de antecedência.", copy: "Integrantes do FRC abrem a agenda além da janela dos demais alunos e chegam mais cedo na escala." },
+  { id: "premium", navLabel: "Premium", eyebrow: "Plataforma premium", title: "Recursos exclusivos e 1 webinar por mês.", copy: "Além das funcionalidades premium no portal, o clube inclui um webinar exclusivo todo mês." },
+  { id: "parceiros", navLabel: "Parceiros", eyebrow: "Parceiros", title: "Acesso ao Clube 360 e ao NexAtlas.", copy: "Parcerias da escola liberadas para quem assina o Flight Review Club." },
+  { id: "marketplace", navLabel: "Loja", eyebrow: "Marketplace", title: "Desconto exclusivo na loja da escola.", copy: "O preço FRC aparece no card do produto para integrantes do clube." },
+  { id: "kit", navLabel: "Kit", eyebrow: "Kit da escola", title: "Camisa e crachá exclusivos.", copy: "Na primeira assinatura, a escola entrega a camisa e o crachá do Flight Review Club." },
+  { id: "assinar", navLabel: "Assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago." },
 ];
 
 const DEFAULT_LP_SCREENSHOT_ITEMS = [
-  { id: "telemetry", title: "Telemetria", description: "Dados do voo em gráficos.", imageUrl: "" },
-  { id: "share", title: "Link público", description: "Página compartilhável do Flight Review.", imageUrl: "" },
-  { id: "review", title: "Flight Review", description: "Manobras e pontos de melhoria.", imageUrl: "" },
-  { id: "planning", title: "Planejamento", description: "Rotas, aeródromos e meteorologia.", imageUrl: "" },
-  { id: "schedule", title: "Agenda", description: "Reserva com antecedência de 30 dias.", imageUrl: "" },
-  { id: "journey", title: "Jornada", description: "Missões e progresso da formação.", imageUrl: "" },
-  { id: "stickers", title: "Figurinhas", description: "Cards e animações do voo.", imageUrl: "" },
-  { id: "album", title: "Álbum", description: "Vídeos com fonia e fotos.", imageUrl: "" },
-  { id: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "" },
+  { id: "telemetry", sectionId: "gravacao", title: "Telemetria", description: "Dados do voo em gráficos.", imageUrl: "", frameUrl: "epeac.app / telemetria", mockupId: "telemetry" },
+  { id: "share", sectionId: "gravacao", title: "Link público", description: "Página compartilhável do Flight Review.", imageUrl: "", frameUrl: "epeac.app / share", mockupId: "share" },
+  { id: "review", sectionId: "gravacao", title: "Flight Review", description: "Manobras e pontos de melhoria.", imageUrl: "", frameUrl: "epeac.app / flight-review", mockupId: "review" },
+  { id: "stickers", sectionId: "gravacao", title: "Figurinhas", description: "Cards e animações do voo.", imageUrl: "", frameUrl: "epeac.app / figurinhas", mockupId: "stickers" },
+  { id: "album", sectionId: "gravacao", title: "Álbum", description: "Vídeos com fonia e fotos.", imageUrl: "", frameUrl: "epeac.app / album", mockupId: "album" },
+  { id: "planning", sectionId: "agenda", title: "Planejamento", description: "Rotas, aeródromos e meteorologia.", imageUrl: "", frameUrl: "epeac.app / planejamento", mockupId: "planning" },
+  { id: "schedule", sectionId: "agenda", title: "Agenda", description: "Reserva com antecedência de 30 dias.", imageUrl: "", frameUrl: "epeac.app / agendamento", mockupId: "schedule" },
+  { id: "journey", sectionId: "premium", title: "Portal premium", description: "Funcionalidades exclusivas da plataforma.", imageUrl: "", frameUrl: "epeac.app / jornada", mockupId: "journey" },
+  { id: "webinar", sectionId: "premium", title: "Webinar", description: "Encontro exclusivo todo mês.", imageUrl: "", frameUrl: "epeac.app / webinar", mockupId: "webinar" },
+  { id: "partners", sectionId: "parceiros", title: "Parceiros", description: "Clube 360 e NexAtlas.", imageUrl: "", frameUrl: "epeac.app / parceiros", mockupId: "partners" },
+  { id: "marketplace", sectionId: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "", frameUrl: "epeac.app / marketplace", mockupId: "marketplace" },
+  { id: "kit", sectionId: "kit", title: "Camisa e crachá", description: "Kit da escola na primeira assinatura.", imageUrl: "", frameUrl: "epeac.app / kit", mockupId: "kit" },
 ];
 
 const LEGACY_LP_SCREENSHOT_IDS = ["telemetry", "share", "planning", "journey", "album", "marketplace"];
+const LP_MOCKUP_IDS = ["telemetry", "share", "review", "planning", "schedule", "journey", "stickers", "album", "marketplace", "webinar", "partners", "kit"];
+
+function classifyLpBenefitSection(text) {
+  const value = String(text || "").toLowerCase();
+  if (/(agenda|anteced|planej)/.test(value)) return "agenda";
+  if (/(nexatlas|clube 360)/.test(value)) return "parceiros";
+  if (/(marketplace|desconto)/.test(value)) return "marketplace";
+  if (/(camiseta|camisa|crach)/.test(value)) return "kit";
+  if (/(webinar|ead|curso|jornada|premium|funcionalidade)/.test(value)) return "premium";
+  return "gravacao";
+}
 
 function sanitizeLpScreenshotItems(raw, defaults = DEFAULT_LP_SCREENSHOT_ITEMS) {
-  const list = Array.isArray(raw) ? raw : [];
-  const byId = new Map();
-  list.forEach((item, index) => {
+  if (!Array.isArray(raw)) return defaults.map((item) => ({ ...item }));
+  if (raw.length === 0) return [];
+  const defaultsById = new Map(defaults.map((slot) => [slot.id, slot]));
+  const seen = new Set();
+  const result = [];
+  raw.forEach((item, index) => {
     const id = (cleanString(item?.id) || LEGACY_LP_SCREENSHOT_IDS[index] || `shot-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const slot = defaultsById.get(id);
     const title = cleanString(item?.title).slice(0, 120);
     const imageUrl = cleanString(item?.imageUrl).slice(0, 2048);
-    if (!title && !imageUrl) return;
-    byId.set(id, {
+    const sectionId = cleanString(item?.sectionId);
+    const mockupId = cleanString(item?.mockupId).slice(0, 64);
+    const resolvedSection = LP_FEATURE_SECTION_IDS.includes(sectionId) ? sectionId : slot?.sectionId;
+    if (!resolvedSection) return;
+    result.push({
       id,
-      title: title || id,
-      description: cleanString(item?.description).slice(0, 400),
+      sectionId: resolvedSection,
+      title: title || slot?.title || "Print",
+      description: cleanString(item?.description).slice(0, 400) || slot?.description || "",
       imageUrl,
+      frameUrl: cleanString(item?.frameUrl).slice(0, 120) || slot?.frameUrl || "epeac.app",
+      mockupId: LP_MOCKUP_IDS.includes(mockupId) ? mockupId : (slot?.mockupId || ""),
     });
   });
-  return defaults.map((slot) => {
-    const saved = byId.get(slot.id);
-    return saved ? { ...slot, ...saved, id: slot.id } : { ...slot };
-  });
+  return result.slice(0, 30);
 }
 
 function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
@@ -15807,6 +15837,7 @@ function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
     if (!defaults.some((section) => section.id === id)) return;
     byId.set(id, {
       id,
+      navLabel: cleanString(item?.navLabel).slice(0, 40),
       eyebrow: cleanString(item?.eyebrow).slice(0, 80),
       title: cleanString(item?.title).slice(0, 180),
       copy: cleanString(item?.copy).slice(0, 600),
@@ -15816,6 +15847,7 @@ function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
     const saved = byId.get(section.id);
     return {
       id: section.id,
+      navLabel: saved?.navLabel || section.navLabel,
       eyebrow: saved?.eyebrow || section.eyebrow,
       title: saved?.title || section.title,
       copy: saved?.copy || section.copy,
@@ -15825,7 +15857,7 @@ function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
 
 function defaultSchoolRules() {
   return {
-    studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, !["planejamento", "whatsapp"].includes(tab)])),
+    studentTabs: Object.fromEntries(STUDENT_PORTAL_TABS.map((tab) => [tab, !["planejamento", "whatsapp", "marketplace"].includes(tab)])),
     theme: {
       primaryColor: "#10b981",
       accentColor: "#38bdf8",
@@ -15883,25 +15915,27 @@ function defaultSchoolRules() {
       billingMode: "both",
       caktoSubscriptionProductId: "",
       benefits: [
-        "Análise da telemetria de cada voo.",
-        "Link público para compartilhamento do voo.",
-        "Curso de Segurança de Voo EAD.",
-        "Camiseta da escola + crachá exclusivo na primeira assinatura.",
-        "Acesso gratuito ao NexAtlas (etapa manual).",
-        "Acesso gratuito ao Clube 360 (etapa manual).",
-        "Descontos no Marketplace da epeac.",
-        "Pelo menos 1 webinar por mês exclusivo para integrantes.",
-        "Agendamento antecipado para voos com até 30 dias de antecedência.",
-        "Planejamento de voo e rotas.",
-        "Figurinhas e animações dos voos.",
-        "Jornada gamificada com histórico detalhado.",
-        "Vídeos com fonia e fotos dos voos.",
+        "Gravação dos voos com fonia.",
+        "Telemetria de cada voo.",
+        "Figurinhas e animações.",
+        "Link público para compartilhar o voo.",
+        "Acesso às fotos do voo.",
+        "Agendamento com 30 dias de antecedência.",
+        "Funcionalidades premium na plataforma.",
+        "1 webinar exclusivo por mês.",
+        "Acesso ao Clube 360.",
+        "Acesso ao NexAtlas.",
+        "Desconto no marketplace.",
+        "Camisa da escola.",
+        "Crachá exclusivo.",
       ],
       ctaSubscriptionUrl: "",
       adhesionTermUrl: "",
       trialFlightCount: 100,
       lpHeroTitle: "Flight Review Club",
       lpHeroSubtitle: "Assine o pacote premium para revisar cada voo com telemetria, vídeos, fotos, planejamento, benefícios manuais e vantagens exclusivas da escola.",
+      lpHeroEyebrow: "Assinatura premium de formação",
+      lpHeroChips: ["Gravação", "Agenda 30 dias", "Premium", "Parceiros", "Marketplace", "Kit"],
       lpCoverImageUrl: "",
       lpCtaLabel: "Assinar o Flight Review Club",
       lpValueProps: [
@@ -15910,19 +15944,19 @@ function defaultSchoolRules() {
         "Acompanhe sua jornada com histórico, figurinhas e registros visuais dos seus voos.",
       ],
       lpBenefitItems: [
-        { text: "Análise da telemetria de cada voo", imageUrl: "" },
-        { text: "Link público para compartilhamento do voo", imageUrl: "" },
-        { text: "Curso de Segurança de Voo EAD", imageUrl: "" },
-        { text: "Camiseta da escola + crachá exclusivo na primeira assinatura", imageUrl: "" },
-        { text: "Acesso gratuito ao NexAtlas (etapa manual)", imageUrl: "" },
-        { text: "Acesso gratuito ao Clube 360 (etapa manual)", imageUrl: "" },
-        { text: "Descontos no Marketplace da epeac", imageUrl: "" },
-        { text: "Pelo menos 1 webinar por mês exclusivo para integrantes", imageUrl: "" },
-        { text: "Agendamento antecipado para voos com até 30 dias de antecedência", imageUrl: "" },
-        { text: "Planejamento de voo e rotas", imageUrl: "" },
-        { text: "Figurinhas e animações dos voos", imageUrl: "" },
-        { text: "Jornada gamificada com histórico detalhado", imageUrl: "" },
-        { text: "Vídeos com fonia e fotos dos voos", imageUrl: "" },
+        { sectionId: "gravacao", text: "Gravação dos voos com fonia", imageUrl: "" },
+        { sectionId: "gravacao", text: "Telemetria de cada voo", imageUrl: "" },
+        { sectionId: "gravacao", text: "Figurinhas e animações", imageUrl: "" },
+        { sectionId: "gravacao", text: "Link público para compartilhar o voo", imageUrl: "" },
+        { sectionId: "gravacao", text: "Acesso às fotos do voo", imageUrl: "" },
+        { sectionId: "agenda", text: "Agendamento com 30 dias de antecedência", imageUrl: "" },
+        { sectionId: "premium", text: "Funcionalidades premium na plataforma", imageUrl: "" },
+        { sectionId: "premium", text: "1 webinar exclusivo por mês", imageUrl: "" },
+        { sectionId: "parceiros", text: "Acesso ao Clube 360", imageUrl: "" },
+        { sectionId: "parceiros", text: "Acesso ao NexAtlas", imageUrl: "" },
+        { sectionId: "marketplace", text: "Desconto no marketplace", imageUrl: "" },
+        { sectionId: "kit", text: "Camisa da escola", imageUrl: "" },
+        { sectionId: "kit", text: "Crachá exclusivo", imageUrl: "" },
       ],
       lpScreenshotItems: DEFAULT_LP_SCREENSHOT_ITEMS.map((item) => ({ ...item })),
       lpSections: DEFAULT_LP_SECTIONS.map((item) => ({ ...item })),
@@ -15938,6 +15972,7 @@ function defaultSchoolRules() {
       pricingRules: [],
       subscriptionPlans: FRC_PLAN_DEFAULTS.map((plan) => ({ ...plan, amount: 0, enabled: false })),
       exclusiveStudentTabs: [],
+      trainingCourses: [],
     },
     soloFlight: DEFAULT_SOLO_FLIGHT_RULES,
   };
@@ -16190,6 +16225,48 @@ function sanitizeSoloFlightRules(input) {
   };
 }
 
+function sanitizeFrcTrainingLessonKind(value) {
+  return value === "pdf" ? "pdf" : "vimeo";
+}
+
+function sanitizeFrcTrainingCourses(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((course, index) => {
+      const id = (cleanString(course?.id) || `frc-course-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+      const title = cleanString(course?.title).slice(0, 140);
+      const lessons = Array.isArray(course?.lessons) ? course.lessons : [];
+      return {
+        id,
+        title,
+        description: cleanString(course?.description).slice(0, 800),
+        coverImageUrl: cleanString(course?.coverImageUrl).slice(0, 2048),
+        enabled: course?.enabled !== false,
+        sortOrder: Number.isFinite(Number(course?.sortOrder)) ? Math.round(Number(course.sortOrder)) : index,
+        lessons: lessons
+          .map((lesson, lessonIndex) => {
+            const lessonId = (cleanString(lesson?.id) || `${id}-lesson-${lessonIndex + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+            const kind = sanitizeFrcTrainingLessonKind(lesson?.kind);
+            return {
+              id: lessonId,
+              title: cleanString(lesson?.title).slice(0, 140),
+              description: cleanString(lesson?.description).slice(0, 600),
+              kind,
+              vimeoUrl: cleanString(lesson?.vimeoUrl).slice(0, 2048),
+              pdfUrl: cleanString(lesson?.pdfUrl).slice(0, 2048),
+              durationLabel: cleanString(lesson?.durationLabel).slice(0, 40),
+              enabled: lesson?.enabled !== false,
+            };
+          })
+          .filter((lesson) => lesson.id && lesson.title && (lesson.kind === "pdf" ? lesson.pdfUrl : lesson.vimeoUrl))
+          .slice(0, 80),
+      };
+    })
+    .filter((course) => course.id && course.title)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .slice(0, 40);
+}
+
 function publicSchoolRules(settings, updatedAt) {
   const defaults = defaultSchoolRules();
   const minRequestHours = Math.max(0.5, sanitizeHours(settings?.schedule?.minRequestHours, defaults.schedule.minRequestHours));
@@ -16314,13 +16391,17 @@ function publicSchoolRules(settings, updatedAt) {
         : defaults.flightReviewClub.billingMode,
       caktoSubscriptionProductId: cleanString(settings?.flightReviewClub?.caktoSubscriptionProductId).slice(0, 128),
       benefits: Array.isArray(settings?.flightReviewClub?.benefits)
-        ? settings.flightReviewClub.benefits.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 20)
+        ? settings.flightReviewClub.benefits.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 40)
         : [],
       ctaSubscriptionUrl: cleanString(settings?.flightReviewClub?.ctaSubscriptionUrl).slice(0, 2048),
       adhesionTermUrl: cleanString(settings?.flightReviewClub?.adhesionTermUrl).slice(0, 2048),
       trialFlightCount: (() => { const n = Number(settings?.flightReviewClub?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
       lpHeroTitle: cleanString(settings?.flightReviewClub?.lpHeroTitle).slice(0, 180) || defaults.flightReviewClub.lpHeroTitle,
       lpHeroSubtitle: cleanString(settings?.flightReviewClub?.lpHeroSubtitle).slice(0, 600) || defaults.flightReviewClub.lpHeroSubtitle,
+      lpHeroEyebrow: cleanString(settings?.flightReviewClub?.lpHeroEyebrow).slice(0, 80) || defaults.flightReviewClub.lpHeroEyebrow,
+      lpHeroChips: Array.isArray(settings?.flightReviewClub?.lpHeroChips)
+        ? settings.flightReviewClub.lpHeroChips.map((chip) => cleanString(chip).slice(0, 40)).filter(Boolean).slice(0, 12)
+        : defaults.flightReviewClub.lpHeroChips,
       lpCoverImageUrl: cleanString(settings?.flightReviewClub?.lpCoverImageUrl).slice(0, 2048),
       lpCtaLabel: cleanString(settings?.flightReviewClub?.lpCtaLabel).slice(0, 80) || defaults.flightReviewClub.lpCtaLabel,
       lpValueProps: Array.isArray(settings?.flightReviewClub?.lpValueProps)
@@ -16328,12 +16409,17 @@ function publicSchoolRules(settings, updatedAt) {
         : [],
       lpBenefitItems: Array.isArray(settings?.flightReviewClub?.lpBenefitItems)
         ? settings.flightReviewClub.lpBenefitItems
-            .map((item) => ({
-              text: cleanString(item?.text).slice(0, 500),
-              imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
-            }))
+            .map((item) => {
+              const text = cleanString(item?.text).slice(0, 500);
+              const sectionId = cleanString(item?.sectionId);
+              return {
+                sectionId: LP_FEATURE_SECTION_IDS.includes(sectionId) ? sectionId : classifyLpBenefitSection(text),
+                text,
+                imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
+              };
+            })
             .filter((item) => item.text)
-            .slice(0, 20)
+            .slice(0, 40)
         : defaults.flightReviewClub.lpBenefitItems,
       lpScreenshotItems: sanitizeLpScreenshotItems(settings?.flightReviewClub?.lpScreenshotItems, defaults.flightReviewClub.lpScreenshotItems),
       lpSections: sanitizeLpSections(settings?.flightReviewClub?.lpSections, defaults.flightReviewClub.lpSections),
@@ -16387,6 +16473,7 @@ function publicSchoolRules(settings, updatedAt) {
       exclusiveStudentTabs: Array.isArray(settings?.flightReviewClub?.exclusiveStudentTabs)
         ? [...new Set(settings.flightReviewClub.exclusiveStudentTabs.map((tab) => cleanString(tab)).filter((tab) => STUDENT_PORTAL_TABS.includes(tab)))]
         : [],
+      trainingCourses: sanitizeFrcTrainingCourses(settings?.flightReviewClub?.trainingCourses),
     },
     flightEvaluation: (() => {
       const defaults = {
@@ -21656,7 +21743,14 @@ async function saveSchoolRules(input) {
     throw Object.assign(new Error("Colecao de configuracoes da plataforma nao configurada."), { status: 500 });
   }
   const sanitized = sanitizeSchoolRulesInput(input);
-  const { updatedAt, ...settings } = sanitized;
+  const { updatedAt, ...settingsWithHeavyFrcContent } = sanitized;
+  const settings = {
+    ...settingsWithHeavyFrcContent,
+    flightReviewClub: {
+      ...settingsWithHeavyFrcContent.flightReviewClub,
+      trainingCourses: [],
+    },
+  };
   const data = { key: SCHOOL_RULES_KEY, settings_json: JSON.stringify(settings) };
   const current = await loadSchoolRules();
   const doc = current.doc
@@ -24119,6 +24213,73 @@ async function syncAllFlightReviewClubMemberkitAccess(log = () => undefined) {
   return summary;
 }
 
+async function getFlightReviewClubMemberkitPublicStatus(studentUserId) {
+  const configured = memberkit.memberkitConfigured();
+  const contact = await resolveMemberkitContact(studentUserId).catch(() => ({ email: "", fullName: "" }));
+  const docs = await listStudentFlightReviewClubMemberships(studentUserId);
+  const preferred = selectPreferredFlightReviewClubMembership(docs.map(mapFlightReviewClubMembership).filter(Boolean));
+  const membershipDoc = docs.find((doc) => doc.$id === preferred?.id) || docs[0] || null;
+  const snapshot = memberkit.parseJsonObject(membershipDoc?.metadata_json).memberkit || {};
+  return {
+    configured,
+    granted: cleanString(snapshot.status) === "active",
+    email: cleanString(contact.email),
+    syncedAt: cleanString(snapshot.syncedAt) || null,
+    error: cleanString(snapshot.error),
+    membersUrl: "https://membros.naproa360.com.br",
+  };
+}
+
+async function requestFlightReviewClubMemberkitAccess(actorUserId) {
+  if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
+  if (!memberkit.memberkitConfigured()) {
+    throw Object.assign(new Error("Integracao Memberkit nao configurada."), { status: 503 });
+  }
+  const status = await getFlightReviewClubStatus(actorUserId);
+  if (!status.hasAccess) {
+    throw Object.assign(new Error("Assine o Flight Review Club para liberar o Clube 360."), { status: 403 });
+  }
+  const contact = await resolveMemberkitContact(actorUserId);
+  if (!contact.email || !contact.email.includes("@")) {
+    throw Object.assign(new Error("Seu cadastro esta sem e-mail. Atualize o perfil para receber o acesso."), { status: 422 });
+  }
+  const docs = await listStudentFlightReviewClubMemberships(actorUserId);
+  const preferred = selectPreferredFlightReviewClubMembership(docs.map(mapFlightReviewClubMembership).filter(Boolean));
+  const membershipDoc = docs.find((doc) => doc.$id === preferred?.id) || docs[0] || null;
+  const snapshot = memberkit.parseJsonObject(membershipDoc?.metadata_json).memberkit || {};
+  const lastRequestMs = Date.parse(cleanString(snapshot.lastMagicLinkAt));
+  if (Number.isFinite(lastRequestMs) && Date.now() - lastRequestMs < 45000) {
+    throw Object.assign(new Error("Aguarde alguns segundos antes de solicitar o acesso novamente."), { status: 429 });
+  }
+  const sync = await syncFlightReviewClubMemberkitForStudent(actorUserId, { forceGrant: true });
+  if (sync?.reason === "error" && cleanString(sync?.memberkit?.error)) {
+    throw Object.assign(new Error(sync.memberkit.error || "Falha ao liberar o Clube 360 na Memberkit."), { status: 502 });
+  }
+  let link = { token: "", authenticatedUrl: "" };
+  try {
+    link = await memberkit.createMagicLink(contact.email);
+  } catch (err) {
+    throw Object.assign(
+      new Error(err?.message || "Acesso liberado, mas nao foi possivel gerar o link de entrada. Tente de novo em instantes."),
+      { status: 502 },
+    );
+  }
+  if (membershipDoc?.$id) {
+    await persistMemberkitMetadata(membershipDoc.$id, membershipDoc.metadata_json, {
+      ...(sync?.memberkit || snapshot),
+      lastMagicLinkAt: nowIso(),
+    });
+  }
+  const membersUrl = await memberkit.getMembersAreaUrl().catch(() => "https://membros.naproa360.com.br");
+  return {
+    email: contact.email,
+    granted: true,
+    authenticatedUrl: link.authenticatedUrl,
+    membersUrl,
+    message: `Acesso ao Clube 360 liberado. A Memberkit envia o login para ${contact.email}.`,
+  };
+}
+
 async function getFlightReviewClubStatus(actorUserId, targetUserId = "") {
   if (!actorUserId) throw Object.assign(new Error("Autenticacao necessaria."), { status: 401 });
   const studentUserId = cleanString(targetUserId) || actorUserId;
@@ -24126,18 +24287,20 @@ async function getFlightReviewClubStatus(actorUserId, targetUserId = "") {
   const { publicSettings: rules } = await loadSchoolRules();
   const club = rules.flightReviewClub || {};
   if (!club.enabled) {
-    return { enabled: false, hasAccess: false, legacyTrackMember: false, membership: null };
+    return { enabled: false, hasAccess: false, legacyTrackMember: false, membership: null, memberkit: null };
   }
   const [legacyTrackMember, membership] = await Promise.all([
     studentHasLegacyFlightReviewClub(studentUserId),
     getCurrentStudentFlightReviewClubMembership(studentUserId),
   ]);
   const refreshedMembership = await refreshFlightReviewClubMembershipFromCakto(membership);
+  const hasAccess = legacyTrackMember || hasFlightReviewClubMembershipAccess(refreshedMembership);
   return {
     enabled: true,
-    hasAccess: legacyTrackMember || hasFlightReviewClubMembershipAccess(refreshedMembership),
+    hasAccess,
     legacyTrackMember,
     membership: refreshedMembership,
+    memberkit: hasAccess ? await getFlightReviewClubMemberkitPublicStatus(studentUserId).catch(() => null) : null,
   };
 }
 
@@ -32249,6 +32412,11 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "getFlightReviewClubStatus") {
       const frcStatus = await getFlightReviewClubStatus(actorUserId, payload.userId);
       return jsonResponse(res, 200, { frcStatus });
+    }
+
+    if (action === "requestFlightReviewClubMemberkitAccess") {
+      const memberkitAccess = await requestFlightReviewClubMemberkitAccess(actorUserId);
+      return jsonResponse(res, 200, { memberkitAccess });
     }
 
     if (action === "cancelFlightReviewClubSubscription") {

@@ -9,6 +9,8 @@ export type PendingFlightOpen = {
   initialSubTab?: FlightDetailSubTab;
 };
 
+export const PENDING_FLIGHT_OPEN_EVENT = "gfv:pending-flight-open";
+
 export function setPendingFlightOpen(payload: PendingFlightOpen): void {
   if (typeof window === "undefined") return;
   const flightId = payload.flightId.trim();
@@ -20,6 +22,7 @@ export function setPendingFlightOpen(payload: PendingFlightOpen): void {
       initialSubTab: payload.initialSubTab,
     } satisfies PendingFlightOpen),
   );
+  window.dispatchEvent(new Event(PENDING_FLIGHT_OPEN_EVENT));
 }
 
 export function consumePendingFlightOpen(): PendingFlightOpen | null {
@@ -47,9 +50,21 @@ export function openFlightFromAlbum(params: {
   role: UserRole | string | undefined;
   mediaKind: "photo" | "video";
 }): void {
+  openSavedFlight({
+    flightId: params.flightId,
+    role: params.role,
+    initialSubTab: params.mediaKind === "video" ? "videos" : "fotos",
+  });
+}
+
+export function openSavedFlight(params: {
+  flightId: string;
+  role: UserRole | string | undefined;
+  initialSubTab?: FlightDetailSubTab;
+}): void {
   setPendingFlightOpen({
     flightId: params.flightId,
-    initialSubTab: params.mediaKind === "video" ? "videos" : "fotos",
+    initialSubTab: params.initialSubTab,
   });
   navigateToTab(flightListPathForRole(params.role));
 }

@@ -11,6 +11,7 @@ import type {
   FlightReviewClubTask,
   FlightReviewClubTaskStatus,
   FlightReviewClubQuote,
+  FlightReviewClubMemberkitAccess,
 } from "../types/cakto";
 import type { CrmProposal, CrmProposalInput } from "../types/proposal";
 
@@ -26,6 +27,7 @@ type CaktoResponse = {
   checkout?: FlightReviewClubCheckout;
   quote?: FlightReviewClubQuote;
   frcStatus?: FlightReviewClubStatus;
+  memberkitAccess?: FlightReviewClubMemberkitAccess;
   frcOverview?: FlightReviewClubAdminOverview;
   members?: FlightReviewClubMemberRow[];
   task?: FlightReviewClubTask;
@@ -109,6 +111,12 @@ export async function cancelFlightReviewClubSubscription(): Promise<FlightReview
   const response = await execute({ action: "cancelFlightReviewClubSubscription" });
   if (!response.frcStatus) throw new Error(response.message || "Status do Flight Review Club nao retornado.");
   return response.frcStatus;
+}
+
+export async function requestFlightReviewClubMemberkitAccess(): Promise<FlightReviewClubMemberkitAccess> {
+  const response = await execute({ action: "requestFlightReviewClubMemberkitAccess" });
+  if (!response.memberkitAccess) throw new Error(response.message || "Nao foi possivel solicitar o acesso ao Clube 360.");
+  return response.memberkitAccess;
 }
 
 export async function getAdminFlightReviewClubOverview(): Promise<FlightReviewClubAdminOverview> {

@@ -33,6 +33,7 @@ const LEGACY_GUEST_PASSTHROUGH_ACTIONS = new Set([
   "sagaCancelScheduleDirect",
   "sagaListSchedulesDirect",
   "sagaUpsertScheduleDirect",
+  "syncFlightReviewClubMemberkitAccess",
   "syncSagaScheduleEvent",
 ]);
 

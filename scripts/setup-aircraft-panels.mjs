@@ -83,6 +83,8 @@ async function main() {
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "title", 255, true), "title");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "panel_image_url", 2048, true), "panel_image_url");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "panel_image_file_id", 64, false), "panel_image_file_id");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "panel_model_url", 2048, false), "panel_model_url");
+  await attr(() => db.createStringAttribute(DATABASE_ID, id, "panel_model_file_id", 64, false), "panel_model_file_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "instruments_json", 100000, true), "instruments_json");
   await attr(() => db.createBooleanAttribute(DATABASE_ID, id, "published", true), "published");
   await attr(() => db.createStringAttribute(DATABASE_ID, id, "updated_at", 64, false), "updated_at");

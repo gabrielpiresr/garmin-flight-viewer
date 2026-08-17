@@ -124,7 +124,7 @@ export function FplSimSideDrawer({
               </button>
             </div>
             <div className="flex min-h-0 flex-1 items-center p-4">
-              <FlightReviewClubGate />
+              <FlightReviewClubGate feature="fpl-sim" />
             </div>
           </div>
         ) : (

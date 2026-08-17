@@ -93,12 +93,12 @@ export const DEFAULT_INSTRUTOR_PERMISSIONS: RolePermissions = {
  */
 const ALL_STUDENT_TAB_KEYS: StudentTabKey[] = [
   "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda",
-  "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "planejamento", "whatsapp", "album", "painel", "marketplace", "provas", "fpl-sim",
+  "treinamento-frc", "dre", "fuelings", "contratos", "indique-ganhe", "endossos", "aisweb", "planejamento", "whatsapp", "album", "painel", "marketplace", "provas", "fpl-sim",
 ];
 
 /** Abas ativadas por padrão para o aluno */
 const STUDENT_DEFAULT_ON_TABS: Set<StudentTabKey> = new Set([
-  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "manobras", "perfil", "ajuda", "endossos", "aisweb", "album", "provas", "fpl-sim",
+  "home", "jornada", "meus-voos", "agendamento", "schedule", "creditos", "avisos", "manuais", "treinamento-frc", "manobras", "perfil", "ajuda", "endossos", "aisweb", "album", "provas", "fpl-sim",
 ]);
 export const DEFAULT_ALUNO_PERMISSIONS: RolePermissions = {
   // Todas as abas declaradas explicitamente

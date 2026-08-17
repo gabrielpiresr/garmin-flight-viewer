@@ -4,7 +4,15 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { useOpenedTabs, useRoutedTab, type TabRoute } from "../../lib/routedTabs";
 import { getReferAndEarnPublic, programConfigForRole } from "../../lib/referAndEarnDb";
 import { getOnboardingPublic } from "../../lib/onboardingDb";
-import { sidebarMotionClass, sidebarRevealClass, useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
+import {
+  sidebarCompactIconClass,
+  sidebarCompactItemClass,
+  sidebarCompactLabelClass,
+  sidebarMotionClass,
+  sidebarNavScrollClass,
+  sidebarRevealClass,
+  useCollapsibleSidebar,
+} from "../../hooks/useCollapsibleSidebar";
 import { ScheduleAdminTab, type ScheduleSubTab } from "../admin/ScheduleAdminTab";
 import { DiarioDeBordoTab } from "../admin/DiarioDeBordoTab";
 import { PortalShellHeader } from "../PortalShellHeader";
@@ -281,7 +289,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     id: "aisweb",
-    label: "AISWEB",
+    label: "Meteorologia",
     sublabel: "METAR, TAF e NOTAMs",
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -394,10 +402,7 @@ export function InstructorLayout() {
   const {
     collapsed: sidebarPinned,
     compact: sidebarCollapsed,
-    isPeeking,
     toggleCollapsed,
-    onSidebarMouseEnter,
-    onSidebarMouseLeave,
     railWidthClass,
     panelWidthClass,
   } = useCollapsibleSidebar();
@@ -473,11 +478,7 @@ export function InstructorLayout() {
         className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
       >
       <aside
-        onMouseEnter={onSidebarMouseEnter}
-        onMouseLeave={onSidebarMouseLeave}
-        className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950/95 transition-[width,box-shadow,background-color] ${sidebarMotionClass} ${panelWidthClass} ${
-          isPeeking ? "z-10 shadow-[12px_0_36px_rgba(0,0,0,0.55)]" : "z-0"
-        }`}
+        className={`absolute inset-y-0 left-0 z-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950 transition-[width] ${sidebarMotionClass} ${panelWidthClass}`}
       >
         <div className={`border-b border-slate-800 py-5 transition-[padding] ${sidebarMotionClass} ${sidebarCollapsed ? "px-3" : "px-5"}`}>
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between gap-3"}`}>
@@ -507,7 +508,7 @@ export function InstructorLayout() {
           <p className={`${sidebarRevealClass(sidebarCollapsed, "")} text-sm font-semibold text-slate-200`}>Portal do INVA</p>
         </div>
 
-        <nav className={`flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
+        <nav className={`flex min-h-0 flex-1 flex-col gap-1 py-3 ${sidebarNavScrollClass(sidebarCollapsed)} ${sidebarCollapsed ? "px-2" : "px-3"}`}>
           {mainNavItems.map((item) => {
             const isActive = section === item.id;
             return (
@@ -517,16 +518,17 @@ export function InstructorLayout() {
                 onClick={() => setSection(item.id)}
                 title={sidebarCollapsed ? item.label : undefined}
                 aria-label={sidebarCollapsed ? item.label : undefined}
-                className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+                className={`group flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                   isActive
                     ? SELECTED_NAV_CLASS
                     : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
                 }`}
               >
-                <span className={isActive ? "" : "opacity-60 group-hover:opacity-100"}>{item.icon}</span>
+                <span className={sidebarCompactIconClass(sidebarCollapsed, isActive ? "" : "opacity-60 group-hover:opacity-100")}>{item.icon}</span>
                 <div className={sidebarRevealClass(sidebarCollapsed)}>
                   <p className="text-sm font-medium leading-none">{item.label}</p>
                 </div>
+                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>{item.label}</span>
               </button>
             );
           })}
@@ -537,9 +539,9 @@ export function InstructorLayout() {
               rel="noopener noreferrer"
               title={sidebarCollapsed ? "Manual do Aluno" : undefined}
               aria-label={sidebarCollapsed ? "Manual do Aluno" : undefined}
-              className={`group flex w-full items-center rounded-lg border border-transparent py-2.5 text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"}`}
+              className={`group flex w-full items-center rounded-lg border border-transparent text-cyan-400 transition-all hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300 ${sidebarCompactItemClass(sidebarCollapsed)}`}
             >
-              <span className="opacity-70 group-hover:opacity-100">
+              <span className={sidebarCompactIconClass(sidebarCollapsed, "opacity-70 group-hover:opacity-100")}>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                 </svg>
@@ -547,6 +549,7 @@ export function InstructorLayout() {
               <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">Manual do Aluno</p>
               </div>
+              <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Manual do Aluno</span>
             </a>
           ) : null}
           {manualInstrutorEnabled ? (
@@ -555,13 +558,13 @@ export function InstructorLayout() {
               onClick={() => setSection("manual-instrutor")}
               title={sidebarCollapsed ? "Manual do instrutor" : undefined}
               aria-label={sidebarCollapsed ? "Manual do instrutor" : undefined}
-              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+              className={`group flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                 section === "manual-instrutor"
                   ? "border-cyan-500/40 bg-cyan-950/30 text-cyan-300"
                   : "border-transparent text-cyan-400 hover:border-cyan-700/40 hover:bg-cyan-950/30 hover:text-cyan-300"
               }`}
             >
-              <span className={section === "manual-instrutor" ? "" : "opacity-70 group-hover:opacity-100"}>
+              <span className={sidebarCompactIconClass(sidebarCollapsed, section === "manual-instrutor" ? "" : "opacity-70 group-hover:opacity-100")}>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
                 </svg>
@@ -569,6 +572,7 @@ export function InstructorLayout() {
               <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">Manual do instrutor</p>
               </div>
+              <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Manual do instrutor</span>
             </button>
           ) : null}
         </nav>
@@ -580,16 +584,17 @@ export function InstructorLayout() {
               onClick={() => setSection(helpNavItem.id)}
               title={sidebarCollapsed ? helpNavItem.label : undefined}
               aria-label={sidebarCollapsed ? helpNavItem.label : undefined}
-              className={`group flex w-full items-center rounded-lg border py-2.5 transition-all ${sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3 text-left"} ${
+              className={`group flex w-full items-center rounded-lg border transition-all ${sidebarCompactItemClass(sidebarCollapsed)} ${
                 section === helpNavItem.id
                   ? SELECTED_NAV_CLASS
                   : "border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-800/60 hover:text-slate-200"
               }`}
             >
-              <span className={section === helpNavItem.id ? "" : "opacity-60 group-hover:opacity-100"}>{helpNavItem.icon}</span>
+              <span className={sidebarCompactIconClass(sidebarCollapsed, section === helpNavItem.id ? "" : "opacity-60 group-hover:opacity-100")}>{helpNavItem.icon}</span>
               <div className={sidebarRevealClass(sidebarCollapsed)}>
                 <p className="text-sm font-medium leading-none">{helpNavItem.label}</p>
               </div>
+              <span className={sidebarCompactLabelClass(sidebarCollapsed)}>{helpNavItem.label}</span>
             </button>
           </div>
         ) : null}

@@ -320,7 +320,7 @@ function TerrainMesh({
       {satelliteTexture ? (
         <meshBasicMaterial map={satelliteTexture} toneMapped={false} side={THREE.DoubleSide} />
       ) : (
-        <meshStandardMaterial vertexColors roughness={0.92} metalness={0} side={THREE.DoubleSide} />
+        <meshStandardMaterial vertexColors roughness={0.96} metalness={0} side={THREE.DoubleSide} />
       )}
     </mesh>
   );

@@ -116,6 +116,7 @@ export type StudentTabKey =
   | "creditos"
   | "avisos"
   | "manuais"
+  | "treinamento-frc"
   | "manobras"
   | "perfil"
   | "ajuda"
@@ -266,7 +267,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "settings.propostas": "Configurações › Propostas",
   "settings.wpp": "Configurações › WPP",
   "settings.gopro": "Configurações › GoPro",
-  "settings.aisweb": "Configurações › AISWEB",
+  "settings.aisweb": "Configurações › Meteorologia",
   "settings.solo-flight": "Configurações › Voo solo",
   "flight-review": "Flight Review",
   "contracts": "Contratos",
@@ -275,7 +276,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "atualizacoes": "Atualizações",
   "atualizacoes.agendamentos": "Atualizações › Agendamentos",
   "solo-flight": "Voo solo",
-  "aisweb": "AISWEB",
+  "aisweb": "Meteorologia",
   "planejamento": "Planejamento",
   "whatsapp": "WhatsApp",
   "radar": "Radar",
@@ -307,7 +308,7 @@ export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
   "reports": "Relatórios",
   "indique-ganhe": "Indique e ganhe",
   "solo-flight": "Voo solo",
-  "aisweb": "AISWEB",
+  "aisweb": "Meteorologia",
   "whatsapp": "WhatsApp",
   "album": "Álbum",
   "painel": "Painel",
@@ -324,6 +325,7 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "creditos": "Créditos",
   "avisos": "Avisos",
   "manuais": "Manuais",
+  "treinamento-frc": "Treinamento FRC",
   "manobras": "Manobras",
   "perfil": "Perfil",
   "ajuda": "Ajuda",
@@ -332,7 +334,7 @@ export const STUDENT_TAB_LABELS: Record<StudentTabKey, string> = {
   "contratos": "Contratos",
   "indique-ganhe": "Indique e ganhe",
   "endossos": "Endossos",
-  "aisweb": "AISWEB",
+  "aisweb": "Meteorologia",
   "planejamento": "Planejamento",
   "whatsapp": "WhatsApp",
   "album": "Álbum",

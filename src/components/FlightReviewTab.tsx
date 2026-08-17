@@ -3980,5 +3980,5 @@ export function FlightReviewTab({ flightId, publicData, publicMode = false, club
     </div>
   );
 
-  return clubLocked && maneuvers.length > 0 ? <FlightReviewClubGate>{content}</FlightReviewClubGate> : content;
+  return clubLocked && maneuvers.length > 0 ? <FlightReviewClubGate feature="flight-review">{content}</FlightReviewClubGate> : content;
 }

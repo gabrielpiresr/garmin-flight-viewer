@@ -192,7 +192,7 @@ export async function fetchTerrainGrid(
   const height = Math.max(0.0001, bbox.maxLat - bbox.minLat);
   const aspect = width / height;
   const targetCells = options?.targetCells ?? TARGET_CELLS;
-  const cellCap = targetCells > TARGET_CELLS ? 640 : 512;
+  const cellCap = targetCells >= 512 ? 720 : targetCells > TARGET_CELLS ? 640 : 512;
   const cols = Math.max(64, Math.min(cellCap, Math.round(targetCells * Math.sqrt(aspect))));
   const rows = Math.max(64, Math.min(cellCap, Math.round(targetCells / Math.sqrt(aspect))));
   const heightsM = new Float32Array(cols * rows);
@@ -221,9 +221,19 @@ export async function fetchTerrainGrid(
   if (!Number.isFinite(minM)) minM = 0;
   if (!Number.isFinite(maxM)) maxM = minM;
 
+  fillHeightHoles(heightsM, cols, rows, minM);
+  despikeHeights(heightsM, cols, rows);
+  smoothHeights(heightsM, cols, rows, cols * rows < 80_000 ? 3 : 2);
+
+  minM = Infinity;
+  maxM = -Infinity;
   for (let i = 0; i < heightsM.length; i++) {
-    if (!Number.isFinite(heightsM[i])) heightsM[i] = minM;
+    const h = heightsM[i]!;
+    minM = Math.min(minM, h);
+    maxM = Math.max(maxM, h);
   }
+  if (!Number.isFinite(minM)) minM = 0;
+  if (!Number.isFinite(maxM)) maxM = minM;
 
   return {
     west: bbox.minLng,
@@ -236,6 +246,103 @@ export async function fetchTerrainGrid(
     minM,
     maxM,
   };
+}
+
+function fillHeightHoles(heights: Float32Array, cols: number, rows: number, fallback: number): void {
+  const tmp = new Float32Array(heights.length);
+  for (let pass = 0; pass < 12; pass++) {
+    let remaining = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const cur = heights[i]!;
+        if (Number.isFinite(cur)) {
+          tmp[i] = cur;
+          continue;
+        }
+        let sum = 0;
+        let n = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const rr = r + dr;
+            const cc = c + dc;
+            if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue;
+            const h = heights[rr * cols + cc]!;
+            if (!Number.isFinite(h)) continue;
+            sum += h;
+            n += 1;
+          }
+        }
+        if (n) tmp[i] = sum / n;
+        else {
+          tmp[i] = Number.NaN;
+          remaining += 1;
+        }
+      }
+    }
+    heights.set(tmp);
+    if (!remaining) break;
+  }
+  for (let i = 0; i < heights.length; i++) {
+    if (!Number.isFinite(heights[i]!)) heights[i] = fallback;
+  }
+}
+
+function despikeHeights(heights: Float32Array, cols: number, rows: number): void {
+  const tmp = new Float32Array(heights);
+  const neigh: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      neigh.length = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const rr = r + dr;
+          const cc = c + dc;
+          if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue;
+          neigh.push(heights[rr * cols + cc]!);
+        }
+      }
+      if (neigh.length < 3) continue;
+      const sorted = neigh.slice().sort((a, b) => a - b);
+      const med = sorted[Math.floor(sorted.length / 2)]!;
+      let spread = 0;
+      for (const n of neigh) spread = Math.max(spread, Math.abs(n - med));
+      const h = heights[r * cols + c]!;
+      if (Math.abs(h - med) > Math.max(180, spread * 2.5 + 40)) tmp[r * cols + c] = med;
+    }
+  }
+  heights.set(tmp);
+}
+
+function smoothHeights(heights: Float32Array, cols: number, rows: number, passes: number): void {
+  const tmp = new Float32Array(heights.length);
+  for (let p = 0; p < passes; p++) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const self = heights[i]!;
+        if (self <= 1.2) {
+          tmp[i] = self;
+          continue;
+        }
+        const left = heights[r * cols + Math.max(0, c - 1)]!;
+        const right = heights[r * cols + Math.min(cols - 1, c + 1)]!;
+        tmp[i] = left * 0.25 + self * 0.5 + right * 0.25;
+      }
+    }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        if (heights[i]! <= 1.2) continue;
+        const self = tmp[i]!;
+        const up = tmp[Math.max(0, r - 1) * cols + c]!;
+        const down = tmp[Math.min(rows - 1, r + 1) * cols + c]!;
+        heights[i] = up * 0.25 + self * 0.5 + down * 0.25;
+      }
+    }
+  }
 }
 
 export function sampleGridHeightM(grid: TerrainGrid, lat: number, lng: number): number {

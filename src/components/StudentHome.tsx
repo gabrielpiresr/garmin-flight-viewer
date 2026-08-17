@@ -3,6 +3,11 @@ import { useAuth } from "../contexts/AuthContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { useFlightReviewClub } from "../contexts/FlightReviewClubContext";
 import { getStudentCreditStatement } from "../lib/creditsDb";
+import { isScheduledFlightStatus } from "../lib/flightEvaluationEligibility";
+import { type FlightDisplayInfo } from "../lib/flightDisplay";
+import { buildBasicFlightListDisplayInfo } from "../lib/flightListDisplayCache";
+import { listSavedFlights, type SavedFlightListItem } from "../lib/flightsDb";
+import { openSavedFlight } from "../lib/pendingFlightOpen";
 import { FLIGHT_CREDIT_PURCHASE_PATH, navigateToTab } from "../lib/routedTabs";
 import { loadNextMissions } from "../lib/scheduleStudentSummary";
 import { NoticeFeed } from "./NoticeFeed";
@@ -42,6 +47,125 @@ function formatMissionDuration(minutes: number | null | undefined): string | nul
   if (minutes < 60) return `${minutes}min`;
   const hours = minutes / 60;
   return `${hours.toFixed(hours >= 10 ? 0 : 1)}h`;
+}
+
+function formatLastFlightDate(info: FlightDisplayInfo, item: SavedFlightListItem): string {
+  const iso = info.flightDateIso ?? item.flight_date ?? item.created_at.slice(0, 10);
+  const date = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return "Data não informada";
+  return date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+}
+
+function LastFlightCard({ onOpenFlights }: { onOpenFlights: () => void }) {
+  const { user, configured } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [flight, setFlight] = useState<{ item: SavedFlightListItem; info: FlightDisplayInfo } | null>(null);
+
+  useEffect(() => {
+    if (!user || !configured) {
+      setFlight(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    void listSavedFlights({ userId: user.id, role: user.role }, { limit: 40 })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const items = data ?? [];
+        const last = items.find((item) => {
+          const info = buildBasicFlightListDisplayInfo(item);
+          return !isScheduledFlightStatus(item, info) && item.flight_status !== "Cancelado";
+        });
+        if (!last) {
+          setFlight(null);
+          return;
+        }
+        setFlight({ item: last, info: buildBasicFlightListDisplayInfo(last) });
+      })
+      .catch(() => {
+        if (!cancelled) setFlight(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, user]);
+
+  const openTelemetry = () => {
+    if (!flight || !user) return;
+    openSavedFlight({ flightId: flight.item.id, role: user.role, initialSubTab: "telemetria" });
+    onOpenFlights();
+  };
+
+  const openStickers = () => {
+    if (!flight || !user) return;
+    openSavedFlight({ flightId: flight.item.id, role: user.role, initialSubTab: "figurinhas" });
+    onOpenFlights();
+  };
+
+  return (
+    <section className="min-w-0">
+      <div className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
+        <div className="mb-4">
+          <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Último voo</p>
+          <h2 className="text-lg font-semibold text-white">Resumo da última missão</h2>
+          <p className="break-words text-xs text-slate-500">Telemetria e figurinhas do voo mais recente.</p>
+        </div>
+        {loading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-3 w-28" />
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : !flight ? (
+          <p className="py-4 text-sm text-slate-500">Nenhum voo realizado ainda.</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-slate-500">
+                    {formatLastFlightDate(flight.info, flight.item)}
+                    {flight.info.startTime ? ` · ${flight.info.startTime}` : ""}
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold text-slate-100">
+                    {flight.info.fromTo && flight.info.fromTo !== "—" ? flight.info.fromTo : "Rota não informada"}
+                  </h3>
+                </div>
+                <span className="max-w-full shrink-0 break-words rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-300">
+                  {flight.info.aircraft || flight.item.aircraft_ident || "Aeronave"}
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-400">
+                <p>Tempo: <span className="text-slate-200">{flight.info.totalFlight && flight.info.totalFlight !== "00:00" ? flight.info.totalFlight : "—"}</span></p>
+                <p>Pousos: <span className="text-slate-200">{flight.info.landings || "—"}</span></p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={openTelemetry}
+                className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20"
+              >
+                Ver telemetria
+              </button>
+              <button
+                type="button"
+                onClick={openStickers}
+                className="rounded-lg border border-pink-500/40 bg-pink-500/10 px-3 py-2 text-xs font-semibold text-pink-100 hover:bg-pink-500/20"
+              >
+                Gerar figurinhas
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export function StudentHome({ onOpenFlights, onOpenNotices, onOpenSchedule, onOpenCredits, onOpenJourney }: StudentHomeProps) {
@@ -233,12 +357,13 @@ export function StudentHome({ onOpenFlights, onOpenNotices, onOpenSchedule, onOp
           />
         </div>
       </section>
-      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-3">
         <UpcomingFlightsCard
           className="min-w-0 w-full"
           onOpenFlights={onOpenFlights}
           subtitle="Proximos voos da escala e voos salvos, com pendencias em destaque quando existirem."
         />
+        <LastFlightCard onOpenFlights={onOpenFlights} />
         <NoticeFeed
           className="min-w-0 w-full"
           limit={3}

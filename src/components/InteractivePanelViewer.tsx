@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { hasPanelModel } from "../lib/panelPayload";
 import type { AircraftPanel, PanelInstrument } from "../types/panel";
+
+const PanelModelCanvas = lazy(() =>
+  import("./panel/PanelModelCanvas").then((mod) => ({ default: mod.PanelModelCanvas })),
+);
 
 type AircraftOption = {
   id: string;
@@ -69,7 +74,8 @@ function InstrumentModal({
   }, [onClose]);
 
   const zoomSrc = instrument.zoom_image_url || panelImageUrl;
-  const useCropFallback = !instrument.zoom_image_url;
+  const useCropFallback = !instrument.zoom_image_url && Boolean(panelImageUrl);
+  const hasVisual = Boolean(instrument.zoom_image_url || panelImageUrl);
 
   return (
     <div
@@ -99,26 +105,28 @@ function InstrumentModal({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <div
-            className={`mx-auto overflow-hidden border border-slate-800 bg-slate-900 ${
-              instrument.shape === "circle" ? "aspect-square max-w-sm rounded-full" : "rounded-xl"
-            }`}
-          >
-            {useCropFallback ? (
-              <div
-                className="h-64 w-full bg-cover bg-no-repeat sm:h-80"
-                style={{
-                  backgroundImage: `url(${panelImageUrl})`,
-                  backgroundPosition: `${instrument.x + instrument.w / 2}% ${instrument.y + instrument.h / 2}%`,
-                  backgroundSize: `${Math.max(120, 10000 / Math.max(instrument.w, 8))}%`,
-                }}
-                role="img"
-                aria-label={instrument.name}
-              />
-            ) : (
-              <img src={zoomSrc} alt={instrument.name} className="mx-auto max-h-[50vh] w-full object-contain" />
-            )}
-          </div>
+          {hasVisual ? (
+            <div
+              className={`mx-auto overflow-hidden border border-slate-800 bg-slate-900 ${
+                instrument.shape === "circle" ? "aspect-square max-w-sm rounded-full" : "rounded-xl"
+              }`}
+            >
+              {useCropFallback ? (
+                <div
+                  className="h-64 w-full bg-cover bg-no-repeat sm:h-80"
+                  style={{
+                    backgroundImage: `url(${panelImageUrl})`,
+                    backgroundPosition: `${instrument.x + instrument.w / 2}% ${instrument.y + instrument.h / 2}%`,
+                    backgroundSize: `${Math.max(120, 10000 / Math.max(instrument.w, 8))}%`,
+                  }}
+                  role="img"
+                  aria-label={instrument.name}
+                />
+              ) : (
+                <img src={zoomSrc} alt={instrument.name} className="mx-auto max-h-[50vh] w-full object-contain" />
+              )}
+            </div>
+          ) : null}
           {instrument.description ? (
             <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{instrument.description}</p>
           ) : (
@@ -148,6 +156,7 @@ export function InteractivePanelViewer({
 
   const [selectedId, setSelectedId] = useState<string>("");
   const [active, setActive] = useState<PanelInstrument | null>(null);
+  const [viewMode, setViewMode] = useState<"3d" | "2d">("3d");
 
   useEffect(() => {
     if (fixedPanelId) {
@@ -168,6 +177,12 @@ export function InteractivePanelViewer({
     () => [...(panel?.instruments ?? [])].sort((a, b) => a.sort_order - b.sort_order),
     [panel],
   );
+  const show3d = Boolean(panel && hasPanelModel(panel) && (viewMode === "3d" || !panel.panel_image_url));
+  const show2d = Boolean(panel?.panel_image_url && (!hasPanelModel(panel) || viewMode === "2d"));
+
+  useEffect(() => {
+    setViewMode(panel?.panel_model_url?.trim() ? "3d" : "2d");
+  }, [panel?.id, panel?.panel_model_url]);
 
   if (!published.length) {
     return (
@@ -183,7 +198,11 @@ export function InteractivePanelViewer({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-100">Painel interativo</h2>
-            <p className="text-sm text-slate-400">Toque em um instrumento para ver o zoom e os detalhes.</p>
+            <p className="text-sm text-slate-400">
+              {show3d
+                ? "Gire o painel e toque em um instrumento para ver o zoom e os detalhes."
+                : "Toque em um instrumento para ver o zoom e os detalhes."}
+            </p>
           </div>
           <label className="block text-sm sm:w-72">
             <span className="mb-1 block text-xs font-medium text-slate-400">Aeronave</span>
@@ -204,25 +223,69 @@ export function InteractivePanelViewer({
 
       {panel ? (
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-          <div className="border-b border-slate-800 px-4 py-2 text-xs text-slate-400">
-            {panel.title}
-            {labelByAircraft.get(panel.aircraft_id) ? (
-              <span className="text-slate-600"> · {labelByAircraft.get(panel.aircraft_id)}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-2 text-xs text-slate-400">
+            <div>
+              {panel.title}
+              {labelByAircraft.get(panel.aircraft_id) ? (
+                <span className="text-slate-600"> · {labelByAircraft.get(panel.aircraft_id)}</span>
+              ) : null}
+            </div>
+            {hasPanelModel(panel) && panel.panel_image_url ? (
+              <div className="flex rounded-lg border border-slate-700 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("3d")}
+                  className={`rounded-md px-2 py-1 text-[11px] ${
+                    viewMode === "3d" ? "bg-sky-600 text-white" : "text-slate-400"
+                  }`}
+                >
+                  3D
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("2d")}
+                  className={`rounded-md px-2 py-1 text-[11px] ${
+                    viewMode === "2d" ? "bg-sky-600 text-white" : "text-slate-400"
+                  }`}
+                >
+                  Foto
+                </button>
+              </div>
+            ) : hasPanelModel(panel) ? (
+              <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-300">3D</span>
             ) : null}
           </div>
-          <div className="relative w-full select-none">
-            <img
-              src={panel.panel_image_url}
-              alt={panel.title}
-              className="block w-full"
-              draggable={false}
-              decoding="async"
-              style={{ imageRendering: "auto" }}
-            />
-            {instruments.map((inst) => (
-              <HotspotButton key={inst.id} instrument={inst} onClick={() => setActive(inst)} />
-            ))}
-          </div>
+          {show3d && panel.panel_model_url ? (
+            <Suspense
+              fallback={
+                <div className="grid h-[min(72vh,640px)] min-h-[420px] place-items-center text-sm text-slate-400">
+                  Carregando painel 3D...
+                </div>
+              }
+            >
+              <PanelModelCanvas
+                modelUrl={panel.panel_model_url}
+                instruments={instruments}
+                mode="view"
+                onSelect={setActive}
+              />
+            </Suspense>
+          ) : null}
+          {show2d ? (
+            <div className="relative w-full select-none">
+              <img
+                src={panel.panel_image_url}
+                alt={panel.title}
+                className="block w-full"
+                draggable={false}
+                decoding="async"
+                style={{ imageRendering: "auto" }}
+              />
+              {instruments.map((inst) => (
+                <HotspotButton key={inst.id} instrument={inst} onClick={() => setActive(inst)} />
+              ))}
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2 border-t border-slate-800 px-4 py-3">
             {instruments.map((inst) => (
               <button

@@ -33,7 +33,7 @@ import {
   loadLightFlightListDisplayInfos,
 } from "../../lib/flightListDisplayCache";
 import { listFlightVideoFlags } from "../../lib/flightVideosDb";
-import { consumePendingFlightOpen } from "../../lib/pendingFlightOpen";
+import { consumePendingFlightOpen, PENDING_FLIGHT_OPEN_EVENT } from "../../lib/pendingFlightOpen";
 import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import { ADMIN_USERS_FUNCTION_ID } from "../../lib/appwrite";
 import {
@@ -853,9 +853,14 @@ export function InstructorFlightsTab() {
   };
 
   useEffect(() => {
-    const pending = consumePendingFlightOpen();
-    if (!pending?.flightId) return;
-    openFlight(pending.flightId, { initialSubTab: pending.initialSubTab });
+    const tryOpen = () => {
+      const pending = consumePendingFlightOpen();
+      if (!pending?.flightId) return;
+      openFlight(pending.flightId, { initialSubTab: pending.initialSubTab });
+    };
+    tryOpen();
+    window.addEventListener(PENDING_FLIGHT_OPEN_EVENT, tryOpen);
+    return () => window.removeEventListener(PENDING_FLIGHT_OPEN_EVENT, tryOpen);
   }, []);
 
   const generatePublicLink = async (id: string) => {

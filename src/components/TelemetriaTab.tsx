@@ -1089,7 +1089,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
               />
             </div>
           )}
-          <div className={mapExpanded ? `grid min-h-0 flex-1 gap-2 ${chartData.length > 0 ? "grid-cols-[minmax(260px,400px)_minmax(0,1fr)]" : "grid-cols-1"}` : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[460px_minmax(0,1fr)]" : "grid-cols-1"}`}>
+          <div className={mapExpanded ? `grid min-h-0 flex-1 gap-2 ${chartData.length > 0 ? "grid-cols-[minmax(208px,320px)_minmax(0,1fr)]" : "grid-cols-1"}` : `grid min-h-0 gap-3 xl:h-full ${chartData.length > 0 ? "xl:grid-cols-[368px_minmax(0,1fr)]" : "grid-cols-1"}`}>
             {chartData.length > 0 && (
               <div className={mapExpanded ? "min-h-0 overflow-y-auto pr-1" : "min-h-0 xl:overflow-y-auto xl:pr-1"}>
                 {selectedSegment ? (
@@ -1119,7 +1119,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
                   <button
                     type="button"
                     onClick={handleToggleMapFullscreen}
-                    className="absolute right-3 top-3 z-[500] rounded-md border border-slate-700 bg-slate-950/85 px-3 py-1.5 text-xs font-medium text-slate-100 shadow-lg hover:bg-slate-900"
+                    className="absolute right-16 top-3 z-[1100] rounded-md border border-slate-700 bg-slate-950/90 px-3 py-1.5 text-xs font-medium text-slate-100 shadow-lg hover:bg-slate-900"
                   >
                     {mapExpanded ? "Sair da tela cheia" : "Tela cheia"}
                   </button>
@@ -1172,7 +1172,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     </div>
   );
 
-  return clubLocked ? <FlightReviewClubGate>{mainContent}</FlightReviewClubGate> : mainContent;
+  return clubLocked ? <FlightReviewClubGate feature="telemetria">{mainContent}</FlightReviewClubGate> : mainContent;
 }
 
 const ALERT_SEVERITY_CLASS: Record<string, string> = {

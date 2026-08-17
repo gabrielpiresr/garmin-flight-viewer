@@ -120,7 +120,7 @@ const ADMIN_TAB_GROUPS: TabGroup[] = [
       { key: "atualizacoes.agendamentos", label: "Agendamentos" },
     ],
   },
-  { label: "AISWEB", parentKey: "aisweb" },
+  { label: "Meteorologia", parentKey: "aisweb" },
   { label: "WhatsApp", parentKey: "whatsapp" },
   { label: "Planejamento", parentKey: "planejamento" },
   { label: "Radar", parentKey: "radar" },

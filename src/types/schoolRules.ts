@@ -10,15 +10,50 @@ import {
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
+export const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "marketplace", "kit"] as const;
+
+export type FlightReviewClubFeatureSectionId = (typeof LP_FEATURE_SECTION_IDS)[number];
+
+export type FlightReviewClubLpSectionId = FlightReviewClubFeatureSectionId | "assinar";
+
+export type FlightReviewClubLpSection = {
+  id: FlightReviewClubLpSectionId;
+  navLabel: string;
+  eyebrow: string;
+  title: string;
+  copy: string;
+};
+
+export type LpMockupId =
+  | "telemetry"
+  | "share"
+  | "review"
+  | "planning"
+  | "schedule"
+  | "journey"
+  | "stickers"
+  | "album"
+  | "marketplace"
+  | "webinar"
+  | "partners"
+  | "kit";
+
+export type LpScreenshotSlotId = LpMockupId;
+
 export type FlightReviewClubBenefitItem = {
+  sectionId: FlightReviewClubFeatureSectionId;
   text: string;
   imageUrl: string;
 };
 
 export type FlightReviewClubScreenshotItem = {
+  id: string;
+  sectionId: FlightReviewClubFeatureSectionId;
   title: string;
   description: string;
   imageUrl: string;
+  frameUrl: string;
+  mockupId: LpMockupId | "";
 };
 
 export type FlightReviewClubChecklistTemplateItem = {
@@ -26,6 +61,29 @@ export type FlightReviewClubChecklistTemplateItem = {
   title: string;
   description: string;
   enabled: boolean;
+};
+
+export type FlightReviewClubTrainingLessonKind = "vimeo" | "pdf";
+
+export type FlightReviewClubTrainingLesson = {
+  id: string;
+  title: string;
+  description: string;
+  kind: FlightReviewClubTrainingLessonKind;
+  vimeoUrl: string;
+  pdfUrl: string;
+  durationLabel: string;
+  enabled: boolean;
+};
+
+export type FlightReviewClubTrainingCourse = {
+  id: string;
+  title: string;
+  description: string;
+  coverImageUrl: string;
+  enabled: boolean;
+  sortOrder: number;
+  lessons: FlightReviewClubTrainingLesson[];
 };
 
 export type FlightReviewClubPricingRule = {
@@ -65,15 +123,19 @@ export type FlightReviewClubRules = {
   trialFlightCount: number;
   lpHeroTitle: string;
   lpHeroSubtitle: string;
+  lpHeroEyebrow: string;
+  lpHeroChips: string[];
   lpCoverImageUrl: string;
   lpCtaLabel: string;
   lpValueProps: string[];
   lpBenefitItems: FlightReviewClubBenefitItem[];
   lpScreenshotItems: FlightReviewClubScreenshotItem[];
+  lpSections: FlightReviewClubLpSection[];
   checklistTemplate: FlightReviewClubChecklistTemplateItem[];
   pricingRules: FlightReviewClubPricingRule[];
   subscriptionPlans: FlightReviewClubSubscriptionPlan[];
   exclusiveStudentTabs: StudentPortalTab[];
+  trainingCourses: FlightReviewClubTrainingCourse[];
 };
 
 export type SoloFlightAutomaticCriterionKey =
@@ -110,6 +172,7 @@ export type StudentPortalTab =
   | "creditos"
   | "avisos"
   | "manuais"
+  | "treinamento-frc"
   | "manobras"
   | "ajuda"
   | "endossos"
@@ -228,6 +291,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "creditos", label: "Créditos" },
   { id: "avisos", label: "Avisos" },
   { id: "manuais", label: "Manuais" },
+  { id: "treinamento-frc", label: "Treinamento FRC" },
   { id: "manobras", label: "Manobras" },
   { id: "provas", label: "Provas" },
   { id: "fpl-sim", label: "Simulador FPL" },
@@ -235,7 +299,7 @@ export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: st
   { id: "endossos", label: "Endossos" },
   { id: "perfil", label: "Perfil" },
   { id: "indique-ganhe", label: "Indique e ganhe" },
-  { id: "aisweb", label: "AISWEB" },
+  { id: "aisweb", label: "Meteorologia" },
   { id: "planejamento", label: "Planejamento", defaultEnabled: false },
   { id: "whatsapp", label: "WhatsApp", defaultEnabled: false },
   { id: "album", label: "Álbum" },
@@ -295,6 +359,151 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_SUBSCRIPTION_PLANS: FlightReviewClubSubs
   },
 ];
 
+export const DEFAULT_LP_SECTIONS: FlightReviewClubLpSection[] = [
+  { id: "gravacao", navLabel: "Gravação", eyebrow: "Gravação dos voos", title: "Fonia, telemetria, figurinhas, link público e fotos.", copy: "Cada voo vira um pacote completo: áudio, dados, cards para WhatsApp, página para compartilhar e o álbum de fotos." },
+  { id: "agenda", navLabel: "Agenda", eyebrow: "Agendamento", title: "Reserve com 30 dias de antecedência.", copy: "Integrantes do FRC abrem a agenda além da janela dos demais alunos e chegam mais cedo na escala." },
+  { id: "premium", navLabel: "Premium", eyebrow: "Plataforma premium", title: "Recursos exclusivos e 1 webinar por mês.", copy: "Além das funcionalidades premium no portal, o clube inclui um webinar exclusivo todo mês." },
+  { id: "parceiros", navLabel: "Parceiros", eyebrow: "Parceiros", title: "Acesso ao Clube 360 e ao NexAtlas.", copy: "Parcerias da escola liberadas para quem assina o Flight Review Club." },
+  { id: "marketplace", navLabel: "Loja", eyebrow: "Marketplace", title: "Desconto exclusivo na loja da escola.", copy: "O preço FRC aparece no card do produto para integrantes do clube." },
+  { id: "kit", navLabel: "Kit", eyebrow: "Kit da escola", title: "Camisa e crachá exclusivos.", copy: "Na primeira assinatura, a escola entrega a camisa e o crachá do Flight Review Club." },
+  { id: "assinar", navLabel: "Assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago." },
+];
+
+export const DEFAULT_LP_SCREENSHOT_ITEMS: FlightReviewClubScreenshotItem[] = [
+  { id: "telemetry", sectionId: "gravacao", title: "Telemetria", description: "Dados do voo em gráficos.", imageUrl: "", frameUrl: "epeac.app / telemetria", mockupId: "telemetry" },
+  { id: "share", sectionId: "gravacao", title: "Link público", description: "Página compartilhável do Flight Review.", imageUrl: "", frameUrl: "epeac.app / share", mockupId: "share" },
+  { id: "review", sectionId: "gravacao", title: "Flight Review", description: "Manobras e pontos de melhoria.", imageUrl: "", frameUrl: "epeac.app / flight-review", mockupId: "review" },
+  { id: "stickers", sectionId: "gravacao", title: "Figurinhas", description: "Cards e animações do voo.", imageUrl: "", frameUrl: "epeac.app / figurinhas", mockupId: "stickers" },
+  { id: "album", sectionId: "gravacao", title: "Álbum", description: "Vídeos com fonia e fotos.", imageUrl: "", frameUrl: "epeac.app / album", mockupId: "album" },
+  { id: "planning", sectionId: "agenda", title: "Planejamento", description: "Rotas, aeródromos e meteorologia.", imageUrl: "", frameUrl: "epeac.app / planejamento", mockupId: "planning" },
+  { id: "schedule", sectionId: "agenda", title: "Agenda", description: "Reserva com antecedência de 30 dias.", imageUrl: "", frameUrl: "epeac.app / agendamento", mockupId: "schedule" },
+  { id: "journey", sectionId: "premium", title: "Portal premium", description: "Funcionalidades exclusivas da plataforma.", imageUrl: "", frameUrl: "epeac.app / jornada", mockupId: "journey" },
+  { id: "webinar", sectionId: "premium", title: "Webinar", description: "Encontro exclusivo todo mês.", imageUrl: "", frameUrl: "epeac.app / webinar", mockupId: "webinar" },
+  { id: "partners", sectionId: "parceiros", title: "Parceiros", description: "Clube 360 e NexAtlas.", imageUrl: "", frameUrl: "epeac.app / parceiros", mockupId: "partners" },
+  { id: "marketplace", sectionId: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "", frameUrl: "epeac.app / marketplace", mockupId: "marketplace" },
+  { id: "kit", sectionId: "kit", title: "Camisa e crachá", description: "Kit da escola na primeira assinatura.", imageUrl: "", frameUrl: "epeac.app / kit", mockupId: "kit" },
+];
+
+const LEGACY_LP_SCREENSHOT_IDS = ["telemetry", "share", "planning", "journey", "album", "marketplace"];
+
+const LP_MOCKUP_IDS: LpMockupId[] = [
+  "telemetry", "share", "review", "planning", "schedule", "journey",
+  "stickers", "album", "marketplace", "webinar", "partners", "kit",
+];
+
+function isFeatureSectionId(value: string): value is FlightReviewClubFeatureSectionId {
+  return (LP_FEATURE_SECTION_IDS as readonly string[]).includes(value);
+}
+
+export function classifyLpBenefitSection(text: string): FlightReviewClubFeatureSectionId {
+  const value = text.toLowerCase();
+  if (/(agenda|anteced|planej)/.test(value)) return "agenda";
+  if (/(nexatlas|clube 360)/.test(value)) return "parceiros";
+  if (/(marketplace|desconto)/.test(value)) return "marketplace";
+  if (/(camiseta|camisa|crach)/.test(value)) return "kit";
+  if (/(webinar|ead|curso|jornada|premium|funcionalidade)/.test(value)) return "premium";
+  return "gravacao";
+}
+
+function sanitizeLpScreenshotItems(raw: unknown): FlightReviewClubScreenshotItem[] {
+  if (!Array.isArray(raw)) return DEFAULT_LP_SCREENSHOT_ITEMS.map((item) => ({ ...item }));
+  if (raw.length === 0) return [];
+  const defaultsById = new Map(DEFAULT_LP_SCREENSHOT_ITEMS.map((slot) => [slot.id, slot]));
+  const seen = new Set<string>();
+  const result: FlightReviewClubScreenshotItem[] = [];
+  raw.forEach((item, index) => {
+    const rawId = String(item?.id ?? "").trim() || LEGACY_LP_SCREENSHOT_IDS[index] || `shot-${index + 1}`;
+    const id = rawId.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const slot = defaultsById.get(id);
+    const title = String(item?.title ?? "").slice(0, 120).trim();
+    const imageUrl = String(item?.imageUrl ?? "").slice(0, 4096).trim();
+    const sectionId = String(item?.sectionId ?? "").trim();
+    const mockupId = String(item?.mockupId ?? "").trim();
+    const resolvedSection = isFeatureSectionId(sectionId) ? sectionId : slot?.sectionId;
+    if (!resolvedSection) return;
+    result.push({
+      id,
+      sectionId: resolvedSection,
+      title: title || slot?.title || "Print",
+      description: String(item?.description ?? "").slice(0, 400).trim() || slot?.description || "",
+      imageUrl,
+      frameUrl: String(item?.frameUrl ?? "").slice(0, 120).trim() || slot?.frameUrl || "epeac.app",
+      mockupId: LP_MOCKUP_IDS.includes(mockupId as LpMockupId) ? mockupId as LpMockupId : (slot?.mockupId ?? ""),
+    });
+  });
+  return result.slice(0, 30);
+}
+
+function sanitizeLpSections(raw: unknown): FlightReviewClubLpSection[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const byId = new Map<string, FlightReviewClubLpSection>();
+  list.forEach((item) => {
+    const id = String(item?.id ?? "").trim() as FlightReviewClubLpSectionId;
+    if (!DEFAULT_LP_SECTIONS.some((section) => section.id === id)) return;
+    byId.set(id, {
+      id,
+      navLabel: String(item?.navLabel ?? "").slice(0, 40).trim(),
+      eyebrow: String(item?.eyebrow ?? "").slice(0, 80).trim(),
+      title: String(item?.title ?? "").slice(0, 180).trim(),
+      copy: String(item?.copy ?? "").slice(0, 600).trim(),
+    });
+  });
+  return DEFAULT_LP_SECTIONS.map((section) => {
+    const saved = byId.get(section.id);
+    return {
+      id: section.id,
+      navLabel: saved?.navLabel || section.navLabel,
+      eyebrow: saved?.eyebrow || section.eyebrow,
+      title: saved?.title || section.title,
+      copy: saved?.copy || section.copy,
+    };
+  });
+}
+
+function normalizeTrainingLessonKind(value: unknown): FlightReviewClubTrainingLessonKind {
+  return value === "pdf" ? "pdf" : "vimeo";
+}
+
+export function normalizeFlightReviewClubTrainingCourses(raw: unknown): FlightReviewClubTrainingCourse[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((course, index) => {
+      const id = String(course?.id || `frc-course-${index + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+      const title = String(course?.title ?? "").trim().slice(0, 140);
+      const lessons: Array<Record<string, unknown>> = Array.isArray(course?.lessons) ? course.lessons : [];
+      return {
+        id,
+        title,
+        description: String(course?.description ?? "").trim().slice(0, 800),
+        coverImageUrl: String(course?.coverImageUrl ?? "").trim().slice(0, 2048),
+        enabled: course?.enabled !== false,
+        sortOrder: Number.isFinite(Number(course?.sortOrder)) ? Math.round(Number(course.sortOrder)) : index,
+        lessons: lessons
+          .map((lesson: Record<string, unknown>, lessonIndex: number) => {
+            const lessonId = String(lesson?.id || `${id}-lesson-${lessonIndex + 1}`).replace(/[^a-z0-9_-]+/gi, "-").slice(0, 64);
+            const kind = normalizeTrainingLessonKind(lesson?.kind);
+            return {
+              id: lessonId,
+              title: String(lesson?.title ?? "").trim().slice(0, 140),
+              description: String(lesson?.description ?? "").trim().slice(0, 600),
+              kind,
+              vimeoUrl: String(lesson?.vimeoUrl ?? "").trim().slice(0, 2048),
+              pdfUrl: String(lesson?.pdfUrl ?? "").trim().slice(0, 2048),
+              durationLabel: String(lesson?.durationLabel ?? "").trim().slice(0, 40),
+              enabled: lesson?.enabled !== false,
+            };
+          })
+          .filter((lesson) => lesson.id && lesson.title && (lesson.kind === "pdf" ? lesson.pdfUrl : lesson.vimeoUrl))
+          .slice(0, 80),
+      };
+    })
+    .filter((course) => course.id && course.title)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .slice(0, 40);
+}
+
 export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
   enabled: true,
   landingPageType: "internal_public_page",
@@ -303,19 +512,19 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
   billingMode: "both",
   caktoSubscriptionProductId: "",
   benefits: [
-    "Análise da telemetria de cada voo.",
-    "Link público para compartilhamento do voo.",
-    "Curso de Segurança de Voo EAD.",
-    "Camiseta da escola + crachá exclusivo na primeira assinatura.",
-    "Acesso gratuito ao NexAtlas (etapa manual).",
-    "Acesso gratuito ao Clube 360 (etapa manual).",
-    "Descontos no Marketplace da epeac.",
-    "Pelo menos 1 webinar por mês exclusivo para integrantes.",
-    "Agendamento antecipado para voos com até 30 dias de antecedência.",
-    "Planejamento de voo e rotas.",
-    "Figurinhas e animações dos voos.",
-    "Jornada gamificada com histórico detalhado.",
-    "Vídeos com fonia e fotos dos voos.",
+    "Gravação dos voos com fonia.",
+    "Telemetria de cada voo.",
+    "Figurinhas e animações.",
+    "Link público para compartilhar o voo.",
+    "Acesso às fotos do voo.",
+    "Agendamento com 30 dias de antecedência.",
+    "Funcionalidades premium na plataforma.",
+    "1 webinar exclusivo por mês.",
+    "Acesso ao Clube 360.",
+    "Acesso ao NexAtlas.",
+    "Desconto no marketplace.",
+    "Camisa da escola.",
+    "Crachá exclusivo.",
   ],
   ctaSubscriptionUrl: "",
   adhesionTermUrl: "",
@@ -323,6 +532,8 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
   lpHeroTitle: "Flight Review Club",
   lpHeroSubtitle:
     "Assine o pacote premium para revisar cada voo com telemetria, vídeos, fotos, planejamento, benefícios manuais e vantagens exclusivas da escola.",
+  lpHeroEyebrow: "Assinatura premium de formação",
+  lpHeroChips: ["Gravação", "Agenda 30 dias", "Premium", "Parceiros", "Marketplace", "Kit"],
   lpCoverImageUrl: "",
   lpCtaLabel: "Assinar o Flight Review Club",
   lpValueProps: [
@@ -331,28 +542,22 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
     "Acompanhe sua jornada com histórico, figurinhas e registros visuais dos seus voos.",
   ],
   lpBenefitItems: [
-    { text: "Análise da telemetria de cada voo", imageUrl: "" },
-    { text: "Link público para compartilhamento do voo", imageUrl: "" },
-    { text: "Curso de Segurança de Voo EAD", imageUrl: "" },
-    { text: "Camiseta da escola + crachá exclusivo na primeira assinatura", imageUrl: "" },
-    { text: "Acesso gratuito ao NexAtlas (etapa manual)", imageUrl: "" },
-    { text: "Acesso gratuito ao Clube 360 (etapa manual)", imageUrl: "" },
-    { text: "Descontos no Marketplace da epeac", imageUrl: "" },
-    { text: "Pelo menos 1 webinar por mês exclusivo para integrantes", imageUrl: "" },
-    { text: "Agendamento antecipado para voos com até 30 dias de antecedência", imageUrl: "" },
-    { text: "Planejamento de voo e rotas", imageUrl: "" },
-    { text: "Figurinhas e animações dos voos", imageUrl: "" },
-    { text: "Jornada gamificada com histórico detalhado", imageUrl: "" },
-    { text: "Vídeos com fonia e fotos dos voos", imageUrl: "" },
+    { sectionId: "gravacao", text: "Gravação dos voos com fonia", imageUrl: "" },
+    { sectionId: "gravacao", text: "Telemetria de cada voo", imageUrl: "" },
+    { sectionId: "gravacao", text: "Figurinhas e animações", imageUrl: "" },
+    { sectionId: "gravacao", text: "Link público para compartilhar o voo", imageUrl: "" },
+    { sectionId: "gravacao", text: "Acesso às fotos do voo", imageUrl: "" },
+    { sectionId: "agenda", text: "Agendamento com 30 dias de antecedência", imageUrl: "" },
+    { sectionId: "premium", text: "Funcionalidades premium na plataforma", imageUrl: "" },
+    { sectionId: "premium", text: "1 webinar exclusivo por mês", imageUrl: "" },
+    { sectionId: "parceiros", text: "Acesso ao Clube 360", imageUrl: "" },
+    { sectionId: "parceiros", text: "Acesso ao NexAtlas", imageUrl: "" },
+    { sectionId: "marketplace", text: "Desconto no marketplace", imageUrl: "" },
+    { sectionId: "kit", text: "Camisa da escola", imageUrl: "" },
+    { sectionId: "kit", text: "Crachá exclusivo", imageUrl: "" },
   ],
-  lpScreenshotItems: [
-    { title: "Telemetria e Flight Review", description: "Dados, manobras e pontos de melhoria do voo em uma revisao visual.", imageUrl: "" },
-    { title: "Link público do voo", description: "Compartilhe a experiência com uma página pública do Flight Review.", imageUrl: "" },
-    { title: "Planejamento e AISWEB", description: "Rotas, aeródromos, meteorologia e materiais para preparar a próxima navegação.", imageUrl: "" },
-    { title: "Jornada e figurinhas", description: "Histórico gamificado, marcos da formação e cards para celebrar evolução.", imageUrl: "" },
-    { title: "Álbum, vídeos e fotos", description: "Acervo de vídeos com fonia, fotos e registros completos dos voos.", imageUrl: "" },
-    { title: "Marketplace e vantagens", description: "Descontos e benefícios comerciais exclusivos para integrantes.", imageUrl: "" },
-  ],
+  lpScreenshotItems: DEFAULT_LP_SCREENSHOT_ITEMS.map((item) => ({ ...item })),
+  lpSections: DEFAULT_LP_SECTIONS.map((item) => ({ ...item })),
   checklistTemplate: [
     { id: "nexatlas", title: "Liberar NexAtlas", description: "Criar ou liberar o acesso gratuito do aluno ao NexAtlas.", enabled: true },
     { id: "clube-360", title: "Liberar Clube 360", description: "Criar ou liberar o acesso gratuito do aluno ao Clube 360.", enabled: true },
@@ -365,6 +570,7 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
   pricingRules: [],
   subscriptionPlans: DEFAULT_FLIGHT_REVIEW_CLUB_SUBSCRIPTION_PLANS,
   exclusiveStudentTabs: [],
+  trainingCourses: [],
 };
 
 export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
@@ -698,17 +904,23 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
           ? club.caktoSubscriptionProductId.slice(0, 128)
           : "",
         benefits: Array.isArray(club?.benefits)
-          ? club.benefits.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 20)
+          ? club.benefits.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 40)
           : [],
         ctaSubscriptionUrl: typeof club?.ctaSubscriptionUrl === "string" ? club.ctaSubscriptionUrl.slice(0, 2048) : "",
         adhesionTermUrl: typeof club?.adhesionTermUrl === "string" ? club.adhesionTermUrl.slice(0, 2048) : "",
         trialFlightCount: (() => { const n = Number(club?.trialFlightCount ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; })(),
         lpHeroTitle: typeof club?.lpHeroTitle === "string" && club.lpHeroTitle.trim()
-          ? club.lpHeroTitle.slice(0, 120)
+          ? club.lpHeroTitle.slice(0, 180)
           : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroTitle,
         lpHeroSubtitle: typeof club?.lpHeroSubtitle === "string" && club.lpHeroSubtitle.trim()
-          ? club.lpHeroSubtitle.slice(0, 500)
+          ? club.lpHeroSubtitle.slice(0, 600)
           : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroSubtitle,
+        lpHeroEyebrow: typeof club?.lpHeroEyebrow === "string" && club.lpHeroEyebrow.trim()
+          ? club.lpHeroEyebrow.slice(0, 80)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroEyebrow,
+        lpHeroChips: Array.isArray(club?.lpHeroChips)
+          ? club.lpHeroChips.map((chip) => String(chip).slice(0, 40).trim()).filter(Boolean).slice(0, 12)
+          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpHeroChips,
         lpCoverImageUrl: typeof club?.lpCoverImageUrl === "string" ? club.lpCoverImageUrl.slice(0, 2048) : "",
         lpCtaLabel: typeof club?.lpCtaLabel === "string" && club.lpCtaLabel.trim()
           ? club.lpCtaLabel.slice(0, 80)
@@ -718,23 +930,20 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
           : [],
         lpBenefitItems: Array.isArray(club?.lpBenefitItems)
           ? club.lpBenefitItems
-              .map((item) => ({
-                text: String(item?.text ?? "").slice(0, 500).trim(),
-                imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
-              }))
+              .map((item) => {
+                const text = String(item?.text ?? "").slice(0, 500).trim();
+                const sectionId = String(item?.sectionId ?? "").trim();
+                return {
+                  sectionId: isFeatureSectionId(sectionId) ? sectionId : classifyLpBenefitSection(text),
+                  text,
+                  imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
+                };
+              })
               .filter((item) => item.text)
-              .slice(0, 20)
+              .slice(0, 40)
           : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpBenefitItems,
-        lpScreenshotItems: Array.isArray(club?.lpScreenshotItems)
-          ? club.lpScreenshotItems
-              .map((item) => ({
-                title: String(item?.title ?? "").slice(0, 120).trim(),
-                description: String(item?.description ?? "").slice(0, 400).trim(),
-                imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
-              }))
-              .filter((item) => item.title)
-              .slice(0, 12)
-          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpScreenshotItems,
+        lpScreenshotItems: sanitizeLpScreenshotItems(club?.lpScreenshotItems),
+        lpSections: sanitizeLpSections(club?.lpSections),
         checklistTemplate: Array.isArray(club?.checklistTemplate)
           ? club.checklistTemplate
               .map((item, index) => ({
@@ -791,6 +1000,7 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
               ),
             )]
           : [],
+        trainingCourses: normalizeFlightReviewClubTrainingCourses(club?.trainingCourses),
       };
     })(),
     flightEvaluation: normalizeFlightEvaluationRules(raw.flightEvaluation),

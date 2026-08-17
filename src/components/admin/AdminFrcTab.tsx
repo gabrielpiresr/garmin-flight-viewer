@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { BUCKET_ID, ID, NOTICES_BUCKET_ID, Permission, Role, storage } from "../../lib/appwrite";
 import {
   ensureFlightReviewClubMemberTasks,
   forceFlightReviewClubAccess,
@@ -7,32 +6,50 @@ import {
   listAdminFlightReviewClubMembers,
   updateFlightReviewClubTask,
 } from "../../lib/caktoDb";
-import { getSchoolRules, saveSchoolRules } from "../../lib/schoolRulesDb";
+import { searchFlightPickerUsers } from "../../lib/adminUsersDb";
+import { getSchoolRules, saveSchoolRules, uploadFrcTrainingCoverImage, uploadFrcTrainingPdf } from "../../lib/schoolRulesDb";
 import type {
   FlightReviewClubAdminOverview,
   FlightReviewClubMemberRow,
   FlightReviewClubTask,
   FlightReviewClubTaskStatus,
 } from "../../types/cakto";
+import type { AdminUserSummary } from "../../types/adminUsers";
+import type { StudentIdentity } from "../../types/schedule";
 import {
   DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   STUDENT_PORTAL_TAB_OPTIONS,
   type FlightReviewClubChecklistTemplateItem,
   type FlightReviewClubRules,
-  type FlightReviewClubScreenshotItem,
   type FlightReviewClubSubscriptionPlan,
+  type FlightReviewClubTrainingCourse,
+  type FlightReviewClubTrainingLesson,
   type SchoolRules,
   type SchoolRulesInput,
 } from "../../types/schoolRules";
 import { Tabs } from "../ui/Tabs";
 import { useToast } from "../ui/ToastProvider";
+import { StudentSearchSelect } from "./StudentSearchSelect";
 
-type FrcSubTab = "overview" | "landing" | "subscription" | "members" | "checklist";
+function toStudentIdentity(user: AdminUserSummary): StudentIdentity {
+  return {
+    userId: user.userId,
+    label: user.name || user.email || user.userId,
+    nickname: user.profile?.nickname || null,
+    email: user.email || null,
+    anacCode: user.profile?.anacCode || null,
+    weightKg: null,
+    heightCm: null,
+  };
+}
+
+type FrcSubTab = "overview" | "landing" | "subscription" | "training" | "members" | "checklist";
 
 const FRC_TABS: Array<{ id: FrcSubTab; label: string }> = [
   { id: "overview", label: "Visao geral" },
   { id: "landing", label: "Landing Page" },
   { id: "subscription", label: "Assinatura" },
+  { id: "training", label: "Treinamento" },
   { id: "members", label: "Integrantes" },
   { id: "checklist", label: "Checklist Base" },
 ];
@@ -63,22 +80,11 @@ function rulesInputFrom(settings: SchoolRules): SchoolRulesInput {
   };
 }
 
-async function uploadPublicAsset(file: File, label: string): Promise<string> {
-  const bucketId = NOTICES_BUCKET_ID ?? BUCKET_ID;
-  if (!storage || !bucketId) throw new Error(`${label} não configurado.`);
-  const uploaded = await storage.createFile(bucketId, ID.unique(), file, [Permission.read(Role.any())]);
-  return storage.getFileView(bucketId, uploaded.$id).toString();
-}
-
 function createId(prefix: string): string {
   const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${suffix}`.slice(0, 64);
-}
-
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(amount || 0));
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -133,13 +139,12 @@ export function AdminFrcTab() {
   const [manualAccessTarget, setManualAccessTarget] = useState("");
   const [manualAccessUntil, setManualAccessUntil] = useState("");
   const [manualAccessBusy, setManualAccessBusy] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [pickerStudents, setPickerStudents] = useState<StudentIdentity[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerKey, setPickerKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const activePlans = useMemo(() => club.subscriptionPlans.filter((plan) => plan.enabled), [club.subscriptionPlans]);
-  const cheapestPlan = useMemo(
-    () => activePlans.filter((plan) => plan.amount > 0).sort((a, b) => a.amount - b.amount)[0] ?? null,
-    [activePlans],
-  );
   const visibleMembers = useMemo(
     () => showIncompleteOnly ? members.filter(hasIncompleteTasks) : members,
     [members, showIncompleteOnly],
@@ -187,6 +192,28 @@ export function AdminFrcTab() {
     return () => window.clearTimeout(timer);
   }, [search, subTab]);
 
+  useEffect(() => {
+    if (subTab !== "members") return;
+    let cancelled = false;
+    setPickerLoading(true);
+    const handle = window.setTimeout(() => {
+      void searchFlightPickerUsers({ role: "aluno", search: pickerQuery.trim(), limit: 20 })
+        .then((users) => {
+          if (!cancelled) setPickerStudents(users.map(toStudentIdentity));
+        })
+        .catch(() => {
+          if (!cancelled) setPickerStudents([]);
+        })
+        .finally(() => {
+          if (!cancelled) setPickerLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [pickerQuery, subTab]);
+
   async function saveClub(nextClub = club) {
     if (!settings) return;
     const recurringEnabled = nextClub.billingMode !== "legacy_one_time";
@@ -201,22 +228,15 @@ export function AdminFrcTab() {
       const current = await getSchoolRules().catch(() => settings);
       const saved = await saveSchoolRules({ ...rulesInputFrom(current), flightReviewClub: nextClub });
       setSettings(saved);
-      setClubState(saved.flightReviewClub);
+      setClubState({
+        ...saved.flightReviewClub,
+        exclusiveStudentTabs: nextClub.exclusiveStudentTabs,
+      });
       showToast({ variant: "success", message: "FRC salvo com sucesso." });
     } catch (err) {
       setError((err as Error).message || "Não foi possível salvar o FRC.");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function uploadImage(file: File | null, apply: (url: string) => void) {
-    if (!file) return;
-    setError(null);
-    try {
-      apply(await uploadPublicAsset(file, "Assets publicos do FRC"));
-    } catch (err) {
-      setError((err as Error).message || "Não foi possível enviar o arquivo.");
     }
   }
 
@@ -238,7 +258,7 @@ export function AdminFrcTab() {
   async function grantManualAccess(target = manualAccessTarget, accessUntil = manualAccessUntil) {
     const safeTarget = target.trim();
     if (!safeTarget) {
-      setError("Informe o ID ou e-mail do aluno.");
+      setError("Selecione um aluno.");
       return;
     }
     setManualAccessBusy(true);
@@ -252,6 +272,8 @@ export function AdminFrcTab() {
       await reloadFrcMembers();
       setManualAccessTarget("");
       setManualAccessUntil("");
+      setPickerQuery("");
+      setPickerKey((key) => key + 1);
       showToast({ variant: "success", message: "Acesso manual ao FRC liberado." });
     } catch (err) {
       setError((err as Error).message || "Não foi possível liberar o acesso manual.");
@@ -386,62 +408,38 @@ export function AdminFrcTab() {
       {subTab === "landing" ? (
         <div className="space-y-4">
           <div className={PANEL}>
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="space-y-4">
-                <label className="text-xs text-slate-400">
-                  Titulo do hero
-                  <input value={club.lpHeroTitle} onChange={(e) => setClub({ lpHeroTitle: e.target.value })} className={TEXT_INPUT} />
-                </label>
-                <label className="text-xs text-slate-400">
-                  Subtitulo
-                  <textarea value={club.lpHeroSubtitle} onChange={(e) => setClub({ lpHeroSubtitle: e.target.value })} rows={3} className={TEXT_INPUT} />
-                </label>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="text-xs text-slate-400">
-                    CTA
-                    <input value={club.lpCtaLabel} onChange={(e) => setClub({ lpCtaLabel: e.target.value })} className={TEXT_INPUT} />
-                  </label>
-                  <label className="text-xs text-slate-400">
-                    Link fallback do CTA
-                    <input value={club.ctaSubscriptionUrl} onChange={(e) => setClub({ ctaSubscriptionUrl: e.target.value })} placeholder="https://..." className={TEXT_INPUT} />
-                  </label>
-                </div>
-                <label className="text-xs text-slate-400">
-                  Imagem principal por URL
-                  <input value={club.lpCoverImageUrl} onChange={(e) => setClub({ lpCoverImageUrl: e.target.value })} placeholder="https://..." className={TEXT_INPUT} />
-                </label>
-                <label className="text-xs text-slate-400">
-                  Upload da imagem principal
-                  <input type="file" accept="image/*" onChange={(e) => void uploadImage(e.target.files?.[0] ?? null, (url) => setClub({ lpCoverImageUrl: url }))} className="mt-1 block w-full text-xs text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-2 file:text-sm file:font-bold file:text-slate-950" />
-                </label>
-              </div>
-              <LandingPreview club={club} cheapestPlan={cheapestPlan} />
+            <p className="text-xs font-semibold uppercase tracking-widest text-sky-300">Editor visual</p>
+            <h3 className="mt-2 text-xl font-black text-white">Altere textos e imagens direto na landing</h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+              Abra a página pública, clique no texto para editar e passe o mouse nas imagens para trocar o print. Depois salve na barra de baixo.
+            </p>
+            <a
+              href="/flight-review-club?edit=1"
+              className="mt-4 inline-flex rounded-lg bg-sky-400 px-4 py-2 text-sm font-black text-slate-950 hover:bg-sky-300"
+            >
+              Abrir landing para editar
+            </a>
+          </div>
+          <div className={PANEL}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Tipo de landing
+                <select value={club.landingPageType} onChange={(e) => setClub({ landingPageType: e.target.value as FlightReviewClubRules["landingPageType"] })} className={TEXT_INPUT}>
+                  <option value="internal_public_page">Página pública interna (/flight-review-club)</option>
+                  <option value="external_url">URL externa</option>
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">
+                URL externa
+                <input value={club.externalUrl} onChange={(e) => setClub({ externalUrl: e.target.value })} disabled={club.landingPageType !== "external_url"} className={`${TEXT_INPUT} disabled:opacity-50`} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Link fallback do CTA
+                <input value={club.ctaSubscriptionUrl} onChange={(e) => setClub({ ctaSubscriptionUrl: e.target.value })} placeholder="https://..." className={TEXT_INPUT} />
+              </label>
             </div>
             <SaveBar saving={saving} onSave={() => void saveClub()} />
           </div>
-
-          <EditableStringList
-            title="Propostas de valor"
-            items={club.lpValueProps}
-            onChange={(items) => setClub({ lpValueProps: items })}
-          />
-
-          <EditableBenefits
-            club={club}
-            onChange={(items) => setClub({ lpBenefitItems: items, benefits: items.map((item) => item.text).filter(Boolean) })}
-            onUpload={(index, file) => void uploadImage(file, (url) => {
-              const items = club.lpBenefitItems.map((item, itemIndex) => itemIndex === index ? { ...item, imageUrl: url } : item);
-              setClub({ lpBenefitItems: items });
-            })}
-          />
-
-          <EditableScreenshots
-            items={club.lpScreenshotItems}
-            onChange={(items) => setClub({ lpScreenshotItems: items })}
-            onUpload={(index, file) => void uploadImage(file, (url) => {
-              setClub({ lpScreenshotItems: club.lpScreenshotItems.map((item, itemIndex) => itemIndex === index ? { ...item, imageUrl: url } : item) });
-            })}
-          />
         </div>
       ) : null}
 
@@ -535,7 +533,7 @@ export function AdminFrcTab() {
 
       {subTab === "members" ? (
         <div className="space-y-4">
-          <div className={PANEL}>
+          <div className={`${PANEL} overflow-visible`}>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-end">
               <label className="text-xs text-slate-400">
                 Buscar integrante
@@ -547,10 +545,18 @@ export function AdminFrcTab() {
               </label>
             </div>
             <div className="mt-4 grid gap-3 border-t border-slate-800 pt-4 lg:grid-cols-[minmax(0,1fr)_190px_auto] lg:items-end">
-              <label className="text-xs text-slate-400">
-                Liberar acesso manual para aluno
-                <input value={manualAccessTarget} onChange={(e) => setManualAccessTarget(e.target.value)} placeholder="ID ou e-mail do aluno" className={TEXT_INPUT} />
-              </label>
+              <StudentSearchSelect
+                key={pickerKey}
+                label="Liberar acesso manual para aluno"
+                students={pickerStudents}
+                value={manualAccessTarget}
+                onChange={(student) => setManualAccessTarget(student.userId)}
+                disableLocalFilter
+                loading={pickerLoading}
+                onQueryChange={setPickerQuery}
+                placeholder="Pesquise por nickname, nome, e-mail ou ANAC"
+                className="relative z-30"
+              />
               <label className="text-xs text-slate-400">
                 Acesso até
                 <input type="date" value={manualAccessUntil} onChange={(e) => setManualAccessUntil(e.target.value)} className={TEXT_INPUT} />
@@ -573,6 +579,15 @@ export function AdminFrcTab() {
             taskBusy={taskBusy}
           />
         </div>
+      ) : null}
+
+      {subTab === "training" ? (
+        <TrainingCoursesEditor
+          courses={club.trainingCourses}
+          onChange={(trainingCourses) => setClub({ trainingCourses })}
+          saving={saving}
+          onSave={() => void saveClub()}
+        />
       ) : null}
 
       {subTab === "checklist" ? (
@@ -609,139 +624,6 @@ function SaveBar({ saving, onSave }: { saving: boolean; onSave: () => void }) {
       <button type="button" onClick={onSave} disabled={saving} className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-60">
         {saving ? "Salvando..." : "Salvar FRC"}
       </button>
-    </div>
-  );
-}
-
-function LandingPreview({ club, cheapestPlan }: { club: FlightReviewClubRules; cheapestPlan: FlightReviewClubSubscriptionPlan | null }) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-700 bg-slate-950">
-      <div
-        className="min-h-56 p-5"
-        style={club.lpCoverImageUrl ? {
-          backgroundImage: `linear-gradient(90deg, rgba(2,6,23,0.92), rgba(2,6,23,0.45)), url(${club.lpCoverImageUrl})`,
-          backgroundPosition: "center",
-          backgroundSize: "cover",
-        } : undefined}
-      >
-        <p className="text-xs font-semibold uppercase tracking-widest text-sky-300">Preview</p>
-        <h3 className="mt-3 text-2xl font-black text-white">{club.lpHeroTitle || "Flight Review Club"}</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-300">{club.lpHeroSubtitle}</p>
-        {cheapestPlan ? <p className="mt-4 text-lg font-black text-sky-200">A partir de {formatCurrency(cheapestPlan.amount)}</p> : null}
-        <span className="mt-4 inline-flex rounded-lg bg-sky-400 px-4 py-2 text-sm font-black text-slate-950">{club.lpCtaLabel || "Assinar"}</span>
-      </div>
-    </div>
-  );
-}
-
-function EditableStringList({ title, items, onChange }: { title: string; items: string[]; onChange: (items: string[]) => void }) {
-  return (
-    <div className={PANEL}>
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">{title}</h3>
-        <button type="button" onClick={() => onChange([...items, ""])} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800">
-          Adicionar
-        </button>
-      </div>
-      <div className="mt-3 space-y-2">
-        {items.map((item, index) => (
-          <div key={index} className="flex gap-2">
-            <input value={item} onChange={(e) => onChange(items.map((current, i) => i === index ? e.target.value : current))} className={TEXT_INPUT} />
-            <button type="button" onClick={() => onChange(items.filter((_, i) => i !== index))} className="mt-1 rounded-lg border border-red-500/40 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/10">
-              Remover
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EditableBenefits({
-  club,
-  onChange,
-  onUpload,
-}: {
-  club: FlightReviewClubRules;
-  onChange: (items: FlightReviewClubRules["lpBenefitItems"]) => void;
-  onUpload: (index: number, file: File | null) => void;
-}) {
-  return (
-    <div className={PANEL}>
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Benefícios do pacote real</h3>
-        <button type="button" onClick={() => onChange([...club.lpBenefitItems, { text: "", imageUrl: "" }])} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800">
-          Adicionar
-        </button>
-      </div>
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        {club.lpBenefitItems.map((item, index) => (
-          <div key={index} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
-            <label className="text-xs text-slate-400">
-              Beneficio
-              <input value={item.text} onChange={(e) => onChange(club.lpBenefitItems.map((current, i) => i === index ? { ...current, text: e.target.value } : current))} className={TEXT_INPUT} />
-            </label>
-            <label className="mt-2 block text-xs text-slate-400">
-              Imagem por URL
-              <input value={item.imageUrl} onChange={(e) => onChange(club.lpBenefitItems.map((current, i) => i === index ? { ...current, imageUrl: e.target.value } : current))} className={TEXT_INPUT} />
-            </label>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <input type="file" accept="image/*" onChange={(e) => onUpload(index, e.target.files?.[0] ?? null)} className="min-w-0 text-xs text-slate-500 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-700 file:px-2 file:py-1.5 file:text-xs file:font-semibold file:text-slate-100" />
-              <button type="button" onClick={() => onChange(club.lpBenefitItems.filter((_, i) => i !== index))} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10">
-                Remover
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EditableScreenshots({
-  items,
-  onChange,
-  onUpload,
-}: {
-  items: FlightReviewClubScreenshotItem[];
-  onChange: (items: FlightReviewClubScreenshotItem[]) => void;
-  onUpload: (index: number, file: File | null) => void;
-}) {
-  return (
-    <div className={PANEL}>
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Prints da plataforma</h3>
-        <button type="button" onClick={() => onChange([...items, { title: "", description: "", imageUrl: "" }])} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800">
-          Adicionar print
-        </button>
-      </div>
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        {items.map((item, index) => (
-          <div key={index} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
-            <div className="mb-3 flex h-28 items-center justify-center overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
-              {item.imageUrl ? <img src={item.imageUrl} alt="" className="h-full w-full object-cover" /> : <span className="text-xs text-slate-600">Sem imagem</span>}
-            </div>
-            <label className="text-xs text-slate-400">
-              Titulo
-              <input value={item.title} onChange={(e) => onChange(items.map((current, i) => i === index ? { ...current, title: e.target.value } : current))} className={TEXT_INPUT} />
-            </label>
-            <label className="mt-2 block text-xs text-slate-400">
-              Descrição
-              <textarea value={item.description} onChange={(e) => onChange(items.map((current, i) => i === index ? { ...current, description: e.target.value } : current))} rows={2} className={TEXT_INPUT} />
-            </label>
-            <label className="mt-2 block text-xs text-slate-400">
-              Imagem por URL
-              <input value={item.imageUrl} onChange={(e) => onChange(items.map((current, i) => i === index ? { ...current, imageUrl: e.target.value } : current))} className={TEXT_INPUT} />
-            </label>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <input type="file" accept="image/*" onChange={(e) => onUpload(index, e.target.files?.[0] ?? null)} className="min-w-0 text-xs text-slate-500 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-700 file:px-2 file:py-1.5 file:text-xs file:font-semibold file:text-slate-100" />
-              <button type="button" onClick={() => onChange(items.filter((_, i) => i !== index))} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10">
-                Remover
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -909,6 +791,351 @@ function ChecklistTemplateEditor({
           </div>
         ))}
       </div>
+      <SaveBar saving={saving} onSave={onSave} />
+    </div>
+  );
+}
+
+function newTrainingCourse(): FlightReviewClubTrainingCourse {
+  return {
+    id: createId("frc-course"),
+    title: "Novo curso FRC",
+    description: "",
+    coverImageUrl: "",
+    enabled: true,
+    sortOrder: 0,
+    lessons: [],
+  };
+}
+
+function newTrainingLesson(kind: FlightReviewClubTrainingLesson["kind"]): FlightReviewClubTrainingLesson {
+  return {
+    id: createId(kind === "pdf" ? "frc-pdf" : "frc-video"),
+    title: kind === "pdf" ? "Novo PDF" : "Nova aula Vimeo",
+    description: "",
+    kind,
+    vimeoUrl: "",
+    pdfUrl: "",
+    durationLabel: "",
+    enabled: true,
+  };
+}
+
+function TrainingCoursesEditor({
+  courses,
+  onChange,
+  saving,
+  onSave,
+}: {
+  courses: FlightReviewClubTrainingCourse[];
+  onChange: (courses: FlightReviewClubTrainingCourse[]) => void;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  const { showToast } = useToast();
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(courses[0]?.id ?? null);
+  const [uploadingLessonKey, setUploadingLessonKey] = useState<string | null>(null);
+  const [uploadingCoverCourseId, setUploadingCoverCourseId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (courses.length === 0) {
+      if (selectedCourseId !== null) setSelectedCourseId(null);
+      return;
+    }
+    if (!courses.some((course) => course.id === selectedCourseId)) {
+      setSelectedCourseId(courses[0].id);
+    }
+  }, [courses, selectedCourseId]);
+
+  const selectedCourseIndex = courses.findIndex((course) => course.id === selectedCourseId);
+  const selectedCourse = selectedCourseIndex >= 0 ? courses[selectedCourseIndex] : null;
+
+  function patchCourse(index: number, patch: Partial<FlightReviewClubTrainingCourse>) {
+    onChange(courses.map((course, i) => i === index ? { ...course, ...patch } : course));
+  }
+
+  function patchLesson(courseIndex: number, lessonIndex: number, patch: Partial<FlightReviewClubTrainingLesson>) {
+    onChange(courses.map((course, i) => {
+      if (i !== courseIndex) return course;
+      return {
+        ...course,
+        lessons: course.lessons.map((lesson, j) => j === lessonIndex ? { ...lesson, ...patch } : lesson),
+      };
+    }));
+  }
+
+  function addLesson(courseIndex: number, kind: FlightReviewClubTrainingLesson["kind"]) {
+    onChange(courses.map((course, i) => (
+      i === courseIndex ? { ...course, lessons: [...course.lessons, newTrainingLesson(kind)] } : course
+    )));
+  }
+
+  function removeLesson(courseIndex: number, lessonIndex: number) {
+    onChange(courses.map((course, i) => (
+      i === courseIndex ? { ...course, lessons: course.lessons.filter((_, j) => j !== lessonIndex) } : course
+    )));
+  }
+
+  function addCourse() {
+    const course = { ...newTrainingCourse(), sortOrder: courses.length };
+    onChange([...courses, course]);
+    setSelectedCourseId(course.id);
+  }
+
+  function removeCourse(courseIndex: number) {
+    const nextCourses = courses.filter((_, i) => i !== courseIndex);
+    onChange(nextCourses);
+    setSelectedCourseId(nextCourses[Math.max(0, courseIndex - 1)]?.id ?? nextCourses[0]?.id ?? null);
+  }
+
+  async function handlePdfUpload(courseIndex: number, lessonIndex: number, file: File | null) {
+    if (!file) return;
+    const lesson = courses[courseIndex]?.lessons[lessonIndex];
+    const key = `${courses[courseIndex]?.id ?? courseIndex}:${lesson?.id ?? lessonIndex}`;
+    try {
+      setUploadingLessonKey(key);
+      const pdfUrl = await uploadFrcTrainingPdf(file);
+      patchLesson(courseIndex, lessonIndex, { pdfUrl });
+      showToast({ variant: "success", message: "PDF enviado. Clique em Salvar FRC para publicar." });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Não foi possível enviar o PDF.",
+      });
+    } finally {
+      setUploadingLessonKey(null);
+    }
+  }
+
+  async function handleCoverUpload(courseIndex: number, file: File | null) {
+    if (!file) return;
+    const course = courses[courseIndex];
+    const key = course?.id ?? String(courseIndex);
+    try {
+      setUploadingCoverCourseId(key);
+      const coverImageUrl = await uploadFrcTrainingCoverImage(file);
+      patchCourse(courseIndex, { coverImageUrl });
+      showToast({ variant: "success", message: "Capa enviada. Clique em Salvar FRC para publicar." });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Não foi possível enviar a capa.",
+      });
+    } finally {
+      setUploadingCoverCourseId(null);
+    }
+  }
+
+  return (
+    <div className={PANEL}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Treinamento FRC</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Publique cursos exclusivos com aulas Vimeo ou e-books em PDF. Alunos sem FRC veem o catálogo, mas não abrem o conteúdo.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addCourse}
+          className="rounded-lg border border-sky-500/40 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/10"
+        >
+          Adicionar curso
+        </button>
+      </div>
+
+      {courses.length === 0 ? (
+        <div className="mt-4 rounded-lg border border-dashed border-slate-700 p-6 text-center text-sm text-slate-500">
+          Nenhum curso configurado.
+        </div>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/25 p-2">
+          {courses.map((course, courseIndex) => (
+            <button
+              key={course.id || courseIndex}
+              type="button"
+              onClick={() => setSelectedCourseId(course.id)}
+              className={`w-full rounded-lg border p-3 text-left transition ${
+                selectedCourse?.id === course.id
+                  ? "border-sky-500/50 bg-sky-500/10"
+                  : "border-transparent hover:border-slate-700 hover:bg-slate-900/60"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="line-clamp-2 text-sm font-bold text-white">{course.title || "Curso sem título"}</p>
+                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${course.enabled ? "border-emerald-500/40 text-emerald-200" : "border-slate-700 text-slate-500"}`}>
+                  {course.enabled ? "On" : "Off"}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">{course.lessons.length} item(ns)</p>
+            </button>
+          ))}
+        </div>
+
+        {selectedCourse ? (
+          <div className="rounded-lg border border-slate-800 bg-slate-950/25 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Curso selecionado</p>
+                <h4 className="mt-1 text-base font-black text-white">{selectedCourse.title || "Curso sem título"}</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeCourse(selectedCourseIndex)}
+                className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10"
+              >
+                Remover curso
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 border-t border-slate-800 pt-4 md:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Título do curso
+                <input value={selectedCourse.title} onChange={(e) => patchCourse(selectedCourseIndex, { title: e.target.value })} className={TEXT_INPUT} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Ordem
+                <input type="number" value={selectedCourse.sortOrder} onChange={(e) => patchCourse(selectedCourseIndex, { sortOrder: Math.round(Number(e.target.value) || 0) })} className={TEXT_INPUT} />
+              </label>
+              <label className="text-xs text-slate-400 md:col-span-2">
+                URL da capa
+                <input value={selectedCourse.coverImageUrl} onChange={(e) => patchCourse(selectedCourseIndex, { coverImageUrl: e.target.value })} placeholder="https://..." className={TEXT_INPUT} />
+              </label>
+              <label className="text-xs text-slate-400 md:col-span-2">
+                Enviar capa
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={uploadingCoverCourseId === selectedCourse.id}
+                  onChange={(event) => {
+                    void handleCoverUpload(selectedCourseIndex, event.currentTarget.files?.[0] ?? null);
+                    event.currentTarget.value = "";
+                  }}
+                  className="mt-1 block w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-100 hover:file:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                {uploadingCoverCourseId === selectedCourse.id ? <p className="mt-1 text-xs text-sky-300">Enviando capa...</p> : null}
+              </label>
+              {selectedCourse.coverImageUrl ? (
+                <div className="md:col-span-2 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/60">
+                  <img src={selectedCourse.coverImageUrl} alt="" className="h-32 w-full object-cover" />
+                </div>
+              ) : null}
+              <label className="text-xs text-slate-400 md:col-span-2">
+                Descrição
+                <textarea value={selectedCourse.description} onChange={(e) => patchCourse(selectedCourseIndex, { description: e.target.value })} rows={2} className={TEXT_INPUT} />
+              </label>
+              <label className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 text-sm text-slate-200">
+                <input type="checkbox" checked={selectedCourse.enabled} onChange={(e) => patchCourse(selectedCourseIndex, { enabled: e.target.checked })} className="h-4 w-4 accent-sky-500" />
+                Publicar no catálogo do aluno
+              </label>
+            </div>
+
+            <div className="mt-5 border-t border-slate-800 pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Aulas e PDFs</p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => addLesson(selectedCourseIndex, "vimeo")} className="rounded-lg border border-sky-500/40 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/10">
+                    Adicionar aula Vimeo
+                  </button>
+                  <button type="button" onClick={() => addLesson(selectedCourseIndex, "pdf")} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10">
+                    Adicionar PDF
+                  </button>
+                </div>
+              </div>
+
+              {selectedCourse.lessons.length === 0 ? (
+                <div className="mt-3 rounded-lg border border-dashed border-slate-700 p-5 text-center text-sm text-slate-500">
+                  Adicione uma aula Vimeo ou um PDF para publicar este curso.
+                </div>
+              ) : null}
+
+              <div className="mt-3 space-y-3">
+                {selectedCourse.lessons.map((lesson, lessonIndex) => {
+                  const uploadKey = `${selectedCourse.id}:${lesson.id}`;
+                  return (
+                    <div key={lesson.id || lessonIndex} className="rounded-lg border border-slate-800 bg-slate-900/45 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                            <input type="checkbox" checked={lesson.enabled} onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, { enabled: e.target.checked })} className="h-4 w-4 accent-sky-500" />
+                            Ativo
+                          </label>
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase ${lesson.kind === "pdf" ? "border-red-500/35 bg-red-500/10 text-red-200" : "border-sky-500/35 bg-sky-500/10 text-sky-200"}`}>
+                            {lesson.kind === "pdf" ? "PDF" : "Vídeo"}
+                          </span>
+                        </div>
+                        <button type="button" onClick={() => removeLesson(selectedCourseIndex, lessonIndex)} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10">
+                          Remover item
+                        </button>
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <label className="text-xs text-slate-400">
+                          Tipo
+                          <select value={lesson.kind} onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, { kind: e.target.value as FlightReviewClubTrainingLesson["kind"] })} className={TEXT_INPUT}>
+                            <option value="vimeo">Vídeo Vimeo</option>
+                            <option value="pdf">PDF</option>
+                          </select>
+                        </label>
+                        <label className="text-xs text-slate-400">
+                          Duração/rótulo
+                          <input value={lesson.durationLabel} onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, { durationLabel: e.target.value })} placeholder="12 min, 20 páginas..." className={TEXT_INPUT} />
+                        </label>
+                        <label className="text-xs text-slate-400 md:col-span-2">
+                          Título
+                          <input value={lesson.title} onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, { title: e.target.value })} className={TEXT_INPUT} />
+                        </label>
+                        <label className="text-xs text-slate-400 md:col-span-2">
+                          {lesson.kind === "pdf" ? "URL do PDF" : "URL ou embed do Vimeo"}
+                          <input
+                            value={lesson.kind === "pdf" ? lesson.pdfUrl : lesson.vimeoUrl}
+                            onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, lesson.kind === "pdf" ? { pdfUrl: e.target.value } : { vimeoUrl: e.target.value })}
+                            placeholder={lesson.kind === "pdf" ? "https://.../arquivo.pdf" : "https://vimeo.com/123456789 ou iframe embed"}
+                            className={TEXT_INPUT}
+                          />
+                        </label>
+                        {lesson.kind === "pdf" ? (
+                          <label className="text-xs text-slate-400 md:col-span-2">
+                            Enviar PDF
+                            <input
+                              type="file"
+                              accept="application/pdf,.pdf"
+                              disabled={uploadingLessonKey === uploadKey}
+                              onChange={(event) => {
+                                void handlePdfUpload(selectedCourseIndex, lessonIndex, event.currentTarget.files?.[0] ?? null);
+                                event.currentTarget.value = "";
+                              }}
+                              className="mt-1 block w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-100 hover:file:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-60"
+                            />
+                            {uploadingLessonKey === uploadKey ? <p className="mt-1 text-xs text-sky-300">Enviando PDF...</p> : null}
+                          </label>
+                        ) : null}
+                        <label className="text-xs text-slate-400 md:col-span-2">
+                          Descrição
+                          <textarea value={lesson.description} onChange={(e) => patchLesson(selectedCourseIndex, lessonIndex, { description: e.target.value })} rows={2} className={TEXT_INPUT} />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {selectedCourse.lessons.length > 0 ? (
+                <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-800 pt-4">
+                  <button type="button" onClick={() => addLesson(selectedCourseIndex, "vimeo")} className="rounded-lg border border-sky-500/40 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/10">
+                    Adicionar aula Vimeo
+                  </button>
+                  <button type="button" onClick={() => addLesson(selectedCourseIndex, "pdf")} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/10">
+                    Adicionar PDF
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
       <SaveBar saving={saving} onSave={onSave} />
     </div>
   );

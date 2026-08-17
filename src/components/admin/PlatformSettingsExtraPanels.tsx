@@ -62,9 +62,11 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
       ...settings.flightReviewClub,
       pricingRules: settings.flightReviewClub.pricingRules.map((item) => ({ ...item })),
       lpBenefitItems: settings.flightReviewClub.lpBenefitItems.map((item) => ({ ...item })),
-      lpScreenshotItems: settings.flightReviewClub.lpScreenshotItems.map((item) => ({ ...item })),
+      lpScreenshotItems: (settings.flightReviewClub.lpScreenshotItems ?? []).map((item) => ({ ...item })),
+      lpSections: (settings.flightReviewClub.lpSections ?? []).map((item) => ({ ...item })),
       checklistTemplate: settings.flightReviewClub.checklistTemplate.map((item) => ({ ...item })),
       lpValueProps: [...settings.flightReviewClub.lpValueProps],
+      lpHeroChips: [...(settings.flightReviewClub.lpHeroChips ?? [])],
       benefits: [...settings.flightReviewClub.benefits],
       subscriptionPlans: settings.flightReviewClub.subscriptionPlans.map((item) => ({ ...item })),
       exclusiveStudentTabs: [...settings.flightReviewClub.exclusiveStudentTabs],
@@ -694,9 +696,6 @@ export function FlightReviewClubPanel() {
   const [settings, setSettings] = useState<SchoolRules | null>(null);
   const [form, setForm] = useState<SchoolRulesInput>(toRulesForm(DEFAULT_SCHOOL_RULES));
   const [tracks, setTracks] = useState<TrainingTrack[]>([]);
-  const [newBenefitText, setNewBenefitText] = useState("");
-  const [newBenefitImage, setNewBenefitImage] = useState("");
-  const [newValueProp, setNewValueProp] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -759,40 +758,6 @@ export function FlightReviewClubPanel() {
     } finally {
       setSaving(false);
     }
-  }
-
-  async function uploadCover(file: File | null) {
-    if (!file) return;
-    try {
-      setClub({ lpCoverImageUrl: await uploadPublicAsset(file, "Imagem da LP do FRC") });
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
-  async function uploadBenefitImage(index: number, file: File | null) {
-    if (!file) return;
-    try {
-      const imageUrl = await uploadPublicAsset(file, "Imagem de beneficio do FRC");
-      setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, imageUrl } : item) });
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
-  function addBenefitItem() {
-    const text = newBenefitText.trim();
-    if (!text || club.lpBenefitItems.length >= 20) return;
-    setClub({ lpBenefitItems: [...club.lpBenefitItems, { text, imageUrl: newBenefitImage.trim() }] });
-    setNewBenefitText("");
-    setNewBenefitImage("");
-  }
-
-  function addValueProp() {
-    const text = newValueProp.trim();
-    if (!text || club.lpValueProps.length >= 12) return;
-    setClub({ lpValueProps: [...club.lpValueProps, text] });
-    setNewValueProp("");
   }
 
   function addPricingRule() {
@@ -977,74 +942,10 @@ export function FlightReviewClubPanel() {
 
               <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Landing page interna</p>
-                <div className="mt-3 grid gap-4 md:grid-cols-2">
-                  <label className="text-xs text-slate-400">
-                    Titulo
-                    <input value={club.lpHeroTitle} onChange={(e) => setClub({ lpHeroTitle: e.target.value })} maxLength={120} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  </label>
-                  <label className="text-xs text-slate-400">
-                    Texto do botao
-                    <input value={club.lpCtaLabel} onChange={(e) => setClub({ lpCtaLabel: e.target.value })} maxLength={80} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  </label>
-                  <label className="text-xs text-slate-400 md:col-span-2">
-                    Subtitulo
-                    <textarea value={club.lpHeroSubtitle} onChange={(e) => setClub({ lpHeroSubtitle: e.target.value })} rows={3} maxLength={500} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  </label>
-                  <div className="md:col-span-2">
-                    <label className="mb-1 block text-xs text-slate-400">Imagem de capa</label>
-                    <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
-                      <div className="flex min-h-28 items-center justify-center overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950/50">
-                        {club.lpCoverImageUrl ? <img src={club.lpCoverImageUrl} alt="Capa atual" className="h-full max-h-32 w-full object-cover" /> : <span className="text-xs text-slate-500">Sem capa</span>}
-                      </div>
-                      <div className="space-y-2">
-                        <input type="file" accept="image/*" onChange={(e) => void uploadCover(e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-xs file:text-slate-200" />
-                        <input type="url" value={club.lpCoverImageUrl} onChange={(e) => setClub({ lpCoverImageUrl: e.target.value })} placeholder="Ou cole uma URL publica" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Beneficios com imagem</p>
-                <div className="mt-3 space-y-3">
-                  {club.lpBenefitItems.map((benefit, index) => (
-                    <div key={index} className="grid gap-3 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 md:grid-cols-[120px_minmax(0,1fr)_auto]">
-                      <div className="flex h-20 items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-950/50">
-                        {benefit.imageUrl ? <img src={benefit.imageUrl} alt="" className="h-full w-full object-cover" /> : <span className="text-[11px] text-slate-500">Sem imagem</span>}
-                      </div>
-                      <div className="space-y-2">
-                        <input value={benefit.text} onChange={(e) => setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, text: e.target.value } : item) })} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          <input type="url" value={benefit.imageUrl} onChange={(e) => setClub({ lpBenefitItems: club.lpBenefitItems.map((item, i) => i === index ? { ...item, imageUrl: e.target.value } : item) })} placeholder="URL da imagem" className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-100 outline-none focus:border-sky-500" />
-                          <input type="file" accept="image/*" onChange={(e) => void uploadBenefitImage(index, e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 file:mr-2 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-[11px] file:text-slate-200" />
-                        </div>
-                      </div>
-                      <button type="button" onClick={() => setClub({ lpBenefitItems: club.lpBenefitItems.filter((_, i) => i !== index) })} className="self-start rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10">Remover</button>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                  <input type="text" value={newBenefitText} onChange={(e) => setNewBenefitText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBenefitItem(); } }} placeholder="Texto do beneficio..." maxLength={500} className="min-w-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  <input type="url" value={newBenefitImage} onChange={(e) => setNewBenefitImage(e.target.value)} placeholder="URL da imagem (opcional)" className="min-w-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  <button type="button" onClick={addBenefitItem} disabled={!newBenefitText.trim() || club.lpBenefitItems.length >= 20} className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-40">Adicionar</button>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Textos de valor</p>
-                <div className="mt-2 space-y-2">
-                  {club.lpValueProps.map((prop, index) => (
-                    <div key={index} className="flex gap-2">
-                      <input value={prop} onChange={(e) => setClub({ lpValueProps: club.lpValueProps.map((item, i) => i === index ? e.target.value : item) })} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                      <button type="button" onClick={() => setClub({ lpValueProps: club.lpValueProps.filter((_, i) => i !== index) })} className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10">Remover</button>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <input value={newValueProp} onChange={(e) => setNewValueProp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addValueProp(); } }} placeholder="Adicionar texto..." maxLength={500} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                  <button type="button" onClick={addValueProp} disabled={!newValueProp.trim() || club.lpValueProps.length >= 12} className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-40">Adicionar</button>
-                </div>
+                <p className="mt-2 text-sm text-slate-400">Textos e imagens agora são editados direto na página pública.</p>
+                <a href="/flight-review-club?edit=1" className="mt-3 inline-flex rounded-lg bg-sky-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-sky-400">
+                  Abrir landing para editar
+                </a>
               </div>
 
               <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-4">

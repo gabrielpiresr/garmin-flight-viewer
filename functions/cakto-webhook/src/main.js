@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const sdk = require("node-appwrite");
+const memberkit = require("./memberkit");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -762,6 +763,59 @@ function membershipStatusForEvent(eventType, normalized) {
   return eventType === "purchase_approved" || eventType === "subscription_renewed" ? "active" : "unknown";
 }
 
+
+async function getProfileContact(studentUserId) {
+  if (!PROFILES_COLLECTION_ID || !studentUserId) return { email: "", fullName: "" };
+  const result = await databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [studentUserId]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  const profile = result.documents?.[0] || null;
+  return {
+    email: clean(profile?.email),
+    fullName: clean(profile?.full_name) || clean(profile?.nickname),
+  };
+}
+
+async function syncFrcMemberkitBestEffort({ studentUserId, membershipId, fallbackName = "", fallbackEmail = "", log = () => undefined }) {
+  if (!memberkit.memberkitConfigured()) return { skipped: true, reason: "not_configured" };
+  try {
+    const membership = membershipId && FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID
+      ? await databases.getDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, membershipId).catch(() => null)
+      : null;
+    const status = clean(membership?.status);
+    const accessUntil = clean(membership?.access_until) || clean(membership?.next_payment_date);
+    const hasAccess = membership
+      ? memberkit.frcMembershipStillHasAccess(status, accessUntil)
+      : Boolean(studentUserId);
+    const contact = await getProfileContact(studentUserId);
+    const email = contact.email || clean(fallbackEmail);
+    const fullName = contact.fullName || clean(fallbackName) || email;
+    const result = await memberkit.syncMemberkitAccess({
+      email,
+      fullName,
+      hasAccess,
+      canceled: status === "canceled",
+      accessUntil,
+      previousMetadata: membership?.metadata_json,
+    });
+    if (membership?.$id && result?.reason !== "already_synced" && result?.reason !== "not_configured") {
+      const metadataJson = memberkit.mergeMemberkitMetadata(membership.metadata_json, result.memberkit);
+      await databases.updateDocument(
+        DATABASE_ID,
+        FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID,
+        membership.$id,
+        { metadata_json: metadataJson },
+      ).catch(() => undefined);
+    }
+    log(`Memberkit FRC ${result.skipped ? "skip" : result.memberkit?.status} student=${studentUserId} reason=${result.reason || ""}`);
+    return result;
+  } catch (err) {
+    log(`Memberkit FRC falhou (best-effort): ${err?.message || err}`);
+    return { skipped: true, reason: "error", error: String(err?.message || err) };
+  }
+}
+
 async function upsertFlightReviewClubMembership(proposal, normalized, statusOverride = "") {
   const metadata = safeParse(proposal?.products_json, null);
   const studentUserId = clean(metadata?.studentUserId);
@@ -810,7 +864,7 @@ async function upsertFlightReviewClubMembership(proposal, normalized, statusOver
   if (existing) {
     await databases.updateDocument(DATABASE_ID, FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID, existing.$id, data);
     if (status === "active" || status === "trial") await ensureFlightReviewClubTasks(existing.$id, studentUserId).catch(() => undefined);
-    return { applicable: true, membershipId: existing.$id };
+    return { applicable: true, membershipId: existing.$id, studentUserId };
   }
   await databases.createDocument(
     DATABASE_ID,
@@ -820,7 +874,7 @@ async function upsertFlightReviewClubMembership(proposal, normalized, statusOver
     flightReviewClubMembershipPermissions(studentUserId),
   );
   if (status === "active" || status === "trial") await ensureFlightReviewClubTasks(membershipId, studentUserId).catch(() => undefined);
-  return { applicable: true, membershipId };
+  return { applicable: true, membershipId, studentUserId };
 }
 
 async function fulfillFlightReviewClubSubscription(receiptId, proposal, normalized) {
@@ -864,7 +918,7 @@ async function fulfillFlightReviewClubSubscription(receiptId, proposal, normaliz
     sagaError: "",
     sagaMarker: "",
   });
-  return { applicable: true, membershipId };
+  return { applicable: true, membershipId, studentUserId };
 }
 
 async function notifyAdminsOfSale(receiptId, normalized, proposal) {
@@ -1230,6 +1284,13 @@ module.exports = async ({ req, res, log, error }) => {
       try {
         const fulfillment = await fulfillFlightReviewClubSubscription(documentId, proposal, normalized);
         log(`Cakto FRC fulfilled: proposal=${proposalId} membership=${fulfillment.membershipId}`);
+        await syncFrcMemberkitBestEffort({
+          studentUserId: fulfillment.studentUserId || clean(proposalMetadata?.studentUserId),
+          membershipId: fulfillment.membershipId,
+          fallbackName: normalized.customerName,
+          fallbackEmail: normalized.customerEmail,
+          log,
+        }).catch((err) => log(`Memberkit FRC falhou (best-effort): ${err?.message || err}`));
       } catch (fulfillmentError) {
         await updateFulfillment(documentId, proposalId, {
           status: "failed",
@@ -1257,6 +1318,13 @@ module.exports = async ({ req, res, log, error }) => {
           sagaMarker: "",
         }).catch(() => undefined);
         log(`Cakto FRC subscription event: proposal=${proposalId} membership=${fulfillment.membershipId} event=${normalized.eventType}`);
+        await syncFrcMemberkitBestEffort({
+          studentUserId: fulfillment.studentUserId || clean(proposalMetadata?.studentUserId),
+          membershipId: fulfillment.membershipId,
+          fallbackName: normalized.customerName,
+          fallbackEmail: normalized.customerEmail,
+          log,
+        }).catch((err) => log(`Memberkit FRC falhou (best-effort): ${err?.message || err}`));
       } catch (fulfillmentError) {
         await updateFulfillment(documentId, proposalId, {
           status: "failed",

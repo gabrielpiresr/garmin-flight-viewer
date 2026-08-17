@@ -47,8 +47,8 @@ export const PUBLIC_DISPLAY_PANEL_OPTIONS: Array<{
   },
   {
     id: "aisweb",
-    label: "AISWEB",
-    shortLabel: "AISWEB",
+    label: "Meteorologia",
+    shortLabel: "Meteo",
     description: "Condições meteorológicas e NOTAMs da watchlist.",
   },
   {

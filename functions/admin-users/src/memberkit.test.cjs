@@ -25,12 +25,12 @@ test("picks NAPROA membership level by name when present", () => {
   assert.equal(level.id, 9);
 });
 
-test("prefers the master classroom of Clube Na Proa 360", () => {
+test("prefers the EPEAC classroom over master Turma A", () => {
   const classroom = pickClassroom([
-    { id: 1, name: "Turma B", course_name: "Clube Na Proa 360", master: false },
     { id: 375638, name: "Turma A", course_name: "Clube Na Proa 360", master: true },
+    { id: 386722, name: "EPEAC", course_name: "Clube Na Proa 360", master: false },
   ]);
-  assert.equal(classroom.id, 375638);
+  assert.equal(classroom.id, 386722);
 });
 
 test("keeps access after cancel until access_until, then expires", () => {
@@ -64,8 +64,17 @@ test("alreadySynced skips identical successful snapshots", () => {
     expiresAt: "",
     error: "",
     userId: 1,
+    classroomIds: [386722],
   });
   assert.equal(alreadySynced(metadata, { status: "active", expiresAt: "" }), true);
   assert.equal(alreadySynced(metadata, { status: "expired", expiresAt: "" }), false);
   assert.equal(alreadySynced(metadata, { status: "active", expiresAt: "2026-09-01T00:00:00.000Z" }), false);
+  assert.equal(
+    alreadySynced(metadata, { status: "active", expiresAt: "" }, { mode: "classroom", classroomIds: [386722] }),
+    true,
+  );
+  assert.equal(
+    alreadySynced(metadata, { status: "active", expiresAt: "" }, { mode: "classroom", classroomIds: [375638] }),
+    false,
+  );
 });

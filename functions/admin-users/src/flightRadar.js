@@ -954,6 +954,12 @@ function publicWatchFleetState(raw) {
       offlineStreak: Math.max(0, Math.round(Number(row.offlineStreak) || 0)),
       lastTakeoffFr24Id: cleanString(row.lastTakeoffFr24Id) || null,
       lastLandingFr24Id: cleanString(row.lastLandingFr24Id) || null,
+      lastTakeoffAt: cleanString(row.lastTakeoffAt) || null,
+      lastTakeoffIcao: cleanString(row.lastTakeoffIcao).toUpperCase() || null,
+      lat: Number.isFinite(Number(row.lat)) ? Number(row.lat) : null,
+      lon: Number.isFinite(Number(row.lon)) ? Number(row.lon) : null,
+      lastGroundLat: Number.isFinite(Number(row.lastGroundLat)) ? Number(row.lastGroundLat) : null,
+      lastGroundLon: Number.isFinite(Number(row.lastGroundLon)) ? Number(row.lastGroundLon) : null,
       updatedAt: cleanString(row.updatedAt) || null,
     };
   }
@@ -1028,6 +1034,12 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       offlineStreak: 0,
       lastTakeoffFr24Id: null,
       lastLandingFr24Id: null,
+      lastTakeoffAt: null,
+      lastTakeoffIcao: null,
+      lat: null,
+      lon: null,
+      lastGroundLat: null,
+      lastGroundLon: null,
       updatedAt: null,
     };
     const fr24Id = cleanString(pos?.fr24Id) || previous.fr24Id || null;
@@ -1070,6 +1082,15 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       offlineStreak = 0;
     }
 
+    const lat = Number.isFinite(Number(pos?.lat)) ? Number(pos.lat) : previous.lat;
+    const lon = Number.isFinite(Number(pos?.lon)) ? Number(pos.lon) : previous.lon;
+    const liveOrigIcao = cleanString(pos?.origIcao).toUpperCase() || null;
+    const destIcao = cleanString(pos?.destIcao).toUpperCase() || null;
+    const origIcao = liveOrigIcao || (eventType === "landing" ? previous.lastTakeoffIcao : null) || null;
+    const lastGroundLat =
+      status === "ground" && Number.isFinite(lat) ? lat : previous.lastGroundLat;
+    const lastGroundLon =
+      status === "ground" && Number.isFinite(lon) ? lon : previous.lastGroundLon;
     const row = {
       status: nextStatus,
       fr24Id,
@@ -1079,16 +1100,26 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       offlineStreak: nextStatus === "airborne" && status === "offline" ? offlineStreak : status === "offline" ? offlineStreak : 0,
       lastTakeoffFr24Id: previous.lastTakeoffFr24Id,
       lastLandingFr24Id: previous.lastLandingFr24Id,
+      lastTakeoffAt: previous.lastTakeoffAt,
+      lastTakeoffIcao: previous.lastTakeoffIcao,
+      lat,
+      lon,
+      lastGroundLat,
+      lastGroundLon,
       updatedAt: nowIso(),
     };
 
     // First observation only seeds state (no WhatsApp spam for already-airborne fleet).
     if (isSeed && status === "airborne" && fr24Id) {
       row.lastTakeoffFr24Id = fr24Id;
+      row.lastTakeoffAt = previous.lastTakeoffAt || nowIso();
+      row.lastTakeoffIcao = origIcao;
     }
 
     if (eventType === "takeoff") {
       row.lastTakeoffFr24Id = fr24Id;
+      row.lastTakeoffAt = nowIso();
+      row.lastTakeoffIcao = origIcao;
       events.push({
         type: eventType,
         reg,
@@ -1096,10 +1127,14 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
         callsign: row.callsign,
         alt: row.alt,
         gspeed: row.gspeed,
-        origIcao: cleanString(pos?.origIcao) || null,
-        destIcao: cleanString(pos?.destIcao) || null,
-        lat: pos?.lat ?? null,
-        lon: pos?.lon ?? null,
+        origIcao,
+        destIcao,
+        lat,
+        lon,
+        groundLat: previous.lastGroundLat ?? (previous.status === "ground" ? previous.lat : null),
+        groundLon: previous.lastGroundLon ?? (previous.status === "ground" ? previous.lon : null),
+        lastTakeoffAt: row.lastTakeoffAt,
+        lastTakeoffIcao: row.lastTakeoffIcao,
       });
     } else if (eventType === "landing") {
       row.lastLandingFr24Id = previous.fr24Id || fr24Id;
@@ -1110,10 +1145,12 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
         callsign: row.callsign,
         alt: row.alt,
         gspeed: row.gspeed,
-        origIcao: cleanString(pos?.origIcao) || null,
-        destIcao: cleanString(pos?.destIcao) || null,
-        lat: pos?.lat ?? null,
-        lon: pos?.lon ?? null,
+        origIcao,
+        destIcao,
+        lat,
+        lon,
+        lastTakeoffAt: previous.lastTakeoffAt,
+        lastTakeoffIcao: previous.lastTakeoffIcao,
       });
     }
 

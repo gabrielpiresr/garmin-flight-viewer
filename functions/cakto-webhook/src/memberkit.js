@@ -315,41 +315,11 @@ async function syncMemberkitAccess(input = {}, env = process.env) {
   }
 }
 
-async function getMembersAreaUrl(env = process.env) {
-  const fromEnv = clean(env.MEMBERKIT_MEMBERS_URL);
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
-  try {
-    const academy = await memberkitRequest("/academy", {}, env);
-    const url = clean(academy?.url).replace(/\/+$/, "");
-    if (url) return url;
-    const domain = clean(academy?.custom_domain).replace(/^https?:\/\//, "").replace(/\/+$/, "");
-    if (domain) return `https://${domain}`;
-  } catch {
-    // fallback below
-  }
-  return "https://membros.naproa360.com.br";
-}
-
-async function createMagicLink(email, env = process.env) {
-  const safeEmail = clean(email).toLowerCase();
-  if (!safeEmail || !safeEmail.includes("@")) throw new Error("E-mail invalido para o link magico da Memberkit.");
-  const payload = await memberkitRequest("/tokens", {
-    method: "POST",
-    body: { email: safeEmail },
-  }, env);
-  return {
-    token: clean(payload?.token),
-    authenticatedUrl: clean(payload?.authenticated_url),
-  };
-}
-
 module.exports = {
   NAME_HINTS,
   alreadySynced,
-  createMagicLink,
   desiredMemberkitStatus,
   frcMembershipStillHasAccess,
-  getMembersAreaUrl,
   memberkitConfigured,
   mergeMemberkitMetadata,
   nameMatchesNaproa360,
@@ -360,4 +330,3 @@ module.exports = {
   syncMemberkitAccess,
   upsertMemberkitUser,
 };
-

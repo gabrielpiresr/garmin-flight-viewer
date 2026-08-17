@@ -1453,7 +1453,7 @@ export function VideosTab({ flightId, publicMode = false, publicVideos, clubLock
           </ul>
         ) : videos.length > 0 ? (
           clubLocked ? (
-            <FlightReviewClubGate>
+            <FlightReviewClubGate feature="videos">
               <ul className="space-y-2">
                 {videos.map((v) => (
                   <VideoCard

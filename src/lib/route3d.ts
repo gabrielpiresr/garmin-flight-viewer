@@ -275,6 +275,7 @@ export function buildTerrainGeometry(
   const positions = new Float32Array(vertCount * 3);
   const colors = new Float32Array(vertCount * 3);
   const uvs = new Float32Array(vertCount * 2);
+  const normals = new Float32Array(vertCount * 3);
   const color = new THREE.Color();
   const landSkirt = new THREE.Color(0.22, 0.16, 0.1);
   const seaSkirt = new THREE.Color(0.05, 0.14, 0.28);
@@ -314,6 +315,40 @@ export function buildTerrainGeometry(
     }
   }
 
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = (r * cols + c) * 3;
+      const c0 = Math.max(0, c - 1);
+      const c1 = Math.min(cols - 1, c + 1);
+      const r0 = Math.max(0, r - 1);
+      const r1 = Math.min(rows - 1, r + 1);
+      const iL = (r * cols + c0) * 3;
+      const iR = (r * cols + c1) * 3;
+      const iD = (r0 * cols + c) * 3;
+      const iU = (r1 * cols + c) * 3;
+      const tx = positions[iR]! - positions[iL]!;
+      const ty = positions[iR + 1]! - positions[iL + 1]!;
+      const tz = positions[iR + 2]! - positions[iL + 2]!;
+      const bx = positions[iU]! - positions[iD]!;
+      const by = positions[iU + 1]! - positions[iD + 1]!;
+      const bz = positions[iU + 2]! - positions[iD + 2]!;
+      let nx = ty * bz - tz * by;
+      let ny = tz * bx - tx * bz;
+      let nz = tx * by - ty * bx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      normals[i] = nx;
+      normals[i + 1] = ny;
+      normals[i + 2] = nz;
+      const bi = (surfaceCount + r * cols + c) * 3;
+      normals[bi] = 0;
+      normals[bi + 1] = -1;
+      normals[bi + 2] = 0;
+    }
+  }
+
   const index: number[] = [];
   for (let r = 0; r < rows - 1; r++) {
     for (let c = 0; c < cols - 1; c++) {
@@ -321,7 +356,11 @@ export function buildTerrainGeometry(
       const b = a + 1;
       const d = a + cols;
       const e = d + 1;
-      index.push(a, d, b, b, d, e);
+      if ((r + c) % 2 === 0) {
+        index.push(a, b, d, b, e, d);
+      } else {
+        index.push(a, b, e, a, e, d);
+      }
       const ba = surfaceCount + a;
       const bb = surfaceCount + b;
       const bd = surfaceCount + d;
@@ -351,7 +390,7 @@ export function buildTerrainGeometry(
   geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
   geom.setIndex(index);
-  geom.computeVertexNormals();
   return geom;
 }

@@ -10,10 +10,12 @@ import {
   uploadPanelMedia,
 } from "../../lib/aircraftPanelsDb";
 import { PANEL_SEED_TEMPLATES } from "../../lib/panelSeeds";
+import { hasPanelModel, isGlbFile } from "../../lib/panelPayload";
 import type { Aircraft } from "../../types/admin";
 import type { AircraftPanel, PanelInstrument, PanelSeedTemplate } from "../../types/panel";
 import { InteractivePanelViewer } from "../InteractivePanelViewer";
 import { PanelHotspotEditor } from "../panel/PanelHotspotEditor";
+import { PanelModelHotspotEditor } from "../panel/PanelModelHotspotEditor";
 import { useToast } from "../ui/ToastProvider";
 
 export function PanelAdminTab() {
@@ -30,6 +32,8 @@ export function PanelAdminTab() {
     title: string;
     panel_image_url: string;
     panel_image_file_id: string | null;
+    panel_model_url: string | null;
+    panel_model_file_id: string | null;
     instruments: PanelInstrument[];
     published: boolean;
   } | null>(null);
@@ -38,6 +42,7 @@ export function PanelAdminTab() {
   const [seedTemplateId, setSeedTemplateId] = useState(PANEL_SEED_TEMPLATES[0]?.id ?? "");
   const [seedAircraftId, setSeedAircraftId] = useState("");
   const [preview, setPreview] = useState(false);
+  const [editorVisual, setEditorVisual] = useState<"3d" | "2d">("3d");
 
   const aircraftOptions = useMemo(
     () =>
@@ -82,11 +87,14 @@ export function PanelAdminTab() {
       title: "Novo painel",
       panel_image_url: "",
       panel_image_file_id: null,
+      panel_model_url: null,
+      panel_model_file_id: null,
       instruments: [],
       published: false,
     });
     setSelectedInstrumentId(null);
     setPreview(false);
+    setEditorVisual("3d");
   }
 
   function startEdit(panel: AircraftPanel) {
@@ -96,11 +104,14 @@ export function PanelAdminTab() {
       title: panel.title,
       panel_image_url: panel.panel_image_url,
       panel_image_file_id: panel.panel_image_file_id,
+      panel_model_url: panel.panel_model_url,
+      panel_model_file_id: panel.panel_model_file_id,
       instruments: panel.instruments.map((i) => ({ ...i })),
       published: panel.published,
     });
     setSelectedInstrumentId(null);
     setPreview(false);
+    setEditorVisual(hasPanelModel(panel) ? "3d" : "2d");
   }
 
   function cancelEdit() {
@@ -119,6 +130,38 @@ export function PanelAdminTab() {
     }
     setDraft({ ...draft, panel_image_url: data.url, panel_image_file_id: data.fileId });
     showToast({ variant: "success", message: "Imagem do painel enviada" });
+  }
+
+  async function onUploadModel(file: File) {
+    if (!canEdit || !draft) return;
+    if (!isGlbFile(file)) {
+      showToast({ variant: "error", message: "Envie um arquivo .glb (glTF binário)." });
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      showToast({ variant: "error", message: "O GLB deve ter no máximo 25 MB." });
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      showToast({ variant: "info", message: "Arquivo grande — o carregamento no celular pode ficar lento." });
+    }
+    const named = file.name.toLowerCase().endsWith(".glb") ? file.name : `${file.name}.glb`;
+    const attempts = [
+      new File([file], named, { type: "model/gltf-binary" }),
+      new File([file], named, { type: "application/octet-stream" }),
+    ];
+    let lastError: Error | null = null;
+    for (const attempt of attempts) {
+      const { data, error } = await uploadPanelMedia(attempt);
+      if (data) {
+        setDraft({ ...draft, panel_model_url: data.url, panel_model_file_id: data.fileId });
+        setEditorVisual("3d");
+        showToast({ variant: "success", message: "Modelo 3D enviado" });
+        return;
+      }
+      lastError = error;
+    }
+    showToast({ variant: "error", message: lastError?.message ?? "Falha no upload do modelo 3D" });
   }
 
   async function onUploadZoom(file: File) {
@@ -143,8 +186,8 @@ export function PanelAdminTab() {
       showToast({ variant: "error", message: "Selecione a aeronave" });
       return;
     }
-    if (!draft.panel_image_url.trim()) {
-      showToast({ variant: "error", message: "Envie a imagem do painel" });
+    if (!draft.panel_image_url.trim() && !draft.panel_model_url?.trim()) {
+      showToast({ variant: "error", message: "Envie a imagem do painel ou um modelo 3D (GLB)" });
       return;
     }
     setSaving(true);
@@ -155,6 +198,8 @@ export function PanelAdminTab() {
           title: draft.title.trim() || "Painel",
           panel_image_url: draft.panel_image_url,
           panel_image_file_id: draft.panel_image_file_id,
+          panel_model_url: draft.panel_model_url,
+          panel_model_file_id: draft.panel_model_file_id,
           instruments: draft.instruments,
           published: draft.published,
         });
@@ -174,6 +219,8 @@ export function PanelAdminTab() {
           title: draft.title.trim() || "Painel",
           panel_image_url: draft.panel_image_url,
           panel_image_file_id: draft.panel_image_file_id,
+          panel_model_url: draft.panel_model_url,
+          panel_model_file_id: draft.panel_model_file_id,
           instruments: draft.instruments,
           published: draft.published,
         });
@@ -263,7 +310,7 @@ export function PanelAdminTab() {
         <div>
           <h2 className="text-lg font-semibold text-slate-100">Painel interativo</h2>
           <p className="text-sm text-slate-400">
-            Um painel por aeronave. Alunos e instrutores só visualizam; somente quem tem permissão de editar conteúdo altera.
+            Um painel por aeronave. Envie um modelo GLB para o aluno girar o cockpit e clicar nos instrumentos — a foto 2D continua como fallback.
           </p>
         </div>
         {canEdit ? (
@@ -356,6 +403,11 @@ export function PanelAdminTab() {
                       >
                         {p.published ? "Publicado" : "Rascunho"}
                       </span>
+                      {hasPanelModel(p) ? (
+                        <span className="ml-1.5 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+                          3D
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -411,6 +463,8 @@ export function PanelAdminTab() {
                   title: draft.title,
                   panel_image_url: draft.panel_image_url,
                   panel_image_file_id: draft.panel_image_file_id,
+                  panel_model_url: draft.panel_model_url,
+                  panel_model_file_id: draft.panel_model_file_id,
                   instruments: draft.instruments,
                   published: true,
                   updated_at: "",
@@ -450,7 +504,7 @@ export function PanelAdminTab() {
                   </select>
                 </label>
                 <label className="text-xs text-slate-400">
-                  Imagem do painel
+                  Imagem do painel (2D)
                   <input
                     type="file"
                     accept="image/*"
@@ -462,7 +516,23 @@ export function PanelAdminTab() {
                     className="mt-1 block w-full text-sm text-slate-300"
                   />
                 </label>
-                <label className="flex items-center gap-2 pt-5 text-sm text-slate-300">
+                <label className="text-xs text-slate-400">
+                  Modelo 3D (GLB)
+                  <input
+                    type="file"
+                    accept=".glb,model/gltf-binary"
+                    disabled={!canEdit}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void onUploadModel(f);
+                    }}
+                    className="mt-1 block w-full text-sm text-slate-300"
+                  />
+                  <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                    Exporte do Blender em File → Export → glTF 2.0, formato glTF Binary (.glb).
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 pt-5 text-sm text-slate-300 sm:col-span-2">
                   <input
                     type="checkbox"
                     checked={draft.published}
@@ -474,17 +544,68 @@ export function PanelAdminTab() {
               </div>
 
               {draft.panel_image_url ? (
-                <p className="truncate text-[11px] text-slate-500">{draft.panel_image_url}</p>
+                <p className="truncate text-[11px] text-slate-500">Foto: {draft.panel_image_url}</p>
+              ) : null}
+              {draft.panel_model_url ? (
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-[11px] text-slate-500">GLB: {draft.panel_model_url}</p>
+                  {canEdit ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft({ ...draft, panel_model_url: null, panel_model_file_id: null });
+                        if (!draft.panel_image_url) setEditorVisual("2d");
+                      }}
+                      className="shrink-0 text-[11px] text-red-400 hover:text-red-300"
+                    >
+                      Remover GLB
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
 
-              <PanelHotspotEditor
-                panelImageUrl={draft.panel_image_url}
-                instruments={draft.instruments}
-                selectedId={selectedInstrumentId}
-                onSelect={setSelectedInstrumentId}
-                onChange={(instruments) => setDraft({ ...draft, instruments })}
-                disabled={!canEdit}
-              />
+              {draft.panel_model_url && draft.panel_image_url ? (
+                <div className="flex rounded-lg border border-slate-700 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditorVisual("3d")}
+                    className={`rounded-md px-3 py-1.5 text-xs ${
+                      editorVisual === "3d" ? "bg-sky-600 text-white" : "text-slate-400"
+                    }`}
+                  >
+                    Hotspots 3D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorVisual("2d")}
+                    className={`rounded-md px-3 py-1.5 text-xs ${
+                      editorVisual === "2d" ? "bg-sky-600 text-white" : "text-slate-400"
+                    }`}
+                  >
+                    Hotspots na foto
+                  </button>
+                </div>
+              ) : null}
+
+              {draft.panel_model_url && (editorVisual === "3d" || !draft.panel_image_url) ? (
+                <PanelModelHotspotEditor
+                  modelUrl={draft.panel_model_url}
+                  instruments={draft.instruments}
+                  selectedId={selectedInstrumentId}
+                  onSelect={setSelectedInstrumentId}
+                  onChange={(instruments) => setDraft({ ...draft, instruments })}
+                  disabled={!canEdit}
+                />
+              ) : (
+                <PanelHotspotEditor
+                  panelImageUrl={draft.panel_image_url}
+                  instruments={draft.instruments}
+                  selectedId={selectedInstrumentId}
+                  onSelect={setSelectedInstrumentId}
+                  onChange={(instruments) => setDraft({ ...draft, instruments })}
+                  disabled={!canEdit}
+                />
+              )}
 
               {selectedInstrument ? (
                 <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4 sm:grid-cols-2">

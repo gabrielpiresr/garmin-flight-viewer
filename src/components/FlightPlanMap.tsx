@@ -55,6 +55,22 @@ const TILES: Record<BaseMapStyle, { url: string; attribution: string; maxZoom: n
   },
 };
 
+const TILES_NO_LABELS: Record<BaseMapStyle, { url: string; attribution: string; maxZoom: number; subdomains?: string }> = {
+  satellite: TILES.satellite,
+  roads: {
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
+    attribution: "© OpenStreetMap, © CARTO",
+    maxZoom: 19,
+    subdomains: "abcd",
+  },
+  terrain: {
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
+    attribution: "© OpenStreetMap, © CARTO",
+    maxZoom: 19,
+    subdomains: "abcd",
+  },
+};
+
 const WMS_BASE = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const DEV_WMS_PROXY_BASE = "/geoaisweb-proxy/geoserver/ows";
 const GEOAISWEB_WMS_PROXY_BASE = "/api/geoaisweb/wms";
@@ -174,7 +190,16 @@ const AIRSPACE_TOGGLES = AIRSPACE_LAYER_DEFS.map((d) => ({
 
 type PlanLayerId =
   | (typeof AIRSPACE_TOGGLES)[number]["id"]
-  | (typeof REA_LAYER_TOGGLES_PLANNING)[number]["id"];
+  | (typeof REA_LAYER_TOGGLES_PLANNING)[number]["id"]
+  | "airports"
+  | "rea_points"
+  | "city_labels";
+
+const FEATURE_LAYER_TOGGLES: Array<{ id: Extract<PlanLayerId, "airports" | "rea_points" | "city_labels">; label: string; defaultOn: boolean }> = [
+  { id: "airports", label: "Aeroportos", defaultOn: true },
+  { id: "rea_points", label: "Pontos REA", defaultOn: true },
+  { id: "city_labels", label: "Cidades", defaultOn: true },
+];
 
 const DEFAULT_CENTER: [number, number] = [-15.78, -47.93];
 
@@ -1959,6 +1984,7 @@ export function FlightPlanMap({
     Object.fromEntries([
       ...AIRSPACE_TOGGLES.map((l) => [l.id, l.defaultOn]),
       ...REA_LAYER_TOGGLES_PLANNING.map((l) => [l.id, l.defaultOn]),
+      ...FEATURE_LAYER_TOGGLES.map((l) => [l.id, l.id === "airports" ? showAerodromes : l.defaultOn]),
     ]) as Record<PlanLayerId, boolean>,
   );
   const [selectedAirspace, setSelectedAirspace] = useState<{
@@ -2054,10 +2080,15 @@ export function FlightPlanMap({
 
   const isWindy = mapStyle === "windy";
   const isWac = mapStyle === "wac";
-  const tiles =
+  const tilesBase =
     mapStyle === "terrain" || mapStyle === "satellite" || mapStyle === "roads"
       ? TILES[mapStyle]
       : null;
+  const unlabeledStyle = mapStyle === "terrain" || mapStyle === "roads" ? mapStyle : null;
+  const tiles =
+    tilesBase && unlabeledStyle && layersOn.city_labels === false
+      ? TILES_NO_LABELS[unlabeledStyle]
+      : tilesBase;
   // Keep Windy seed stable in interactive mode so adding points doesn't reset the view.
   const seedView = useMemo(
     () => (interactive ? { lat: DEFAULT_CENTER[0], lon: DEFAULT_CENTER[1], zoom: 5 } : seedFromPositions(positions)),
@@ -2471,6 +2502,33 @@ export function FlightPlanMap({
                         })}
                       </div>
                     </div>
+                    <div>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Referências
+                      </p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {FEATURE_LAYER_TOGGLES.map((layer) => {
+                          const on = layersOn[layer.id] === true;
+                          return (
+                            <button
+                              key={layer.id}
+                              type="button"
+                              title={layer.label}
+                              onClick={() =>
+                                setLayersOn((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
+                              }
+                              className={`rounded-lg border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                                on
+                                  ? "border-sky-400/50 bg-sky-500/20 text-sky-50"
+                                  : "border-slate-700 bg-slate-900/50 text-slate-500 hover:text-slate-300"
+                              }`}
+                            >
+                              {layer.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -2641,7 +2699,7 @@ export function FlightPlanMap({
           ) : null}
           {!isWindy && tiles ? (
             <TileLayer
-              key={mapStyle}
+              key={`${mapStyle}-${layersOn.city_labels ? "labels" : "nolabels"}`}
               attribution={tiles.attribution}
               url={tiles.url}
               maxZoom={tiles.maxZoom}
@@ -2649,6 +2707,15 @@ export function FlightPlanMap({
               updateWhenIdle={false}
               updateWhenZooming
               {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
+            />
+          ) : null}
+          {!isWindy && !isWac && mapStyle === "satellite" && layersOn.city_labels === true ? (
+            <TileLayer
+              key="esri-place-labels"
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+              attribution="Labels © Esri"
+              maxZoom={19}
+              zIndex={2}
             />
           ) : null}
           {isWac && useXyzWac ? (
@@ -2776,7 +2843,7 @@ export function FlightPlanMap({
 
           <VisibleAerodromes
             aerodromes={aerodromes}
-            show={showAerodromes && aerodromes.length > 0}
+            show={layersOn.airports === true && aerodromes.length > 0}
             filter={aerodromeFilter}
             hideIcaos={routeIcaos}
             hideLabelIcaos={visibleMetarIcaos}
@@ -2789,7 +2856,7 @@ export function FlightPlanMap({
           />
           <VisibleMetarAerodromes
             aerodromes={aerodromes}
-            show={showAerodromes && aerodromes.length > 0}
+            show={layersOn.airports === true && aerodromes.length > 0}
             filter={aerodromeFilter}
             priorityIcaos={routeIcaos}
             onVisibleMetarIcaosChange={updateVisibleMetarIcaos}
@@ -2797,12 +2864,12 @@ export function FlightPlanMap({
           />
           <VisibleReaFixes
             fixes={reaFixes}
-            show={!isWac && interactive && layersOn.rea === true}
+            show={!isWac && interactive && layersOn.rea_points === true}
             onPick={handlePick}
           />
           <VisibleReaFixes
             fixes={rehFixes}
-            show={!isWac && interactive && layersOn.reh === true}
+            show={!isWac && interactive && layersOn.rea_points === true}
             onPick={handlePick}
           />
 

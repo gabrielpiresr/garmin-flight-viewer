@@ -48,6 +48,7 @@ const FlightRoute3DScene = memo(function FlightRoute3DScene({
         defaultVisibleAirspaceTypes={["CTR", "ATZ"]}
         areaLayerKinds={["rea"]}
         chartsControl={chartsControl}
+        enableWeatherLayers={false}
       />
     </Suspense>
   );
@@ -386,7 +387,7 @@ export function FlightRoute3DTab({
     });
   }, [availableChartKeys]);
 
-  if (clubLocked) return <FlightReviewClubGate />;
+  if (clubLocked) return <FlightReviewClubGate feature="rota-3d" />;
 
   if (loading) {
     return (

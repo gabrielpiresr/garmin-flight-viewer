@@ -38,16 +38,6 @@ function formatWppClock(iso = new Date().toISOString()) {
   });
 }
 
-function formatAlt(ft) {
-  if (ft == null || !Number.isFinite(Number(ft))) return null;
-  return `${Math.round(Number(ft)).toLocaleString("pt-BR")} ft`;
-}
-
-function formatSpeed(kt) {
-  if (kt == null || !Number.isFinite(Number(kt))) return null;
-  return `${Math.round(Number(kt))} kt`;
-}
-
 /**
  * Parse text / button id for fleet radar watch commands.
  * Buttons: radar_start_24 | radar_reopen | radar_stop
@@ -141,20 +131,30 @@ function formatWppFlightRadarWatchExpiredMessage({ hours, nickname }) {
   ].join("\n");
 }
 
+function dash(value) {
+  return cleanString(value) || "—";
+}
+
 function formatWppFlightRadarEventMessage(event) {
   const type = event?.type === "landing" ? "landing" : "takeoff";
   const title = type === "landing" ? "🛬 *Pouso*" : "🛫 *Decolagem*";
   const reg = cleanString(event?.reg) || "—";
   const callsign = cleanString(event?.callsign);
-  const lines = [title, "", `*${reg}*${callsign && callsign !== reg ? ` · ${callsign}` : ""}`];
+  const lines = [title, "", `*${reg}*${callsign && callsign !== reg ? ` · ${callsign}` : ""}`, ""];
 
-  const routeParts = [cleanString(event?.origIcao), cleanString(event?.destIcao)].filter(Boolean);
-  if (routeParts.length) lines.push(`Rota: ${routeParts.join(" → ")}`);
+  lines.push(`Aluno: ${dash(event?.studentName)}`);
+  lines.push(`Instrutor: ${dash(event?.instructorName)}`);
+  lines.push(`AD decolagem: ${dash(event?.takeoffAd)}`);
 
-  const alt = formatAlt(event?.alt);
-  const spd = formatSpeed(event?.gspeed);
-  const telemetry = [alt, spd].filter(Boolean);
-  if (telemetry.length) lines.push(telemetry.join(" · "));
+  if (type === "takeoff") {
+    lines.push(`Obs.: ${dash(event?.notes)}`);
+    lines.push(`Missão: ${dash(event?.mission)}`);
+    lines.push(`Previsto: ${dash(event?.scheduledTakeoff)}`);
+  } else {
+    lines.push(`AD pouso: ${dash(event?.landingAd)}`);
+    lines.push(`Duração: ${dash(event?.duration)}`);
+    lines.push(`Previsto: ${dash(event?.scheduledLanding)}`);
+  }
 
   lines.push(`Horário: ${formatWppClock(event?.at || new Date().toISOString())}`);
   return lines.join("\n");

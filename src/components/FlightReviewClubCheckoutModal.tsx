@@ -52,7 +52,7 @@ function formatDate(value: string | null): string {
 
 function membershipStatusLabel(membership: FlightReviewClubMembership | null): string {
   if (!membership) return "Ativo por trilha";
-  if (membership.status === "trial") return "Trial";
+  if (membership.status === "trial") return "Período de teste";
   if (membership.status === "active") return "Ativa";
   if (membership.status === "canceled") return "Cancelada";
   return membership.status || "Indefinida";
@@ -112,7 +112,7 @@ export function FlightReviewClubCheckoutModal({
       if (!cancelled) setQuote(nextQuote);
     })()
       .catch((err) => {
-        if (!cancelled) setError((err as Error).message || "Nao foi possivel carregar o Flight Review Club agora.");
+        if (!cancelled) setError((err as Error).message || "Não foi possível carregar o Flight Review Club agora.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -139,7 +139,7 @@ export function FlightReviewClubCheckoutModal({
   async function handleCheckout() {
     if (checkoutBusy) return;
     if (!acceptedTerms) {
-      setError("Confirme que voce leu e esta ciente do termo de adesao antes de continuar.");
+      setError("Confirme que você leu e está ciente do termo de adesão antes de continuar.");
       return;
     }
     setCheckoutBusy(true);
@@ -151,7 +151,7 @@ export function FlightReviewClubCheckoutModal({
       );
       window.location.href = checkout.paymentUrl;
     } catch (err) {
-      setError((err as Error).message || "Nao foi possivel gerar o checkout.");
+      setError((err as Error).message || "Não foi possível gerar o checkout.");
       if (fallbackUrl) window.open(fallbackUrl, "_blank", "noopener,noreferrer");
     } finally {
       setCheckoutBusy(false);
@@ -165,7 +165,7 @@ export function FlightReviewClubCheckoutModal({
     try {
       setStatus(await cancelFlightReviewClubSubscription());
     } catch (err) {
-      setError((err as Error).message || "Nao foi possivel cancelar sua assinatura agora.");
+      setError((err as Error).message || "Não foi possível cancelar sua assinatura agora.");
     } finally {
       setCancelBusy(false);
     }
@@ -195,10 +195,10 @@ export function FlightReviewClubCheckoutModal({
             <h3 className="mt-1 text-xl font-black text-white">{status?.hasAccess ? "Sua assinatura" : "Confira sua assinatura"}</h3>
             <p className="mt-1 text-sm text-slate-400">
               {status?.hasAccess
-                ? "Seu acesso ao FRC esta ativo na plataforma."
+                ? "Seu acesso ao FRC está ativo na plataforma."
                 : isSubscriptionQuote
-                  ? "Escolha a recorrencia e finalize a assinatura pela Cakto."
-                  : "Voce esta comprando acesso em pagamento unico, valido ate o final do curso vinculado a sua trilha atual."}
+                  ? "Escolha a recorrência e finalize a assinatura pela Cakto."
+                  : "Você está comprando acesso em pagamento único, válido até o final do curso vinculado à sua trilha atual."}
             </p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
@@ -268,7 +268,7 @@ export function FlightReviewClubCheckoutModal({
                   {originalAmount ? <p className="mt-2 text-sm font-semibold text-slate-400 line-through">{formatCurrency(originalAmount)}</p> : null}
                   <p className="text-3xl font-black text-white">{formatCurrency(quote.amount)}</p>
                   <p className="mt-1 text-sm text-slate-300">
-                    {isSubscriptionQuote ? `Assinatura ${formatRecurrence(quote.recurrencePeriodDays ?? 30)} pela Cakto.` : "Pagamento unico pela Cakto."}
+                    {isSubscriptionQuote ? `Assinatura ${formatRecurrence(quote.recurrencePeriodDays ?? 30)} pela Cakto.` : "Pagamento único pela Cakto."}
                   </p>
                 </div>
                 {discountPercent > 0 ? (
@@ -311,10 +311,10 @@ export function FlightReviewClubCheckoutModal({
                 Estou ciente e de acordo com o{" "}
                 {adhesionTermUrl ? (
                   <a href={adhesionTermUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sky-300 underline underline-offset-4">
-                    termo de adesao
+                    termo de adesão
                   </a>
                 ) : (
-                  <span className="font-semibold text-sky-300">termo de adesao</span>
+                  <span className="font-semibold text-sky-300">termo de adesão</span>
                 )}{" "}
                 do Flight Review Club.
               </span>
@@ -326,7 +326,7 @@ export function FlightReviewClubCheckoutModal({
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800">
-            {status?.hasAccess ? "Fechar" : "Agora nao"}
+            {status?.hasAccess ? "Fechar" : "Agora não"}
           </button>
           {!status?.hasAccess ? (
             <button

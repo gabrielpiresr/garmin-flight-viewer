@@ -15,6 +15,8 @@ function demoPanelsFromSeeds(): { panels: AircraftPanel[]; options: Array<{ id: 
     title: t.title,
     panel_image_url: t.panel_image_url,
     panel_image_file_id: null,
+    panel_model_url: null,
+    panel_model_file_id: null,
     instruments: t.instruments.map((i) => ({ ...i })),
     published: true,
     updated_at: "",

@@ -45,20 +45,25 @@ async function main() {
   ]);
 
   for (const doc of res.documents) {
-    let instruments = [];
+    let parsed;
     try {
-      instruments = JSON.parse(doc.instruments_json || "[]");
+      parsed = JSON.parse(doc.instruments_json || "[]");
     } catch {
-      instruments = [];
+      parsed = [];
     }
+    const isV2 = parsed && typeof parsed === "object" && !Array.isArray(parsed);
+    const instruments = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.instruments) ? parsed.instruments : [];
     const nextInstruments = instruments.map((inst) => ({
       ...inst,
       zoom_image_url: inst.zoom_image_url ? toPngUrl(inst.zoom_image_url) : null,
     }));
     const panelUrl = toPngUrl(doc.panel_image_url);
+    const instrumentsJson = isV2
+      ? JSON.stringify({ ...parsed, instruments: nextInstruments })
+      : JSON.stringify(nextInstruments);
     await db.updateDocument(DATABASE_ID, PANELS_COL, doc.$id, {
       panel_image_url: panelUrl,
-      instruments_json: JSON.stringify(nextInstruments),
+      instruments_json: instrumentsJson,
       updated_at: new Date().toISOString(),
     });
     console.log(`  ✓ ${doc.title} → ${panelUrl}`);

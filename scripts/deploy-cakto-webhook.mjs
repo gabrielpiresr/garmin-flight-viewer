@@ -106,6 +106,18 @@ const frcTasksCollectionId =
 await upsertVariable(functions, "APPWRITE_STUDENT_TRACKS_COLLECTION_ID", studentTracksCollectionId);
 await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_MEMBERSHIPS_COLLECTION_ID", frcMembershipsCollectionId);
 await upsertVariable(functions, "APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID", frcTasksCollectionId);
+const memberkitApiKey = process.env.MEMBERKIT_API_KEY || env.MEMBERKIT_API_KEY || "";
+const memberkitMembershipLevelId =
+  process.env.MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID || env.MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID || "";
+const memberkitClassroomId =
+  process.env.MEMBERKIT_NAPROA360_CLASSROOM_ID || env.MEMBERKIT_NAPROA360_CLASSROOM_ID || "";
+if (memberkitApiKey) await upsertVariable(functions, "MEMBERKIT_API_KEY", memberkitApiKey, true);
+if (memberkitMembershipLevelId) {
+  await upsertVariable(functions, "MEMBERKIT_NAPROA360_MEMBERSHIP_LEVEL_ID", memberkitMembershipLevelId);
+}
+if (memberkitClassroomId) {
+  await upsertVariable(functions, "MEMBERKIT_NAPROA360_CLASSROOM_ID", memberkitClassroomId);
+}
 const deployment = await functions.createDeployment({
   functionId,
   code: InputFile.fromBuffer(archive, "cakto-webhook.tar.gz"),

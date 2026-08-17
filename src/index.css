@@ -218,6 +218,10 @@ body {
   background-color: color-mix(in srgb, var(--school-surface) 82%, transparent);
 }
 
+.school-themed-sidebar {
+  background-color: var(--school-surface);
+}
+
 .school-nav-active {
   color: var(--school-primary);
   background-color: color-mix(in srgb, var(--school-primary) 12%, transparent);
