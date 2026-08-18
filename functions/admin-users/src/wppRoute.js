@@ -1,12 +1,16 @@
 "use strict";
 
 const rea = require("./reaCorridorRoute");
+const routePerf = require("./routePerformanceProfile");
 
 const GEOAISWEB = "https://geoaisweb.decea.mil.br/geoserver/ows";
 const ESRI_EXPORT = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export";
-const CRUISE_KT = 90;
-const BURN_LPH = 20;
+const CRUISE_KT = routePerf.DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt;
+const BURN_LPH = routePerf.DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour;
 const ICAO_RE = /^[A-Z0-9]{4}$/;
+const MAP_WIDTH = 1920;
+const MAP_HEIGHT = 1248;
+const MAP_SCALE = MAP_WIDTH / 1200;
 
 function cleanString(value) {
   return String(value ?? "").trim();
@@ -164,6 +168,8 @@ async function fetchReaFeatures(appUrl) {
   const collected = [];
   const sources = [
     { url: `${origin}/geo/cv-rea-br.json`, kind: "rea" },
+    { url: `${origin}/geo/cv-rea-wh-bh.json`, kind: "rea" },
+    { url: `${origin}/geo/cv-rea-wt-ct.json`, kind: "rea" },
     { url: `${origin}/geo/cv-reh-br.json`, kind: "reh" },
   ];
   for (const source of sources) {
@@ -300,7 +306,23 @@ function buildRouteTableSvg(origin, dest, waypoints, legs, corridors) {
   return svgCard(width, height, `Tabela da rota · ${origin} → ${dest}`, `${header}${rows}`);
 }
 
-function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain) {
+function altitudeAtNm(profile, xNm) {
+  if (!profile?.length) return null;
+  if (xNm <= profile[0].xNm) return profile[0].altFt;
+  const last = profile[profile.length - 1];
+  if (xNm >= last.xNm) return last.altFt;
+  for (let i = 1; i < profile.length; i++) {
+    const a = profile[i - 1];
+    const b = profile[i];
+    if (xNm > b.xNm) continue;
+    if (b.xNm === a.xNm) return b.altFt;
+    const t = (xNm - a.xNm) / (b.xNm - a.xNm);
+    return Math.round(a.altFt + (b.altFt - a.altFt) * t);
+  }
+  return last.altFt;
+}
+
+function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain, performance) {
   const width = 1180;
   const height = 520;
   const padL = 70;
@@ -309,9 +331,10 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
   const padB = 50;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
-  const totalNm = legs[legs.length - 1]?.cumulativeDistanceNm || 1;
+  const totalNm = performance?.totalDistanceNm || legs[legs.length - 1]?.cumulativeDistanceNm || 1;
   const minFt = 0;
   let maxFt = 1500;
+  const profile = Array.isArray(performance?.profile) ? performance.profile : [];
   const marks = [{ xNm: 0, label: waypoints[0]?.label || origin, alt: waypoints[0]?.altitudeFt ?? 0 }];
   for (const leg of legs) {
     marks.push({
@@ -322,6 +345,9 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
   }
   for (const m of marks) {
     if (m.alt != null) maxFt = Math.max(maxFt, m.alt);
+  }
+  for (const p of profile) {
+    if (p?.altFt != null) maxFt = Math.max(maxFt, p.altFt);
   }
   for (const c of corridors) {
     if (c?.altMax != null) maxFt = Math.max(maxFt, c.altMax);
@@ -349,10 +375,10 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
     );
   }
 
-  const planned = marks
-    .filter((m) => m.alt != null)
-    .map((m) => `${xScale(m.xNm).toFixed(1)},${yScale(m.alt).toFixed(1)}`)
-    .join(" ");
+  const plannedPts = profile.length
+    ? profile.map((p) => `${xScale(p.xNm).toFixed(1)},${yScale(p.altFt).toFixed(1)}`)
+    : marks.filter((m) => m.alt != null).map((m) => `${xScale(m.xNm).toFixed(1)},${yScale(m.alt).toFixed(1)}`);
+  const planned = plannedPts.join(" ");
   const terrainPts = (terrain || [])
     .map((p, i, arr) => {
       const xNm = arr.length > 1 ? (i / (arr.length - 1)) * totalNm : 0;
@@ -362,12 +388,24 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
     .filter(Boolean)
     .join(" ");
 
-  const labels = marks
+  const wpLabels = marks
     .map((m) => {
       const x = xScale(m.xNm);
-      const y = m.alt != null ? yScale(m.alt) : padT + plotH;
+      const alt = profile.length ? altitudeAtNm(profile, m.xNm) : m.alt;
+      const y = alt != null ? yScale(alt) : padT + plotH;
       return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#22d3ee" stroke="#fff" stroke-width="1.4"/>
         <text x="${x.toFixed(1)}" y="${padT - 10}" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="ui-monospace,monospace">${escapeXml(String(m.label || "").slice(0, 10))}</text>`;
+    })
+    .join("");
+
+  const phaseMarks = (performance?.phaseMarkers || [])
+    .map((m) => {
+      const x = xScale(m.xNm);
+      const y = yScale(m.altFt);
+      const isToc = m.label === "TOC";
+      const fill = isToc ? "#c4b5fd" : "#f0abfc";
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${fill}" stroke="#fff" stroke-width="1.5"/>
+        <text x="${x.toFixed(1)}" y="${(y - 10).toFixed(1)}" text-anchor="middle" fill="${fill}" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(m.label)}</text>`;
     })
     .join("");
 
@@ -391,7 +429,8 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
   ${corridorRects.join("")}
   ${terrainPts ? `<polyline fill="none" stroke="#b45309" stroke-width="1.6" points="${terrainPts}"/>` : ""}
   ${planned ? `<polyline fill="none" stroke="#22d3ee" stroke-width="3" points="${planned}"/>` : ""}
-  ${labels}
+  ${wpLabels}
+  ${phaseMarks}
   <text x="${padL}" y="${height - 18}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">0 NM</text>
   <text x="${padL + plotW}" y="${height - 18}" text-anchor="end" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">${totalNm.toFixed(0)} NM</text>
 </svg>`;
@@ -448,8 +487,9 @@ function airportsInMapBbox(airports, bbox, waypoints, limit = 70) {
     .map((row) => row.ad);
 }
 
-function buildReaLinesSvg(features, bbox, width, height) {
+function buildReaLinesSvg(features, bbox, width, height, scale = 1) {
   const parts = [];
+  const stroke = (2.4 * scale).toFixed(1);
   for (const feature of Array.isArray(features) ? features : []) {
     if (!featureInBbox(feature, bbox)) continue;
     if (feature._kind === "reh") continue;
@@ -460,54 +500,67 @@ function buildReaLinesSvg(features, bbox, width, height) {
     const [x1, y1] = project(a.lat, a.lon, bbox, width, height);
     const [x2, y2] = project(b.lat, b.lon, bbox, width, height);
     parts.push(
-      `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#a16207" stroke-width="2.4" stroke-opacity="0.9" stroke-linecap="round"/>`,
+      `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#a16207" stroke-width="${stroke}" stroke-opacity="0.9" stroke-linecap="round"/>`,
     );
   }
   return parts.join("");
 }
 
-function buildAirportsSvg(airports, bbox, width, height, hideIcaos) {
+function buildAirportsSvg(airports, bbox, width, height, hideIcaos, scale = 1) {
   const skip = new Set((hideIcaos || []).map((code) => String(code || "").toUpperCase()));
+  const r = (3.2 * scale).toFixed(1);
+  const font = Math.round(10 * scale);
+  const dx = (5 * scale).toFixed(1);
+  const dy = (5 * scale).toFixed(1);
+  const halo = (3 * scale).toFixed(1);
   return airports
     .filter((ad) => !skip.has(ad.icao))
     .map((ad) => {
       const [x, y] = project(ad.lat, ad.lng, bbox, width, height);
       return `<g>
-        <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#0f172a" stroke="#f8fafc" stroke-width="1.2"/>
-        <text x="${(x + 5).toFixed(1)}" y="${(y - 5).toFixed(1)}" fill="#0f172a" stroke="#fff" stroke-width="3" paint-order="stroke" font-size="10" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(ad.icao)}</text>
+        <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="#0f172a" stroke="#f8fafc" stroke-width="${(1.2 * scale).toFixed(1)}"/>
+        <text x="${(x + Number(dx)).toFixed(1)}" y="${(y - Number(dy)).toFixed(1)}" fill="#0f172a" stroke="#fff" stroke-width="${halo}" paint-order="stroke" font-size="${font}" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(ad.icao)}</text>
       </g>`;
     })
     .join("");
 }
 
 function buildRouteOverlaySvg(waypoints, bbox, width, height, extras = {}) {
+  const scale = extras.scale || 1;
   const pts = waypoints.map((wp) => project(wp.lat, wp.lng, bbox, width, height));
   if (pts.length < 2) return null;
   const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const reaLines = buildReaLinesSvg(extras.reaFeatures, bbox, width, height);
-  const airportMarks = buildAirportsSvg(extras.airports || [], bbox, width, height, [
-    waypoints[0]?.label,
-    waypoints[waypoints.length - 1]?.label,
-  ]);
+  const reaLines = buildReaLinesSvg(extras.reaFeatures, bbox, width, height, scale);
+  const airportMarks = buildAirportsSvg(
+    extras.airports || [],
+    bbox,
+    width,
+    height,
+    [waypoints[0]?.label, waypoints[waypoints.length - 1]?.label],
+    scale,
+  );
+  const font = Math.round(11 * scale);
   const labels = waypoints
     .map((wp, idx) => {
       const [x, y] = pts[idx];
       const label = escapeXml(wp.label || "");
       const isEnd = idx === 0 || idx === waypoints.length - 1;
       if (!isEnd && wp.kind !== "airport") {
-        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#22d3ee" stroke="#fff" stroke-width="1.5"/>`;
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(4 * scale).toFixed(1)}" fill="#22d3ee" stroke="#fff" stroke-width="${(1.5 * scale).toFixed(1)}"/>`;
       }
-      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${idx === 0 ? "#22c55e" : "#f97316"}" stroke="#fff" stroke-width="2"/>
-        <rect x="${(x - 28).toFixed(1)}" y="${(y - 28).toFixed(1)}" width="56" height="18" rx="6" fill="rgb(2 6 23)" fill-opacity="0.82"/>
-        <text x="${x.toFixed(1)}" y="${(y - 15).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${label}</text>`;
+      const boxW = 56 * scale;
+      const boxH = 18 * scale;
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(7 * scale).toFixed(1)}" fill="${idx === 0 ? "#22c55e" : "#f97316"}" stroke="#fff" stroke-width="${(2 * scale).toFixed(1)}"/>
+        <rect x="${(x - boxW / 2).toFixed(1)}" y="${(y - 28 * scale).toFixed(1)}" width="${boxW.toFixed(1)}" height="${boxH.toFixed(1)}" rx="${(6 * scale).toFixed(1)}" fill="rgb(2 6 23)" fill-opacity="0.82"/>
+        <text x="${x.toFixed(1)}" y="${(y - 15 * scale).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="${font}" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${label}</text>`;
     })
     .join("");
   return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   ${reaLines}
   ${airportMarks}
-  <polyline fill="none" stroke="rgb(15 23 42)" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
-  <polyline fill="none" stroke="rgb(34 211 238)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
+  <polyline fill="none" stroke="rgb(15 23 42)" stroke-width="${(8 * scale).toFixed(1)}" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
+  <polyline fill="none" stroke="rgb(34 211 238)" stroke-width="${(4 * scale).toFixed(1)}" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
   ${labels}
 </svg>`);
 }
@@ -530,8 +583,9 @@ function wmsQuery(layers, bboxStr, width, height) {
 
 async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
   if (!sharpFactory || waypoints.length < 2) return null;
-  const width = 1200;
-  const height = 780;
+  const width = MAP_WIDTH;
+  const height = MAP_HEIGHT;
+  const scale = MAP_SCALE;
   const raw = routeBbox(waypoints, 0.18);
   if (!raw) return null;
   const bbox = fitBboxToAspect(raw, width, height);
@@ -541,8 +595,9 @@ async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
     bboxSR: "4326",
     imageSR: "4326",
     size: `${width},${height}`,
-    format: "png",
+    format: "png32",
     f: "image",
+    dpi: "144",
   });
   const airspaceQs = wmsQuery("ICA:TMA,ICA:CTR,ICA:ATZ", bboxStr, width, height);
   const reaQs = wmsQuery("ICA:CV_REA_BR_COMPLETO", bboxStr, width, height);
@@ -555,6 +610,7 @@ async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
   const overlaySvg = buildRouteOverlaySvg(waypoints, bbox, width, height, {
     reaFeatures: extras.reaFeatures,
     airports,
+    scale,
   });
   const layers = [];
   if (base) layers.push({ input: base, left: 0, top: 0 });
@@ -566,7 +622,13 @@ async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
     create: { width, height, channels: 3, background: { r: 15, g: 23, b: 42 } },
   })
     .composite(layers)
-    .jpeg({ quality: 84 })
+    .jpeg({
+      quality: 92,
+      chromaSubsampling: "4:4:4",
+      trellisQuantisation: true,
+      overshootDeringing: true,
+      optimiseScans: true,
+    })
     .toBuffer();
 }
 
@@ -629,6 +691,7 @@ async function handleWppRouteCommand(deps, command) {
   waypoints = rea.applyCorridorAltitudes(waypoints, corridors);
   corridors = rea.matchLegCorridors(waypoints, features);
 
+  const performance = routePerf.buildRoutePerformanceProfile(waypoints, routePerf.DEFAULT_FLIGHT_PERFORMANCE);
   const legs = rea.buildFlightPlanLegs(waypoints, { cruiseSpeedKt: CRUISE_KT, fuelBurnPerHour: BURN_LPH });
   let airspaces = [];
   try {
@@ -680,7 +743,7 @@ async function handleWppRouteCommand(deps, command) {
     await sendImageFromSvg(
       deps,
       incoming.from,
-      buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain),
+      buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain, performance),
       `wpp-rota-profile-${stamp}.png`,
       `📈 Perfil vertical · ${origin} → ${dest}`,
     );
@@ -702,11 +765,17 @@ async function handleWppRouteCommand(deps, command) {
 
   const last = legs[legs.length - 1];
   const names = [...new Set((corridors || []).map((c) => c?.name).filter(Boolean))];
+  const toc = performance?.toc;
+  const tod = performance?.tod;
+  const eteHours = performance?.eteHours ?? last?.cumulativeEteHours;
+  const fuelEst = performance?.fuelEstimate ?? last?.cumulativeFuel;
   const summary = [
     `*${origin} → ${dest}*`,
     last?.cumulativeDistanceNm != null ? `Distância: *${last.cumulativeDistanceNm.toFixed(0)} NM*` : null,
-    last?.cumulativeEteHours != null ? `ETE: *${rea.formatEteClock(last.cumulativeEteHours)}* · ${CRUISE_KT} kt` : null,
-    last?.cumulativeFuel != null ? `Consumo est.: *${last.cumulativeFuel.toFixed(0)} L*` : null,
+    eteHours != null ? `ETE: *${rea.formatEteClock(eteHours)}*` : null,
+    fuelEst != null ? `Consumo est.: *${fuelEst.toFixed(0)} L*` : null,
+    toc ? `TOC: *${toc.xNm.toFixed(0)} NM* · ${Math.round(toc.altFt)} ft` : null,
+    tod ? `TOD: *${tod.xNm.toFixed(0)} NM* · ${Math.round(tod.altFt)} ft` : null,
     names.length
       ? `REAs: ${names.slice(0, 8).map((n) => `*${n}*`).join(", ")}`
       : snap.ok
