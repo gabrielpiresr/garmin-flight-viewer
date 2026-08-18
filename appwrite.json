@@ -26,8 +26,8 @@
       "runtime": "node-22",
       "entrypoint": "src/flightRadarWatchCron.js",
       "path": "functions/admin-users",
-      "schedule": "*/5 * * * *",
-      "timeout": 60,
+      "schedule": "*/3 * * * *",
+      "timeout": 90,
       "ignore": ["node_modules", ".npm", ".tmp-pdf-inspect"]
     },
     {

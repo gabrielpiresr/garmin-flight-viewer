@@ -8,6 +8,7 @@ import {
 } from "../../lib/flightsDb";
 import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
 import { getCachedSchoolRules, getSchoolRules } from "../../lib/schoolRulesDb";
+import { listStudentTrainingTracks } from "../../lib/trainingTracksDb";
 import {
   createSoloFlightRequest,
   evaluateSoloFlight,
@@ -17,6 +18,8 @@ import {
 } from "../../lib/soloFlightDb";
 import {
   SOLO_FLIGHT_DEFAULT_MANUAL_CHECKS,
+  SOLO_FLIGHT_PRIVATE_PILOT_MANUAL_CHECK_IDS,
+  resolveIsPrivatePilotStudent,
   type SoloFlightCheckResult,
   type SoloFlightEndorsement,
   type SoloFlightEvaluation,
@@ -24,7 +27,7 @@ import {
   type SoloFlightRequest,
   type SoloFlightRequestType,
 } from "../../types/soloFlight";
-import { DEFAULT_FLIGHT_SCHEDULE_RULES } from "../../types/schoolRules";
+import { DEFAULT_FLIGHT_SCHEDULE_RULES, DEFAULT_SOLO_FLIGHT_RULES, soloFlightCutoffLimitTime } from "../../types/schoolRules";
 import { AiswebAerodromePicker } from "../AiswebAerodromePicker";
 import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
@@ -33,7 +36,6 @@ const STEPS = ["Voo da escala", "Aeródromos", "Critérios manuais", "Resumo"] a
 const DEFAULT_SCHOOL_ORIGIN_ICAO = "SBJD";
 const DEFAULT_DESTINATION_ICAO = "SDCO";
 const DEFAULT_ALTERNATE_ICAO = "SDPW";
-const SOLO_CUTOFF_LIMIT_ZULU = "19:00";
 type Mode = "history" | "flow";
 type SoloAgendaFlight = SavedFlightListItem & {
   soloStudentName?: string;
@@ -286,6 +288,12 @@ function RequestChecklistDetails({ request }: { request: SoloFlightRequest }) {
   const checks = [...(request.automaticChecks || []), ...(request.manualChecks || []), ...(request.metarChecks || [])];
   return (
     <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+      {request.status === "rejected" ? (
+        <div className="rounded-lg border border-red-900/60 bg-red-950/25 px-3 py-2 text-sm text-red-100">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-red-300">Motivo da rejeição</p>
+          <p className="mt-1 whitespace-pre-wrap">{request.decisionReason || "Motivo não informado."}</p>
+        </div>
+      ) : null}
       <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4">
         <p><span className="font-semibold text-slate-500">Tipo:</span> {requestTypeLabel(request.requestType)}</p>
         <p><span className="font-semibold text-slate-500">Início:</span> {request.startTime || "--:--"}Z</p>
@@ -331,6 +339,9 @@ function ExpandableRequestCard({ request }: { request: SoloFlightRequest }) {
           <p className="mt-0.5 truncate text-xs text-slate-400">
             {request.flightDate} · {request.route || "-"} · {requestTypeLabel(request.requestType)}
           </p>
+          {!open && request.status === "rejected" && request.decisionReason ? (
+            <p className="mt-1 truncate text-[11px] text-red-300">Motivo: {request.decisionReason}</p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusBadgeClass(request.status)}`}>
@@ -404,6 +415,8 @@ export function InstructorSoloFlightTab() {
   const [debriefingMinutes, setDebriefingMinutes] = useState(() =>
     getCachedSchoolRules()?.schedule.bufferAfterMinutes ?? DEFAULT_FLIGHT_SCHEDULE_RULES.bufferAfterMinutes,
   );
+  const [soloRules, setSoloRules] = useState(() => getCachedSchoolRules()?.soloFlight ?? DEFAULT_SOLO_FLIGHT_RULES);
+  const [isPrivatePilotStudent, setIsPrivatePilotStudent] = useState<boolean | null>(null);
 
   const agendaDays = useMemo(() => {
     const today = isoToday();
@@ -466,7 +479,10 @@ export function InstructorSoloFlightTab() {
 
   useEffect(() => {
     void getSchoolRules()
-      .then((rules) => setDebriefingMinutes(rules.schedule.bufferAfterMinutes))
+      .then((rules) => {
+        setDebriefingMinutes(rules.schedule.bufferAfterMinutes);
+        setSoloRules(rules.soloFlight);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -493,6 +509,7 @@ export function InstructorSoloFlightTab() {
     setEvaluation(null);
     setEndorsements([]);
     setEndorsementUploadNotes("");
+    setIsPrivatePilotStudent(null);
     setOriginIcaos([]);
     setDestinationIcaos([DEFAULT_DESTINATION_ICAO]);
     setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
@@ -509,7 +526,14 @@ export function InstructorSoloFlightTab() {
     setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
     setEndorsements([]);
     setEndorsementUploadNotes("");
-    void loadEndorsements(flight.student_user_id || "");
+    setIsPrivatePilotStudent(null);
+    const studentUserId = flight.student_user_id || "";
+    void loadEndorsements(studentUserId);
+    if (studentUserId) {
+      void listStudentTrainingTracks(studentUserId).then(({ data }) => {
+        setIsPrivatePilotStudent(resolveIsPrivatePilotStudent(data.map((item) => item.track?.name)));
+      }).catch(() => undefined);
+    }
   }
 
   const flightsByDay = useMemo(() => {
@@ -529,13 +553,18 @@ export function InstructorSoloFlightTab() {
 
   const effectiveManualChecks = useMemo(
     () =>
-      manualChecks.map((item) =>
-        requestType === "primeiro_circuito_solo" && item.id === "endorsement_printed"
+      manualChecks.map((item) => {
+        const firstCircuitSkip = requestType === "primeiro_circuito_solo" && item.id === "endorsement_printed";
+        const privatePilotSkip = isPrivatePilotStudent === false && SOLO_FLIGHT_PRIVATE_PILOT_MANUAL_CHECK_IDS.has(item.id);
+        return firstCircuitSkip || privatePilotSkip
           ? { ...item, checked: false, notApplicable: true }
-          : { ...item, notApplicable: false },
-      ),
-    [manualChecks, requestType],
+          : { ...item, notApplicable: false };
+      }),
+    [isPrivatePilotStudent, manualChecks, requestType],
   );
+
+  const requirePrivatePilotChecks = isPrivatePilotStudent !== false;
+  const cutoffLimitZulu = soloFlightCutoffLimitTime(soloRules, isPrivatePilotStudent === true);
 
   const payload = useMemo(
     () => ({
@@ -604,6 +633,9 @@ export function InstructorSoloFlightTab() {
     try {
       const result = await evaluateSoloFlight(payload);
       setEvaluation(result);
+      if (typeof result.isPrivatePilotStudent === "boolean") {
+        setIsPrivatePilotStudent(result.isPrivatePilotStudent);
+      }
       return result;
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao avaliar o voo solo." });
@@ -794,7 +826,7 @@ export function InstructorSoloFlightTab() {
             </label>
           </div>
           <p className="mt-3 text-xs text-slate-500">
-            Horários em Zulu (UTC). O corte é calculado antes do debriefing; limite solo: até {SOLO_CUTOFF_LIMIT_ZULU}Z.
+            Horários em Zulu (UTC). O corte é calculado antes do debriefing; limite solo: até {cutoffLimitZulu}Z{isPrivatePilotStudent === true ? " (piloto privado)" : ""}.
           </p>
           <div className="mt-5 grid gap-5 lg:grid-cols-3">
             <AiswebAerodromePicker label="Origem" value={originIcaos} onChange={(next) => { setOriginIcaos(next); setEvaluation(null); }} multiple={false} helper="SBJD é usado como padrão, mas pode ser alterado." />
@@ -810,6 +842,7 @@ export function InstructorSoloFlightTab() {
 
       {step === 2 ? (
         <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
+          {requirePrivatePilotChecks ? (
           <div className="mb-5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
@@ -879,6 +912,7 @@ export function InstructorSoloFlightTab() {
               </label>
             </div>
           </div>
+          ) : null}
 
           <div className="grid gap-2 md:grid-cols-2">
             {effectiveManualChecks.map((item) => (

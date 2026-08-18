@@ -160,6 +160,8 @@ export type SoloFlightRules = {
   dualCommandWindowDays: number;
   minimumAge: number;
   cutoffBeforeTime: string;
+  /** Horário de corte exclusivo para alunos do curso de piloto privado. */
+  cutoffBeforeTimePrivatePilot: string;
   metarMinimumCondition: "aluno_solo";
   manualCriteria: SoloFlightManualCriterion[];
 };
@@ -605,6 +607,7 @@ export const DEFAULT_SOLO_FLIGHT_RULES: SoloFlightRules = {
   dualCommandWindowDays: 5,
   minimumAge: 18,
   cutoffBeforeTime: "19:00",
+  cutoffBeforeTimePrivatePilot: "19:00",
   metarMinimumCondition: "aluno_solo",
   manualCriteria: [
     {
@@ -776,15 +779,27 @@ function normalizeSoloFlightRules(input: unknown): SoloFlightRules {
     .filter((item) => item.id && item.label)
     .slice(0, 20);
   const cutoffBeforeTime = normalizeTime(raw.cutoffBeforeTime, defaults.cutoffBeforeTime);
+  const cutoffBeforeTimePrivatePilot = normalizeTime(
+    raw.cutoffBeforeTimePrivatePilot,
+    defaults.cutoffBeforeTimePrivatePilot,
+  );
   return {
     enabled: raw.enabled !== false,
     automaticCriteria,
     dualCommandWindowDays: normalizeInteger(raw.dualCommandWindowDays, 1, 30, defaults.dualCommandWindowDays),
     minimumAge: normalizeInteger(raw.minimumAge, 14, 80, defaults.minimumAge),
     cutoffBeforeTime: cutoffBeforeTime === "16:00" ? "19:00" : cutoffBeforeTime,
+    cutoffBeforeTimePrivatePilot,
     metarMinimumCondition: "aluno_solo",
     manualCriteria: manualCriteria.length ? manualCriteria : defaults.manualCriteria,
   };
+}
+
+export function soloFlightCutoffLimitTime(rules: Pick<SoloFlightRules, "cutoffBeforeTime" | "cutoffBeforeTimePrivatePilot">, isPrivatePilotStudent: boolean): string {
+  if (isPrivatePilotStudent) {
+    return rules.cutoffBeforeTimePrivatePilot || rules.cutoffBeforeTime;
+  }
+  return rules.cutoffBeforeTime;
 }
 
 export function normalizeSchoolRules(input: unknown): SchoolRules {

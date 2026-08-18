@@ -9,6 +9,20 @@ const MAX_RIDES = 12;
 const ENTRY_SNAPS_PER_COMP = 10;
 const GATE_ENTRY_NM = 15;
 const GATE_HEADING_DEG = 25;
+const LOCAL_TMA_NEAR_NM = 40;
+
+function isRehFeature(feature) {
+  if (!feature) return false;
+  if (feature._kind === "reh") return true;
+  if (feature._kind === "rea") return false;
+  return /CV_REH/i.test(String(feature.id || ""));
+}
+
+function airplaneVisualFeatures(features) {
+  const list = Array.isArray(features) ? features : [];
+  const rea = list.filter((feature) => !isRehFeature(feature));
+  return rea.length ? rea : list;
+}
 
 function numOrNull(value) {
   if (value == null || value === "") return null;
@@ -411,7 +425,18 @@ function buildGraph(features) {
     if (dirs.ab) addDirected(from, to, { name, oneWay, obrig, altMax: altAb });
     if (dirs.ba) addDirected(to, from, { name, oneWay, obrig, altMax: altBa });
     union(from.id, to.id);
-    segs.push({ a: from, b: to, name, dirs, oneWay, obrig, altAb, altBa, componentId: "" });
+    segs.push({
+      a: from,
+      b: to,
+      name,
+      dirs,
+      oneWay,
+      obrig,
+      altAb,
+      altBa,
+      componentId: "",
+      carta: String(props.carta_nome || "").trim().toUpperCase(),
+    });
   }
 
   for (const seg of segs) {
@@ -475,7 +500,20 @@ function rideTotalCost(ride) {
 }
 
 function rideScore(ride) {
-  return ride.entryDistM + ride.pathMeters + 2 * ride.exitDistToDestM;
+  return 2 * ride.entryDistM + ride.pathMeters + 3 * ride.exitDistToDestM;
+}
+
+function nearestDistToSegs(point, segs) {
+  let best = Infinity;
+  for (const seg of segs) {
+    const d = projectOnSegment(point, seg.a, seg.b).distM;
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function anchoredToLocalTma(point, segs) {
+  return nearestDistToSegs(point, segs) <= LOCAL_TMA_NEAR_NM * NM_IN_M;
 }
 
 function pathMetersFromWalk(nodes, walk) {
@@ -646,7 +684,7 @@ function componentNodes(segs, nodes) {
   return [...ids].map((id) => nodes.get(id)).filter(Boolean);
 }
 
-function bestRideForComponent(pos, dest, componentSegs, adj, nodes) {
+function bestRideForComponent(pos, dest, componentSegs, adj, nodes, options) {
   const destNow = haversineM(pos, dest);
   const destBrng = bearingDeg(pos, dest);
   const snaps = closestSnaps(pos, componentSegs, ENTRY_SNAPS_PER_COMP);
@@ -664,11 +702,16 @@ function bestRideForComponent(pos, dest, componentSegs, adj, nodes) {
   const alignedGates = gates.filter(
     (gate) => gate.heading <= GATE_HEADING_DEG && haversineM(gate.node, dest) < destNow - PROGRESS_M,
   );
+  const usefulGates = gates.filter((gate) => haversineM(gate.node, dest) < destNow - PROGRESS_M);
 
   const candidates = [];
-  const gateList =
-    far && alignedGates.length ? alignedGates : far ? gates.slice(0, 16) : [...alignedGates.slice(0, 4), ...gates.slice(0, 4)];
+  const gateList = far ? usefulGates.slice(0, 16) : [...alignedGates.slice(0, 4), ...usefulGates.slice(0, 4)];
   if (far) {
+    for (const snap of snaps) {
+      if (headingDiffDeg(destBrng, bearingDeg(pos, snap)) > 90) continue;
+      const attached = attachSnap(adj, nodes, snap.seg, snap);
+      candidates.push({ adj: attached.adj, nodes: attached.nodes, startId: attached.startId, distM: snap.distM });
+    }
     for (const gate of gateList) {
       candidates.push({ adj, nodes, startId: gate.node.id, distM: gate.distM });
     }
@@ -684,10 +727,11 @@ function bestRideForComponent(pos, dest, componentSegs, adj, nodes) {
 
   let best = null;
   const componentId = componentSegs[0]?.componentId || "";
+  const skipProgress = Boolean(options && options.skipProgress);
   for (const candidate of candidates) {
     const ride = rideFromStart(candidate.adj, candidate.nodes, candidate.startId, dest, candidate.distM, componentId);
     if (!ride) continue;
-    if (destNow - ride.exitDistToDestM < PROGRESS_M) continue;
+    if (!skipProgress && destNow - ride.exitDistToDestM < PROGRESS_M) continue;
     if (
       !best ||
       rideScore(ride) < rideScore(best) - 50 ||
@@ -721,6 +765,7 @@ function appendRidePoints(next, dest, points, stats, lastAlt) {
       kind: point.kind,
       ...(point.kind === "rea" ? { reaName: point.name } : {}),
       altitudeFt: altMax != null && Number.isFinite(altMax) ? Math.round(altMax) : null,
+      altitudeRef: "bs",
     });
     if (altMax != null) lastAlt.value = altMax;
   }
@@ -730,13 +775,14 @@ function snapRouteToVisualCorridors(waypoints, features) {
   if (waypoints.length < 2) {
     return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
   }
-  if (!features.length) {
+  const visual = airplaneVisualFeatures(features);
+  if (!visual.length) {
     return { ok: false, error: "Corredores visuais ainda não carregaram." };
   }
 
   const origin = waypoints[0];
   const dest = waypoints[waypoints.length - 1];
-  const { nodes, adj, segs } = buildGraph(features);
+  const { nodes, adj, segs } = buildGraph(visual);
   if (!segs.length) {
     return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
   }
@@ -760,15 +806,21 @@ function snapRouteToVisualCorridors(waypoints, features) {
     const destNow = haversineM(pos, dest);
     if (destNow < NEAR_WP_M * 2) break;
     const ridesFound = [];
+    const mandatory = [];
     for (const [componentId, componentSegs] of byComponent) {
       if (used.has(componentId)) continue;
-      const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes);
+      const destTma = anchoredToLocalTma(dest, componentSegs);
+      const localTma = destTma || anchoredToLocalTma(pos, componentSegs);
+      const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
+        skipProgress: destTma && rides > 0,
+      });
       if (!ride) continue;
-      if (rides > 0 && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
+      if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
       ridesFound.push(ride);
+      if (localTma) mandatory.push(ride);
     }
     const nearby = ridesFound.filter((ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M);
-    const pool = nearby.length ? nearby : ridesFound;
+    const pool = mandatory.length && rides > 0 ? mandatory : nearby.length ? nearby : ridesFound;
     let chosen = null;
     for (const ride of pool) {
       if (
@@ -831,9 +883,10 @@ function applyCorridorAltitudes(waypoints, legCorridors) {
 }
 
 function matchLegCorridors(waypoints, features) {
+  const visual = airplaneVisualFeatures(features);
   const out = [null];
   for (let i = 1; i < waypoints.length; i++) {
-    out.push(matchReaCorridorForLeg(waypoints[i - 1], waypoints[i], features));
+    out.push(matchReaCorridorForLeg(waypoints[i - 1], waypoints[i], visual));
   }
   return out;
 }

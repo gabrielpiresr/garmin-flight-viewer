@@ -151,6 +151,7 @@ const REA_CHART_WMS_LAYERS = [
   "ICA:CCV_REA_XR_VITORIA",
   "ICA:CCV_REA_XS_SALVADOR",
   "ICA:CCV_REA_XT_NATAL",
+  "ICA:REA_CURITIBA",
 ] as const;
 
 const REH_CHART_WMS_LAYERS = [
@@ -1872,7 +1873,6 @@ function RouteDragToInsert({
       const snapM = zoom >= 11 ? 1852 * 3.5 : zoom >= 9 ? 1852 * 6 : 1852 * 10;
       const cand = findSnapCandidate(latlng.lat, latlng.lng, snapM);
       if (!cand) return;
-      if (waypoints.some((w) => haversineM(w, cand) < 1852 * 0.4)) return;
       onPropose(cand, drag.legIndex + 1);
     };
 
@@ -3266,8 +3266,8 @@ export function FlightPlanMap({
             }}
           />
           <ReaRoutesOverlayBoundary>
-            <ReaRoutesOverlay kind="rea" enabled={!isWac && layersOn.rea === true} showEndpointMarkers={false} />
-            <ReaRoutesOverlay kind="reh" enabled={!isWac && layersOn.reh === true} showEndpointMarkers={false} />
+            <ReaRoutesOverlay kind="rea" enabled={layersOn.rea === true} showEndpointMarkers={false} />
+            <ReaRoutesOverlay kind="reh" enabled={layersOn.reh === true} showEndpointMarkers={false} />
           </ReaRoutesOverlayBoundary>
 
           <VisibleAerodromes
@@ -3298,12 +3298,12 @@ export function FlightPlanMap({
           />
           <VisibleReaFixes
             fixes={reaFixes}
-            show={!isWac && interactive && layersOn.rea_points === true}
+            show={interactive && layersOn.rea_points === true && layersOn.rea === true}
             onPick={handlePick}
           />
           <VisibleReaFixes
             fixes={rehFixes}
-            show={!isWac && interactive && layersOn.rea_points === true}
+            show={interactive && layersOn.rea_points === true && layersOn.reh === true}
             onPick={handlePick}
           />
 

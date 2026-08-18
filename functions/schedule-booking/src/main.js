@@ -16,7 +16,11 @@ const CREDITS_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID;
 const ADJUSTMENTS_ID = process.env.APPWRITE_CREDIT_ADJUSTMENTS_COLLECTION_ID || "credit_adjustments";
 const AUDIT_ID = process.env.APPWRITE_SCHEDULE_AUDIT_COLLECTION_ID || "schedule_audit_events";
 const LOCKS_ID = process.env.APPWRITE_SCHEDULE_SLOT_LOCKS_COLLECTION_ID || "schedule_slot_locks";
-const SETTINGS_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID;
+const SETTINGS_ID = (() => {
+  const raw = String(process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || "").trim();
+  if (!raw || raw.startsWith("your_")) return "6a048f8a0018727e83ff";
+  return raw;
+})();
 const OP_WEEKS_ID = process.env.APPWRITE_OPERATIONAL_WEEKS_COLLECTION_ID || "aircraft_operational_weeks";
 const STUDENT_TRACKS_ID = process.env.APPWRITE_STUDENT_TRACKS_COLLECTION_ID || process.env.APPWRITE_STUDENT_TRACKS_COL_ID || "student_training_tracks";
 const FLIGHT_REVIEW_CLUB_MEMBERSHIPS_ID =
@@ -395,12 +399,13 @@ function cleanScheduleHistoryNotes(value) {
     .filter((part) => {
       if (!part) return false;
       if (part === "GFV escala") return false;
+      if (/^Via NS$/i.test(part)) return false;
+      if (/^Agendado via plataforma$/i.test(part)) return false;
       if (/^Aluno:/i.test(part)) return false;
       if (/^Aeronave:/i.test(part)) return false;
       return true;
     })
     .map((part) => {
-      if (/^Agendado via plataforma$/i.test(part)) return "Via NS";
       return part
         .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno\s+.+?\s+em\s+(\d{2}\/\d{2}\/\d{4})\s+(?:as|às)\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
         .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno em (\d{2}\/\d{2}\/\d{4})\s+as\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
@@ -412,7 +417,6 @@ function cleanScheduleHistoryNotes(value) {
 function bookingHistoryNotes({ waitlistBooking = false, actorRole = "", studentLabel = "", flexibilityMinutes = 0, observation = "" } = {}) {
   return [
     waitlistBooking ? "LISTA DE ESPERA" : "",
-    "Via NS",
     actorRole === "aluno" ? studentActionNote("Solicitado", studentLabel) : "",
     flexibilityMinutes > 0 ? `Flex.: ±${clock(flexibilityMinutes)}` : "",
     observation ? `Obs: ${observation}` : "",

@@ -9,6 +9,8 @@ export type WppConnectionSettings = {
   bookingRequestedTemplate: WppTransactionalTemplateSettings;
   soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
   soloFlightAwarenessTemplate: WppTransactionalTemplateSettings;
+  soloFlightInstructorApprovedTemplate: WppTransactionalTemplateSettings;
+  soloFlightInstructorRejectedTemplate: WppTransactionalTemplateSettings;
   soloFlightCoordinatorPhone: string;
   soloFlightSgsoPhone: string;
   incomingAutoReply: WppIncomingAutoReplySettings;
@@ -95,6 +97,8 @@ export type WppConnectionInput = {
   bookingRequestedTemplate?: WppTransactionalTemplateSettings;
   soloFlightApprovalTemplate?: WppTransactionalTemplateSettings;
   soloFlightAwarenessTemplate?: WppTransactionalTemplateSettings;
+  soloFlightInstructorApprovedTemplate?: WppTransactionalTemplateSettings;
+  soloFlightInstructorRejectedTemplate?: WppTransactionalTemplateSettings;
   aiswebAlertTemplate?: WppTransactionalTemplateSettings;
   soloFlightCoordinatorPhone?: string;
   soloFlightSgsoPhone?: string;

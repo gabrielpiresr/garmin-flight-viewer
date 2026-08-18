@@ -66,6 +66,7 @@ export type SoloFlightEvaluationInput = {
 };
 
 export type SoloFlightEvaluation = {
+  isPrivatePilotStudent: boolean;
   student: {
     userId: string;
     fullName: string;
@@ -142,6 +143,29 @@ export type SoloFlightDecision = {
   reason: string;
   createdAt: string;
 };
+
+export const SOLO_FLIGHT_PRIVATE_PILOT_MANUAL_CHECK_IDS = new Set([
+  "endorsement_printed",
+  "anac_board_private_pilot",
+]);
+
+export function soloFlightCourseCode(value: string | null | undefined): "PP" | "PC" | "INV" | "" {
+  const source = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (!source.trim()) return "";
+  if (/\binv\b|instrutor|inva/.test(source)) return "INV";
+  if (/\bpc\b|piloto comercial|comercial/.test(source)) return "PC";
+  if (/\bpp\b|piloto privado|privado/.test(source)) return "PP";
+  return "";
+}
+
+export function resolveIsPrivatePilotStudent(sources: Array<string | null | undefined>): boolean {
+  const codes = sources.map((value) => soloFlightCourseCode(value)).filter(Boolean);
+  if (codes.some((code) => code === "PC" || code === "INV")) return false;
+  return codes.some((code) => code === "PP");
+}
 
 export const SOLO_FLIGHT_DEFAULT_MANUAL_CHECKS: SoloFlightManualCheck[] = [
   {

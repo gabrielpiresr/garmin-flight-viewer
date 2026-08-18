@@ -934,8 +934,125 @@ async function clearFlightRadarWatch(deps, phone) {
 function defaultWatchFleetState() {
   return {
     aircraft: {},
+    pendingEvents: [],
+    recentEventKeys: [],
     updatedAt: null,
   };
+}
+
+function publicOpenLeg(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const studentName = cleanString(raw.studentName);
+  const instructorName = cleanString(raw.instructorName);
+  const takeoffAt = cleanString(raw.takeoffAt);
+  const takeoffIcao = cleanString(raw.takeoffIcao).toUpperCase();
+  if (!studentName && !instructorName && !takeoffAt && !takeoffIcao) return null;
+  return {
+    studentUserId: cleanString(raw.studentUserId),
+    instructorUserId: cleanString(raw.instructorUserId),
+    studentName,
+    instructorName,
+    notes: cleanString(raw.notes),
+    mission: cleanString(raw.mission),
+    scheduledTakeoff: cleanString(raw.scheduledTakeoff),
+    scheduledLanding: cleanString(raw.scheduledLanding),
+    takeoffIcao,
+    takeoffAd: cleanString(raw.takeoffAd),
+    takeoffAt,
+    slotId: cleanString(raw.slotId),
+  };
+}
+
+function watchEventKey(event) {
+  return [
+    cleanString(event?.type),
+    normalizeRegistration(event?.reg),
+    cleanString(event?.fr24Id),
+    cleanString(event?.lastTakeoffAt),
+  ].join("|");
+}
+
+function publicWatchEvent(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const type = raw.type === "landing" ? "landing" : raw.type === "takeoff" ? "takeoff" : "";
+  const reg = normalizeRegistration(raw.reg);
+  if (!type || !reg) return null;
+  const lat = Number.isFinite(Number(raw.lat)) ? Number(raw.lat) : null;
+  const lon = Number.isFinite(Number(raw.lon)) ? Number(raw.lon) : null;
+  return {
+    type,
+    reg,
+    fr24Id: cleanString(raw.fr24Id) || null,
+    callsign: cleanString(raw.callsign) || null,
+    alt: Number.isFinite(Number(raw.alt)) ? Number(raw.alt) : null,
+    gspeed: Number.isFinite(Number(raw.gspeed)) ? Number(raw.gspeed) : null,
+    origIcao: cleanString(raw.origIcao).toUpperCase() || null,
+    destIcao: cleanString(raw.destIcao).toUpperCase() || null,
+    lat,
+    lon,
+    groundLat: Number.isFinite(Number(raw.groundLat)) ? Number(raw.groundLat) : null,
+    groundLon: Number.isFinite(Number(raw.groundLon)) ? Number(raw.groundLon) : null,
+    lastTakeoffAt: cleanString(raw.lastTakeoffAt) || null,
+    lastTakeoffIcao: cleanString(raw.lastTakeoffIcao).toUpperCase() || null,
+    openLeg: publicOpenLeg(raw.openLeg),
+    studentName: cleanString(raw.studentName),
+    instructorName: cleanString(raw.instructorName),
+    studentUserId: cleanString(raw.studentUserId),
+    instructorUserId: cleanString(raw.instructorUserId),
+    notes: cleanString(raw.notes),
+    mission: cleanString(raw.mission),
+    takeoffAd: cleanString(raw.takeoffAd),
+    landingAd: cleanString(raw.landingAd),
+    takeoffIcao: cleanString(raw.takeoffIcao).toUpperCase(),
+    landingIcao: cleanString(raw.landingIcao).toUpperCase(),
+    scheduledTakeoff: cleanString(raw.scheduledTakeoff),
+    scheduledLanding: cleanString(raw.scheduledLanding),
+    duration: cleanString(raw.duration),
+    enriched: raw.enriched === true,
+  };
+}
+
+function mergeWatchEvents(pending, incoming, recentKeys) {
+  const known = new Set(
+    (Array.isArray(recentKeys) ? recentKeys : []).map((key) => cleanString(key)).filter(Boolean),
+  );
+  const out = [];
+  const seen = new Set();
+  for (const event of Array.isArray(pending) ? pending : []) {
+    const normalized = publicWatchEvent(event);
+    if (!normalized) continue;
+    const key = watchEventKey(normalized);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= 20) return out;
+  }
+  for (const event of Array.isArray(incoming) ? incoming : []) {
+    const normalized = publicWatchEvent(event);
+    if (!normalized) continue;
+    const key = watchEventKey(normalized);
+    if (!key || seen.has(key) || known.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+function rememberWatchEventKeys(previousKeys, events) {
+  const next = [];
+  const seen = new Set();
+  for (const key of [
+    ...(Array.isArray(events) ? events.map((event) => watchEventKey(event)) : []),
+    ...(Array.isArray(previousKeys) ? previousKeys : []),
+  ]) {
+    const value = cleanString(key);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    next.push(value);
+    if (next.length >= 50) break;
+  }
+  return next;
 }
 
 function publicWatchFleetState(raw) {
@@ -945,6 +1062,8 @@ function publicWatchFleetState(raw) {
     const reg = normalizeRegistration(regRaw);
     if (!reg || !row || typeof row !== "object") continue;
     const status = cleanString(row.status);
+    const lastEventType =
+      row.lastEventType === "takeoff" || row.lastEventType === "landing" ? row.lastEventType : null;
     aircraft[reg] = {
       status: status === "airborne" || status === "ground" || status === "offline" ? status : "offline",
       fr24Id: cleanString(row.fr24Id) || null,
@@ -956,6 +1075,8 @@ function publicWatchFleetState(raw) {
       lastLandingFr24Id: cleanString(row.lastLandingFr24Id) || null,
       lastTakeoffAt: cleanString(row.lastTakeoffAt) || null,
       lastTakeoffIcao: cleanString(row.lastTakeoffIcao).toUpperCase() || null,
+      lastEventType,
+      openLeg: publicOpenLeg(row.openLeg),
       lat: Number.isFinite(Number(row.lat)) ? Number(row.lat) : null,
       lon: Number.isFinite(Number(row.lon)) ? Number(row.lon) : null,
       lastGroundLat: Number.isFinite(Number(row.lastGroundLat)) ? Number(row.lastGroundLat) : null,
@@ -965,6 +1086,8 @@ function publicWatchFleetState(raw) {
   }
   return {
     aircraft,
+    pendingEvents: mergeWatchEvents(raw?.pendingEvents, [], []),
+    recentEventKeys: rememberWatchEventKeys(raw?.recentEventKeys, []),
     updatedAt: cleanString(raw?.updatedAt) || null,
   };
 }
@@ -992,12 +1115,53 @@ async function saveWatchFleetState(deps, state) {
   return next;
 }
 
+async function fetchLivePositionsWithRetry(deps, input = {}, { attempts = 3, delayMs = 800, log } = {}) {
+  let lastErr;
+  const total = Math.max(1, Math.min(5, Math.round(Number(attempts) || 3)));
+  for (let i = 1; i <= total; i += 1) {
+    try {
+      return await fetchLivePositions(deps, input);
+    } catch (err) {
+      lastErr = err;
+      if (typeof log === "function") {
+        log(`[flight-radar-watch] FR24 fetch attempt ${i}/${total} failed: ${err?.message || err}`);
+      }
+      if (i < total) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * i));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function classifyLiveStatus(pos) {
   if (!pos) return "offline";
   const alt = Number(pos.alt) || 0;
   const spd = Number(pos.gspeed) || 0;
   if (alt > 50 || spd > 30) return "airborne";
   return "ground";
+}
+
+function emptyAircraftRow() {
+  return {
+    status: "offline",
+    fr24Id: null,
+    alt: null,
+    gspeed: null,
+    callsign: null,
+    offlineStreak: 0,
+    lastTakeoffFr24Id: null,
+    lastLandingFr24Id: null,
+    lastTakeoffAt: null,
+    lastTakeoffIcao: null,
+    lastEventType: null,
+    openLeg: null,
+    lat: null,
+    lon: null,
+    lastGroundLat: null,
+    lastGroundLon: null,
+    updatedAt: null,
+  };
 }
 
 /**
@@ -1025,35 +1189,20 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
   for (const reg of regs) {
     const pos = byReg.get(reg) || null;
     const status = classifyLiveStatus(pos);
-    const previous = prev.aircraft[reg] || {
-      status: "offline",
-      fr24Id: null,
-      alt: null,
-      gspeed: null,
-      callsign: null,
-      offlineStreak: 0,
-      lastTakeoffFr24Id: null,
-      lastLandingFr24Id: null,
-      lastTakeoffAt: null,
-      lastTakeoffIcao: null,
-      lat: null,
-      lon: null,
-      lastGroundLat: null,
-      lastGroundLon: null,
-      updatedAt: null,
-    };
+    const previous = prev.aircraft[reg] || emptyAircraftRow();
     const fr24Id = cleanString(pos?.fr24Id) || previous.fr24Id || null;
     let offlineStreak = 0;
     let nextStatus = status;
     let eventType = null;
     const isSeed = !previous.updatedAt;
+    const lastEventType = previous.lastEventType || null;
 
     if (!isSeed && status === "offline" && previous.status === "airborne") {
       offlineStreak = Math.max(1, previous.offlineStreak + 1);
       if (offlineStreak < OFFLINE_LANDING_STREAK) {
         // ADS-B gap: keep airborne until confirmed missing for N polls.
         nextStatus = "airborne";
-      } else if ((previous.fr24Id || fr24Id) !== previous.lastLandingFr24Id) {
+      } else if (lastEventType !== "landing") {
         eventType = "landing";
         nextStatus = "offline";
       } else {
@@ -1066,18 +1215,11 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       !isSeed &&
       status === "airborne" &&
       (previous.status === "ground" || previous.status === "offline") &&
-      fr24Id &&
-      fr24Id !== previous.lastTakeoffFr24Id
+      lastEventType !== "takeoff"
     ) {
       eventType = "takeoff";
       offlineStreak = 0;
-    } else if (
-      !isSeed &&
-      previous.status === "airborne" &&
-      status === "ground" &&
-      fr24Id &&
-      fr24Id !== previous.lastLandingFr24Id
-    ) {
+    } else if (!isSeed && previous.status === "airborne" && status === "ground" && lastEventType !== "landing") {
       eventType = "landing";
       offlineStreak = 0;
     }
@@ -1091,6 +1233,8 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       status === "ground" && Number.isFinite(lat) ? lat : previous.lastGroundLat;
     const lastGroundLon =
       status === "ground" && Number.isFinite(lon) ? lon : previous.lastGroundLon;
+    let nextEventType = lastEventType;
+    let nextOpenLeg = previous.openLeg || null;
     const row = {
       status: nextStatus,
       fr24Id,
@@ -1102,6 +1246,8 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       lastLandingFr24Id: previous.lastLandingFr24Id,
       lastTakeoffAt: previous.lastTakeoffAt,
       lastTakeoffIcao: previous.lastTakeoffIcao,
+      lastEventType: nextEventType,
+      openLeg: nextOpenLeg,
       lat,
       lon,
       lastGroundLat,
@@ -1114,12 +1260,14 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       row.lastTakeoffFr24Id = fr24Id;
       row.lastTakeoffAt = previous.lastTakeoffAt || nowIso();
       row.lastTakeoffIcao = origIcao;
+      row.lastEventType = "takeoff";
     }
 
     if (eventType === "takeoff") {
       row.lastTakeoffFr24Id = fr24Id;
       row.lastTakeoffAt = nowIso();
       row.lastTakeoffIcao = origIcao;
+      row.lastEventType = "takeoff";
       events.push({
         type: eventType,
         reg,
@@ -1138,6 +1286,8 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
       });
     } else if (eventType === "landing") {
       row.lastLandingFr24Id = previous.fr24Id || fr24Id;
+      row.lastEventType = "landing";
+      row.openLeg = null;
       events.push({
         type: eventType,
         reg,
@@ -1151,6 +1301,7 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
         lon,
         lastTakeoffAt: previous.lastTakeoffAt,
         lastTakeoffIcao: previous.lastTakeoffIcao,
+        openLeg: previous.openLeg || null,
       });
     }
 
@@ -1161,6 +1312,8 @@ function detectFleetTransitions(previousState, positions, trackedRegistrations) 
     events,
     state: {
       aircraft: nextAircraft,
+      pendingEvents: prev.pendingEvents,
+      recentEventKeys: prev.recentEventKeys,
       updatedAt: nowIso(),
     },
   };
@@ -1189,6 +1342,7 @@ module.exports = {
   loadSettings,
   saveSettings,
   fetchLivePositions,
+  fetchLivePositionsWithRetry,
   searchLiveAircraft,
   fetchFlightTrack,
   fetchFlightSummary,
@@ -1207,5 +1361,9 @@ module.exports = {
   saveWatchFleetState,
   classifyLiveStatus,
   detectFleetTransitions,
+  watchEventKey,
+  mergeWatchEvents,
+  rememberWatchEventKeys,
+  publicWatchFleetState,
   isFlightRadarWatchQuietHour,
 };

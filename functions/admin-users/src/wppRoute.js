@@ -43,6 +43,9 @@ function parseWppRouteCommand(text, responseId = "") {
     if (help === "rota" || help === "help_rota" || help === "como rota") {
       return { kind: "help" };
     }
+    if (help === "wpp_open_route" || help === "ver na plataforma" || help === "abrir rota") {
+      return { kind: "open" };
+    }
     const match = normalized.match(
       /^rota\s+([A-Za-z0-9]{4})\s*(?:para|to|-|\/|->|→)?\s*([A-Za-z0-9]{4})\s*$/i,
     );
@@ -53,6 +56,52 @@ function parseWppRouteCommand(text, responseId = "") {
     return { kind: "route", origin, destination };
   }
   return null;
+}
+
+function pendingRouteKey(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits ? `wpp_pending_route_${digits}` : "";
+}
+
+function compactWaypoint(wp) {
+  if (!wp || !Number.isFinite(wp.lat) || !Number.isFinite(wp.lng)) return null;
+  return {
+    raw: wp.raw || wp.label || "",
+    lat: wp.lat,
+    lng: wp.lng,
+    label: wp.label || wp.raw || "",
+    kind: wp.kind || "fix",
+    ...(wp.reaName ? { reaName: wp.reaName } : {}),
+    ...(wp.altitudeFt != null && Number.isFinite(wp.altitudeFt) ? { altitudeFt: Math.round(wp.altitudeFt) } : {}),
+    ...(wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt) ? { fieldElevFt: Math.round(wp.fieldElevFt) } : {}),
+    altitudeRef: wp.altitudeRef || "bs",
+    ...(wp.note ? { note: String(wp.note).slice(0, 80) } : {}),
+  };
+}
+
+function parseSettingJson(doc) {
+  if (!doc) return {};
+  try {
+    const raw = typeof doc.settings_json === "string" ? JSON.parse(doc.settings_json) : doc.settings_json;
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+async function storePendingRoute(deps, phone, payload) {
+  const key = pendingRouteKey(phone);
+  if (!key || typeof deps.upsertPlatformSettingDoc !== "function") return;
+  await deps.upsertPlatformSettingDoc(key, payload);
+}
+
+async function loadPendingRoute(deps, phone) {
+  const key = pendingRouteKey(phone);
+  if (!key || typeof deps.getSettingDoc !== "function") return null;
+  const doc = await deps.getSettingDoc(key).catch(() => null);
+  const raw = parseSettingJson(doc);
+  if (!Array.isArray(raw.waypoints) || raw.waypoints.length < 2) return null;
+  return raw;
 }
 
 function formatWppRouteHelpMessage(nickname) {
@@ -258,11 +307,80 @@ function svgCard(width, height, title, body) {
 </svg>`;
 }
 
-function buildRouteTableSvg(origin, dest, waypoints, legs, corridors) {
+function waypointCumNm(waypoints, index) {
+  let cum = 0;
+  for (let i = 1; i <= index && i < waypoints.length; i++) {
+    cum += rea.haversineM(waypoints[i - 1], waypoints[i]) / 1852;
+  }
+  return cum;
+}
+
+function buildRouteTableDisplayRows(origin, dest, waypoints, legs, corridors, performance) {
+  const rows = [];
+  const markers = [...(performance?.phaseMarkers || [])]
+    .filter((m) => m.label === "TOC" || m.label === "TOD")
+    .sort((a, b) => a.xNm - b.xNm);
+  let markerIdx = 0;
+  const flush = (limitNm, afterWpIndex) => {
+    while (markerIdx < markers.length) {
+      const m = markers[markerIdx];
+      if (m.xNm >= limitNm - 1e-4) break;
+      const prevCum = waypointCumNm(waypoints, afterWpIndex);
+      if (m.xNm <= prevCum + 0.05) {
+        markerIdx += 1;
+        continue;
+      }
+      const prevWp = waypoints[afterWpIndex];
+      const nextWp = waypoints[afterWpIndex + 1];
+      const bearing =
+        prevWp && nextWp ? rea.formatBearingDeg(legs[afterWpIndex]?.bearingDeg ?? 0) : "—";
+      rows.push({
+        kind: m.label === "TOC" ? "toc" : "tod",
+        label: m.label,
+        name: m.label === "TOC" ? "Topo de subida" : "Topo de descida",
+        coord: rea.formatCompactAviationCoord(m.lat, m.lng),
+        proa: bearing,
+        alt: `${Math.round(m.altFt)} ft`,
+        corr: "—",
+        dist: `${Math.max(0, m.xNm - prevCum).toFixed(1)} NM`,
+        ete: rea.formatEteClock(m.eteHours ?? null),
+        fuel: "—",
+        highlight: m.label === "TOC" ? "#c4b5fd" : "#f0abfc",
+      });
+      markerIdx += 1;
+    }
+  };
+  for (let idx = 0; idx < waypoints.length; idx++) {
+    const wp = waypoints[idx];
+    const cum = waypointCumNm(waypoints, idx);
+    if (idx > 0) flush(cum, idx - 1);
+    const leg = idx > 0 ? legs[idx - 1] : null;
+    const corridor = idx > 0 ? corridors[idx] : null;
+    rows.push({
+      kind: "waypoint",
+      label: String(idx + 1),
+      name: wp.reaName || wp.label || "—",
+      coord: rea.formatCompactAviationCoord(wp.lat, wp.lng),
+      proa: leg ? rea.formatBearingDeg(leg.bearingDeg) : "—",
+      alt: wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—",
+      corr: corridor ? corridor.name : idx > 0 ? "DCT" : "—",
+      dist: leg ? `${leg.distanceNm.toFixed(1)} NM` : "—",
+      ete: leg ? rea.formatEteClock(leg.eteHours) : "—",
+      fuel: leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} L` : "—",
+      highlight: null,
+      corridor: Boolean(corridor),
+    });
+  }
+  if (waypoints.length >= 2) flush(waypointCumNm(waypoints, waypoints.length - 1) + 1e-3, waypoints.length - 2);
+  return rows;
+}
+
+function buildRouteTableSvg(origin, dest, waypoints, legs, corridors, performance) {
+  const displayRows = buildRouteTableDisplayRows(origin, dest, waypoints, legs, corridors, performance);
   const rowH = 34;
   const headerH = 86;
   const width = 1180;
-  const height = Math.max(220, headerH + 28 + (waypoints.length + 1) * rowH + 24);
+  const height = Math.max(220, headerH + 28 + (displayRows.length + 1) * rowH + 24);
   const cols = [
     { x: 40, label: "#" },
     { x: 80, label: "Ponto" },
@@ -277,30 +395,22 @@ function buildRouteTableSvg(origin, dest, waypoints, legs, corridors) {
   const header = cols
     .map((c) => `<text x="${c.x}" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${c.label}</text>`)
     .join("");
-  const rows = waypoints
-    .map((wp, idx) => {
+  const rows = displayRows
+    .map((row, idx) => {
       const y = headerH + 28 + idx * rowH;
-      const leg = idx > 0 ? legs[idx - 1] : null;
-      const corridor = idx > 0 ? corridors[idx] : null;
-      const fill = idx % 2 === 0 ? "#0b1220" : "transparent";
-      const name = escapeXml(wp.reaName || wp.label || "—");
-      const coord = escapeXml(rea.formatCompactAviationCoord(wp.lat, wp.lng));
-      const proa = leg ? escapeXml(rea.formatBearingDeg(leg.bearingDeg)) : "—";
-      const alt = wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—";
-      const corr = corridor ? escapeXml(corridor.name) : "DCT";
-      const dist = leg ? `${leg.distanceNm.toFixed(1)} NM` : "—";
-      const ete = leg ? escapeXml(rea.formatEteClock(leg.eteHours)) : "—";
-      const fuel = leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} L` : "—";
+      const fill = row.highlight ? `${row.highlight}22` : idx % 2 === 0 ? "#0b1220" : "transparent";
+      const nameFill = row.highlight || "#e2e8f0";
+      const corrFill = row.corridor ? "#34d399" : "#64748b";
       return `<rect x="28" y="${y - 22}" width="${width - 56}" height="${rowH}" fill="${fill}" rx="8"/>
-        <text x="40" y="${y}" fill="#94a3b8" font-size="13" font-family="ui-monospace,monospace">${idx + 1}</text>
-        <text x="80" y="${y}" fill="#e2e8f0" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${name}</text>
-        <text x="280" y="${y}" fill="#67e8f9" font-size="13" font-family="ui-monospace,monospace">${coord}</text>
-        <text x="470" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-monospace,monospace">${proa}</text>
-        <text x="545" y="${y}" fill="#fbbf24" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(alt)}</text>
-        <text x="640" y="${y}" fill="${corridor ? "#34d399" : "#64748b"}" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${corr}</text>
-        <text x="860" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(dist)}</text>
-        <text x="960" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${ete}</text>
-        <text x="1070" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(fuel)}</text>`;
+        <text x="40" y="${y}" fill="${row.highlight || "#94a3b8"}" font-size="13" font-family="ui-monospace,monospace" font-weight="${row.kind === "waypoint" ? "400" : "700"}">${escapeXml(row.label)}</text>
+        <text x="80" y="${y}" fill="${nameFill}" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(row.name)}</text>
+        <text x="280" y="${y}" fill="#67e8f9" font-size="13" font-family="ui-monospace,monospace">${escapeXml(row.coord)}</text>
+        <text x="470" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-monospace,monospace">${escapeXml(row.proa)}</text>
+        <text x="545" y="${y}" fill="#fbbf24" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(row.alt)}</text>
+        <text x="640" y="${y}" fill="${corrFill}" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(row.corr)}</text>
+        <text x="860" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(row.dist)}</text>
+        <text x="960" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(row.ete)}</text>
+        <text x="1070" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(row.fuel)}</text>`;
     })
     .join("");
   return svgCard(width, height, `Tabela da rota · ${origin} → ${dest}`, `${header}${rows}`);
@@ -638,10 +748,76 @@ async function sendImageFromSvg(deps, to, svg, fileName, caption) {
   await deps.sendImage(deps.settings, { to, link, caption: caption || "" });
 }
 
+async function handleOpenPendingRoute(deps) {
+  const incoming = deps.incoming;
+  const nickname = deps.nickname || "";
+  const greet = nickname ? `${nickname}, ` : "";
+  const phone = incoming.lookupFrom || incoming.from;
+  const pending = await loadPendingRoute(deps, phone);
+  if (!pending) {
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}não encontrei uma rota recente. Envie *Rota ICAO ICAO* de novo.`,
+    });
+    return "route_open_missing";
+  }
+  const userId = cleanString(deps.profile?.user_id);
+  if (!userId) {
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}seu WhatsApp não está vinculado a uma conta na plataforma. Peça para a escola associar este telefone ao seu usuário e tente de novo.`,
+    });
+    return "route_open_unlinked";
+  }
+  if (typeof deps.createSavedFlightRoute !== "function" || typeof deps.planejamentoUrl !== "function") {
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}não foi possível abrir a rota na plataforma agora.`,
+    });
+    return "route_open_unavailable";
+  }
+  let created;
+  try {
+    created = await deps.createSavedFlightRoute({
+      userId,
+      name: `${pending.origin} – ${pending.dest}`,
+      waypoints: pending.waypoints,
+      cruiseSpeedKt: pending.cruiseSpeedKt,
+      fuelBurnPerHour: pending.fuelBurnPerHour,
+    });
+  } catch (err) {
+    console.warn(`[wppRoute] create saved route failed ${String(err?.message || err).slice(0, 180)}`);
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}não consegui salvar a rota na sua conta. Tente novamente em instantes.`,
+    });
+    return "route_open_failed";
+  }
+  const url = deps.planejamentoUrl(created.id);
+  if (typeof deps.sendUrlButton === "function" && url) {
+    await deps.sendUrlButton(deps.settings, {
+      to: incoming.from,
+      body: `${greet}rota *${pending.origin} → ${pending.dest}* salva na sua conta.`,
+      url,
+      displayText: "Abrir rota",
+    });
+  } else {
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}rota salva: ${url || created.id}`,
+    });
+  }
+  return "route_opened";
+}
+
 async function handleWppRouteCommand(deps, command) {
   const incoming = deps.incoming;
   const nickname = deps.nickname || "";
   const greet = nickname ? `${nickname}, ` : "";
+
+  if (command?.kind === "open") {
+    return handleOpenPendingRoute(deps);
+  }
 
   if (!command || command.kind === "help") {
     await deps.sendText(deps.settings, { to: incoming.from, body: formatWppRouteHelpMessage(nickname) });
@@ -690,6 +866,9 @@ async function handleWppRouteCommand(deps, command) {
   let corridors = rea.matchLegCorridors(waypoints, features);
   waypoints = rea.applyCorridorAltitudes(waypoints, corridors);
   corridors = rea.matchLegCorridors(waypoints, features);
+  waypoints = waypoints.map((wp, idx) =>
+    idx === 0 || idx === waypoints.length - 1 ? wp : { ...wp, altitudeRef: wp.altitudeRef || "bs" },
+  );
 
   const performance = routePerf.buildRoutePerformanceProfile(waypoints, routePerf.DEFAULT_FLIGHT_PERFORMANCE);
   const legs = rea.buildFlightPlanLegs(waypoints, { cruiseSpeedKt: CRUISE_KT, fuelBurnPerHour: BURN_LPH });
@@ -731,7 +910,7 @@ async function handleWppRouteCommand(deps, command) {
     await sendImageFromSvg(
       deps,
       incoming.from,
-      buildRouteTableSvg(origin, dest, waypoints, legs, corridors),
+      buildRouteTableSvg(origin, dest, waypoints, legs, corridors, performance),
       `wpp-rota-table-${stamp}.png`,
       `📋 Tabela · ${origin} → ${dest}`,
     );
@@ -789,6 +968,33 @@ async function handleWppRouteCommand(deps, command) {
   await deps.sendText(deps.settings, { to: incoming.from, body: summary });
   if (routeText) await deps.sendText(deps.settings, { to: incoming.from, body: routeText });
   if (rmkText) await deps.sendText(deps.settings, { to: incoming.from, body: rmkText });
+
+  await storePendingRoute(deps, incoming.lookupFrom || incoming.from, {
+    origin,
+    dest,
+    waypoints: waypoints.map(compactWaypoint).filter(Boolean),
+    cruiseSpeedKt: CRUISE_KT,
+    fuelBurnPerHour: BURN_LPH,
+  }).catch((err) => {
+    console.warn(`[wppRoute] pending route store failed ${String(err?.message || err).slice(0, 180)}`);
+  });
+
+  if (typeof deps.sendButtons === "function") {
+    try {
+      await deps.sendButtons(deps.settings, {
+        to: incoming.from,
+        body: "Próximos passos:",
+        buttons: [
+          { id: `metar_${origin}`, title: `Metar ${origin}` },
+          { id: `metar_${dest}`, title: `Metar ${dest}` },
+          { id: "wpp_open_route", title: "Ver na plataforma" },
+        ],
+      });
+    } catch (err) {
+      console.warn(`[wppRoute] CTA buttons failed ${String(err?.message || err).slice(0, 180)}`);
+    }
+  }
+
   return snap.ok ? "route_sent" : "route_sent_dct";
 }
 

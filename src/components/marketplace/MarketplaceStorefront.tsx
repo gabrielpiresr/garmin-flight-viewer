@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import {
   createMarketplaceCheckout,
@@ -26,6 +26,107 @@ function kindLabel(kind: MarketplaceProduct["kind"]): string {
   if (kind === "service") return "Serviço";
   if (kind === "digital") return "Digital";
   return "Produto";
+}
+
+function ProductImageCarousel({
+  images,
+  alt,
+  aspectClass = "aspect-[16/10]",
+  roundedClass = "",
+  large = false,
+}: {
+  images: string[];
+  alt: string;
+  aspectClass?: string;
+  roundedClass?: string;
+  large?: boolean;
+}) {
+  const [index, setIndex] = useState(0);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const count = images.length;
+
+  useEffect(() => {
+    setIndex(0);
+    scrollerRef.current?.scrollTo({ left: 0 });
+  }, [images]);
+
+  function scrollToIndex(next: number) {
+    if (count <= 0) return;
+    const clamped = ((next % count) + count) % count;
+    setIndex(clamped);
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTo({ left: clamped * el.clientWidth, behavior: "smooth" });
+  }
+
+  function handleScroll() {
+    const el = scrollerRef.current;
+    if (!el || !el.clientWidth) return;
+    const next = Math.round(el.scrollLeft / el.clientWidth);
+    if (next !== index && next >= 0 && next < count) setIndex(next);
+  }
+
+  if (count === 0) {
+    return (
+      <div className={`flex ${aspectClass} items-center justify-center bg-slate-800 text-[11px] text-slate-500 ${roundedClass}`}>
+        Sem imagem
+      </div>
+    );
+  }
+
+  return (
+    <div className={`relative ${aspectClass} overflow-hidden bg-slate-800 ${roundedClass}`}>
+      <div
+        ref={scrollerRef}
+        onScroll={handleScroll}
+        className="flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {images.map((src, i) => (
+          <img
+            key={`${src}-${i}`}
+            src={src}
+            alt={i === 0 ? alt : ""}
+            draggable={false}
+            className="h-full w-full min-w-full shrink-0 snap-center object-cover"
+          />
+        ))}
+      </div>
+      {count > 1 ? (
+        <>
+          <button
+            type="button"
+            aria-label="Foto anterior"
+            className={`absolute left-1.5 top-1/2 z-10 flex -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 ${large ? "h-8 w-8 text-lg" : "h-6 w-6 text-sm"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollToIndex(index - 1);
+            }}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            aria-label="Próxima foto"
+            className={`absolute right-1.5 top-1/2 z-10 flex -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 ${large ? "h-8 w-8 text-lg" : "h-6 w-6 text-sm"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollToIndex(index + 1);
+            }}
+          >
+            ›
+          </button>
+          <div className="pointer-events-none absolute bottom-1.5 left-0 right-0 flex justify-center gap-1">
+            {images.map((_, i) => (
+              <span
+                key={i}
+                className={`h-1.5 rounded-full ${i === index ? "w-3 bg-white" : "w-1.5 bg-white/45"}`}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 type Props = {
@@ -163,9 +264,9 @@ export function MarketplaceStorefront({ mode = "store", showOrders = true }: Pro
     return (
       <div className="space-y-4">
         <Skeleton className="h-10 w-64" />
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-64 w-full rounded-xl" />
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-48 w-full rounded-xl" />
           ))}
         </div>
       </div>
@@ -304,63 +405,66 @@ export function MarketplaceStorefront({ mode = "store", showOrders = true }: Pro
               Nenhum item encontrado.
             </p>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-4">
               {filtered.map((product) => {
                 const out = marketplaceIsOutOfStock(product, product.variants[0]?.id);
                 const frcPrice = marketplaceEffectivePrice(product, true);
                 const showFrc = hasFrcPrice(product);
                 return (
-                  <button
+                  <article
                     key={product.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedId(product.id)}
-                    className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/50 text-left transition hover:border-emerald-500/40"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedId(product.id);
+                      }
+                    }}
+                    className="cursor-pointer overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/50 text-left transition hover:border-emerald-500/40"
                   >
-                    <div className="relative aspect-[4/3] bg-slate-800">
-                      {product.images[0] ? (
-                        <img src={product.images[0]} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-xs text-slate-500">Sem imagem</div>
-                      )}
+                    <div className="relative">
+                      <ProductImageCarousel images={product.images} alt={product.name} />
                       {out ? (
-                        <span className="absolute left-2 top-2 rounded bg-rose-600/90 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                        <span className="absolute left-1.5 top-1.5 z-10 rounded bg-rose-600/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
                           Esgotado
                         </span>
                       ) : null}
                       {product.featured ? (
-                        <span className="absolute right-2 top-2 rounded bg-amber-500/90 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-950">
+                        <span className="absolute right-1.5 top-1.5 z-10 rounded bg-amber-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-950">
                           Destaque
                         </span>
                       ) : null}
                     </div>
-                    <div className="space-y-1 p-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <div className="space-y-0.5 p-2.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                         {categoryName(product.categoryId)} · {kindLabel(product.kind)}
                       </p>
-                      <p className="line-clamp-2 text-sm font-semibold text-slate-100">{product.name}</p>
+                      <p className="line-clamp-2 text-[13px] font-semibold leading-snug text-slate-100">{product.name}</p>
                       {product.shortDescription ? (
-                        <p className="line-clamp-2 text-xs text-slate-400">{product.shortDescription}</p>
+                        <p className="line-clamp-2 text-[11px] text-slate-400">{product.shortDescription}</p>
                       ) : null}
                       {showFrc && isClubMember ? (
-                        <div className="pt-1">
-                          <p className="text-xs text-slate-500 line-through">{formatBRL(product.price)}</p>
-                          <div className="flex flex-wrap items-baseline gap-2">
-                            <p className="text-base font-bold text-amber-300">{formatBRL(frcPrice)}</p>
-                            <p className="text-[11px] font-semibold text-amber-200">-{product.frcDiscountPercent}% FRC</p>
+                        <div className="pt-0.5">
+                          <p className="text-[11px] text-slate-500 line-through">{formatBRL(product.price)}</p>
+                          <div className="flex flex-wrap items-baseline gap-1.5">
+                            <p className="text-sm font-bold text-amber-300">{formatBRL(frcPrice)}</p>
+                            <p className="text-[10px] font-semibold text-amber-200">-{product.frcDiscountPercent}% FRC</p>
                           </div>
                         </div>
                       ) : (
-                        <div className="pt-1">
-                          <p className="text-base font-bold text-emerald-400">{formatBRL(product.price)}</p>
+                        <div className="pt-0.5">
+                          <p className="text-sm font-bold text-emerald-400">{formatBRL(product.price)}</p>
                           {showFrc ? (
-                            <p className="mt-0.5 text-[11px] text-amber-200/90">
+                            <p className="mt-0.5 text-[10px] text-amber-200/90">
                               No FRC: {formatBRL(frcPrice)} (−{product.frcDiscountPercent}%)
                             </p>
                           ) : null}
                         </div>
                       )}
                     </div>
-                  </button>
+                  </article>
                 );
               })}
             </div>
@@ -374,9 +478,13 @@ export function MarketplaceStorefront({ mode = "store", showOrders = true }: Pro
             className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-slate-700 bg-slate-950 p-4 sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {selected.images[0] ? (
-              <img src={selected.images[0]} alt="" className="mb-3 aspect-[16/10] w-full rounded-xl object-cover" />
-            ) : null}
+            <ProductImageCarousel
+              images={selected.images}
+              alt={selected.name}
+              aspectClass="aspect-[16/10]"
+              roundedClass="mb-3 rounded-xl"
+              large
+            />
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               {categoryName(selected.categoryId)} · {kindLabel(selected.kind)}
             </p>

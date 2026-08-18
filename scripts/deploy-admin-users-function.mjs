@@ -228,8 +228,12 @@ async function main() {
     process.env.APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID ||
     env.APPWRITE_INSTRUCTOR_HELP_ARTICLES_COLLECTION_ID ||
     env.VITE_APPWRITE_INSTRUCTOR_HELP_ARTICLES_COL_ID;
-  const platformSettingsCollectionId =
+  const platformSettingsCollectionIdRaw =
     process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID;
+  const platformSettingsCollectionId =
+    !platformSettingsCollectionIdRaw || String(platformSettingsCollectionIdRaw).startsWith("your_")
+      ? "6a048f8a0018727e83ff"
+      : platformSettingsCollectionIdRaw;
   const onboardingStepsCollectionId =
     process.env.APPWRITE_ONBOARDING_STEPS_COLLECTION_ID || env.VITE_APPWRITE_ONBOARDING_STEPS_COL_ID;
   const trainingTracksCollectionId =

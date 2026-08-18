@@ -3,8 +3,14 @@ import { Account, Client, Databases, Functions, ID, Permission, Role, Storage } 
 const endpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string | undefined;
 const projectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string | undefined;
 
-export const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID as string | undefined;
-export const NOTICES_BUCKET_ID = import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID as string | undefined;
+function viteCollectionId(value: string | undefined, fallback?: string): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed || trimmed.startsWith("your_")) return fallback;
+  return trimmed;
+}
+
+export const BUCKET_ID = viteCollectionId(import.meta.env.VITE_APPWRITE_BUCKET_ID);
+export const NOTICES_BUCKET_ID = viteCollectionId(import.meta.env.VITE_APPWRITE_NOTICES_BUCKET_ID);
 export const SYNC_ANAC_FUNCTION_ID = import.meta.env.VITE_APPWRITE_SYNC_ANAC_FUNCTION_ID as string | undefined;
 export const ADMIN_USERS_FUNCTION_ID = import.meta.env.VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID as string | undefined;
 export const SCHEDULE_BOOKING_FUNCTION_ID =
@@ -15,7 +21,7 @@ export const INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID =
   (import.meta.env.VITE_APPWRITE_INSTRUCTOR_PATCH_FLIGHT_FUNCTION_ID as string | undefined) ?? "instructor-patch-flight";
 export const SIGN_FLIGHT_FUNCTION_ID =
   (import.meta.env.VITE_APPWRITE_SIGN_FLIGHT_FUNCTION_ID as string | undefined) ?? "sign-flight";
-export const WEB_PUSH_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY as string | undefined;
+export const WEB_PUSH_PUBLIC_KEY = viteCollectionId(import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY);
 
 // Admin — frota e configuração operacional
 export const SCHOOL_ID = import.meta.env.VITE_SCHOOL_ID as string | undefined;
@@ -65,7 +71,10 @@ export const HELP_MEDIA_BUCKET_ID =
   (import.meta.env.VITE_APPWRITE_HELP_MEDIA_BUCKET_ID as string | undefined) ?? BUCKET_ID;
 export const INSTRUCTOR_PREFS_COL_ID = import.meta.env.VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID as string | undefined;
 export const STUDENT_CREDITS_COL_ID = import.meta.env.VITE_APPWRITE_STUDENT_CREDITS_COL_ID as string | undefined;
-export const PLATFORM_SETTINGS_COL_ID = import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID as string | undefined;
+export const PLATFORM_SETTINGS_COL_ID = viteCollectionId(
+  import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID,
+  "6a048f8a0018727e83ff",
+);
 export const ONBOARDING_STEPS_COL_ID =
   (import.meta.env.VITE_APPWRITE_ONBOARDING_STEPS_COL_ID as string | undefined) ?? "6a1f23d2001937e83aa9";
 export const ONBOARDING_MEDIA_BUCKET_ID =

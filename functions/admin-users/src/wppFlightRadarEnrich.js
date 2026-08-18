@@ -2,6 +2,9 @@
 
 const MAX_NEAREST_AD_NM = 12;
 const PUBLIC_AD_DISTANCE_BONUS_NM = 8;
+/** Private strips next to a public AD (e.g. SDMA Muraro vs SBJD) snap to the public field. */
+const PUBLIC_SNAP_NM = 8;
+const MATCH_FALLBACK_MS = 2 * 60 * 60 * 1000;
 
 function cleanString(value) {
   return String(value ?? "").trim();
@@ -60,12 +63,13 @@ function cleanScheduleNotes(value) {
     .filter((part) => {
       if (!part) return false;
       if (part === "GFV escala") return false;
+      if (/^Via NS$/i.test(part)) return false;
+      if (/^Agendado via plataforma$/i.test(part)) return false;
       if (/^Aluno:/i.test(part)) return false;
       if (/^Aeronave:/i.test(part)) return false;
       return true;
     })
     .map((part) => {
-      if (/^Agendado via plataforma$/i.test(part)) return "Via NS";
       return part
         .replace(
           /^(Solicitado|Alterado|Cancelado) pelo aluno\s+.+?\s+em\s+(\d{2}\/\d{2}\/\d{4})\s+(?:as|às)\s+(\d{2}:\d{2})/i,
@@ -119,6 +123,22 @@ function nearestAerodrome(aerodromes, lat, lon, maxNm = MAX_NEAREST_AD_NM) {
   return best;
 }
 
+function snapToNearbyPublicAerodrome(icao, aerodromes, maxNm = PUBLIC_SNAP_NM) {
+  const code = icaoOrEmpty(icao);
+  if (!code) return "";
+  const catalog = Array.isArray(aerodromes) ? aerodromes : [];
+  const current = catalog.find((ad) => identKey(ad?.icao) === identKey(code));
+  if (!current) return code;
+  if (isPublicAerodrome(current)) return code;
+  const nearbyPublic = nearestAerodrome(
+    catalog.filter((ad) => isPublicAerodrome(ad)),
+    current.lat,
+    current.lon,
+    maxNm,
+  );
+  return icaoOrEmpty(nearbyPublic?.icao) || code;
+}
+
 function applyScheduleBuffers(blockStart, blockEnd, bufferBeforeMinutes, bufferAfterMinutes) {
   const start = parseClockMinutes(blockStart);
   const end = parseClockMinutes(blockEnd);
@@ -139,14 +159,31 @@ function slotWindowMs(slot) {
   const takeoffMs = dateTimeMs(slot.flightDate, slot.scheduledTakeoff || slot.blockStart);
   const landingMs = dateTimeMs(slot.flightDate, slot.scheduledLanding || slot.blockEnd);
   const startMs = takeoffMs != null ? takeoffMs - 45 * 60_000 : null;
-  const endMs = landingMs != null ? landingMs + 20 * 60_000 : startMs != null ? startMs + 4 * 60 * 60_000 : null;
+  const endMs =
+    landingMs != null ? landingMs + 120 * 60_000 : startMs != null ? startMs + 5 * 60 * 60_000 : null;
   return { startMs, endMs, takeoffMs };
 }
 
-function matchScheduleSlot(slots, registration, atIso) {
+function closestSlotByTakeoff(slots, atMs) {
+  return (
+    (Array.isArray(slots) ? slots : [])
+      .slice()
+      .sort((a, b) => {
+        const aMs = slotWindowMs(a).takeoffMs;
+        const bMs = slotWindowMs(b).takeoffMs;
+        const aDelta = aMs == null ? Number.POSITIVE_INFINITY : Math.abs(aMs - atMs);
+        const bDelta = bMs == null ? Number.POSITIVE_INFINITY : Math.abs(bMs - atMs);
+        return aDelta - bDelta;
+      })[0] || null
+  );
+}
+
+function matchScheduleSlot(slots, registration, atIso, options = {}) {
   const wanted = identKey(registration);
   if (!wanted) return null;
-  const atMs = Date.parse(atIso || "") || Date.now();
+  const referenceIso =
+    options.eventType === "landing" && options.lastTakeoffAt ? options.lastTakeoffAt : atIso;
+  const atMs = Date.parse(referenceIso || "") || Date.now();
   const candidates = (Array.isArray(slots) ? slots : []).filter((slot) => identKey(slot?.aircraftIdent) === wanted);
   if (!candidates.length) return null;
 
@@ -155,14 +192,13 @@ function matchScheduleSlot(slots, registration, atIso) {
     if (startMs == null || endMs == null) return false;
     return atMs >= startMs && atMs <= endMs;
   });
-  const pool = inWindow.length ? inWindow : candidates;
-  return pool.slice().sort((a, b) => {
-    const aMs = slotWindowMs(a).takeoffMs;
-    const bMs = slotWindowMs(b).takeoffMs;
-    const aDelta = aMs == null ? Number.POSITIVE_INFINITY : Math.abs(aMs - atMs);
-    const bDelta = bMs == null ? Number.POSITIVE_INFINITY : Math.abs(bMs - atMs);
-    return aDelta - bDelta;
-  })[0] || null;
+  if (inWindow.length) return closestSlotByTakeoff(inWindow, atMs);
+
+  const nearby = candidates.filter((slot) => {
+    const takeoffMs = slotWindowMs(slot).takeoffMs;
+    return takeoffMs != null && Math.abs(takeoffMs - atMs) <= MATCH_FALLBACK_MS;
+  });
+  return nearby.length ? closestSlotByTakeoff(nearby, atMs) : null;
 }
 
 function icaoOrEmpty(value) {
@@ -170,21 +206,52 @@ function icaoOrEmpty(value) {
   return /^[A-Z]{4}$/.test(code) ? code : "";
 }
 
-function pickTakeoffIcao(event, slot) {
+function pickTakeoffIcao(event, slot, nearest) {
   return (
+    icaoOrEmpty(nearest?.icao) ||
+    icaoOrEmpty(event?.lastTakeoffIcao) ||
     icaoOrEmpty(event?.origIcao) ||
     icaoOrEmpty(event?.takeoffIcao) ||
-    icaoOrEmpty(event?.lastTakeoffIcao) ||
     icaoOrEmpty(slot?.takeoffIcao)
   );
 }
 
-function pickLandingIcao(event, slot) {
-  return icaoOrEmpty(event?.destIcao) || icaoOrEmpty(event?.landingIcao) || icaoOrEmpty(slot?.landingIcao);
+function pickLandingIcao(event, slot, nearest) {
+  return (
+    icaoOrEmpty(nearest?.icao) ||
+    icaoOrEmpty(event?.destIcao) ||
+    icaoOrEmpty(event?.landingIcao) ||
+    icaoOrEmpty(slot?.landingIcao)
+  );
+}
+
+function openLegFromCrew(crew) {
+  if (!crew || typeof crew !== "object" || Array.isArray(crew)) return null;
+  const studentName = cleanString(crew.studentName);
+  const instructorName = cleanString(crew.instructorName);
+  const takeoffAt = cleanString(crew.takeoffAt || crew.lastTakeoffAt);
+  const takeoffIcao = icaoOrEmpty(crew.takeoffIcao);
+  if (!studentName && !instructorName && !takeoffAt && !takeoffIcao) return null;
+  return {
+    studentUserId: cleanString(crew.studentUserId),
+    instructorUserId: cleanString(crew.instructorUserId),
+    studentName,
+    instructorName,
+    notes: cleanString(crew.notes),
+    mission: cleanString(crew.mission),
+    scheduledTakeoff: cleanString(crew.scheduledTakeoff),
+    scheduledLanding: cleanString(crew.scheduledLanding),
+    takeoffIcao,
+    takeoffAd: cleanString(crew.takeoffAd),
+    takeoffAt,
+    slotId: cleanString(crew.slotId || crew.id),
+  };
 }
 
 module.exports = {
   MAX_NEAREST_AD_NM,
+  PUBLIC_SNAP_NM,
+  MATCH_FALLBACK_MS,
   cleanString,
   identKey,
   parseClockMinutes,
@@ -197,8 +264,10 @@ module.exports = {
   haversineNm,
   isPublicAerodrome,
   nearestAerodrome,
+  snapToNearbyPublicAerodrome,
   applyScheduleBuffers,
   matchScheduleSlot,
   pickTakeoffIcao,
   pickLandingIcao,
+  openLegFromCrew,
 };

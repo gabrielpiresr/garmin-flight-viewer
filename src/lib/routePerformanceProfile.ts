@@ -1,4 +1,4 @@
-import type { FlightPlanWaypoint } from "../types/flightPlanning";
+import type { AltitudeRefMode, FlightPlanWaypoint } from "../types/flightPlanning";
 import { haversineM } from "./flightPlanningRoute";
 
 const NM_IN_M = 1852;
@@ -6,7 +6,6 @@ const NM_IN_M = 1852;
 export type FlightPerformanceSettings = {
   cruiseSpeedKt: number;
   cruiseBurnPerHour: number;
-  cruiseAltitudeFt: number;
   climbSpeedKt: number;
   climbRateFpm: number;
   climbBurnPerHour: number;
@@ -18,7 +17,6 @@ export type FlightPerformanceSettings = {
 export const DEFAULT_FLIGHT_PERFORMANCE: FlightPerformanceSettings = {
   cruiseSpeedKt: 90,
   cruiseBurnPerHour: 20,
-  cruiseAltitudeFt: 3500,
   climbSpeedKt: 70,
   climbRateFpm: 500,
   climbBurnPerHour: 24,
@@ -116,25 +114,19 @@ function fieldElev(wp: FlightPlanWaypoint | undefined, fallback: number): number
   return Math.round(fallback);
 }
 
-function plannedAlt(wp: FlightPlanWaypoint | undefined, fallback: number, cruiseFallback: number): number {
+function plannedAlt(wp: FlightPlanWaypoint | undefined, fallback: number): number {
   if (wp?.altitudeFt != null && Number.isFinite(wp.altitudeFt)) return Math.round(wp.altitudeFt);
-  if (cruiseFallback > 0) return Math.round(cruiseFallback);
   return Math.round(fallback);
 }
 
-function altitudeRefMode(wp: FlightPlanWaypoint | undefined): "start" | "before" | "after" {
-  const ref = (wp as { altitudeRef?: string } | undefined)?.altitudeRef;
-  if (ref === "start" || ref === "after") return ref;
-  // Default is "before" (B) when unset; legacy "arrive" = before.
-  return "before";
-}
-
-function isAfter(wp: FlightPlanWaypoint | undefined): boolean {
-  return altitudeRefMode(wp) === "after";
-}
-
-function isStart(wp: FlightPlanWaypoint | undefined): boolean {
-  return altitudeRefMode(wp) === "start";
+export function altitudeRefMode(wp: FlightPlanWaypoint | undefined | null): AltitudeRefMode {
+  const ref = String((wp as { altitudeRef?: string } | undefined)?.altitudeRef || "")
+    .trim()
+    .toLowerCase();
+  if (ref === "as" || ref === "start" || ref === "i") return "as";
+  if (ref === "be" || ref === "before" || ref === "arrive" || ref === "b") return "be";
+  if (ref === "ae" || ref === "after" || ref === "a") return "ae";
+  return "bs";
 }
 
 type BuildCtx = {
@@ -186,8 +178,8 @@ type ManeuverTiming = "immediate" | "arrive";
 
 /**
  * Climb or descend from→to within [x0, x0+availNm].
- * - immediate: start change at x0 (After — logo após o ponto); then plateau
- * - arrive: for descent, plateau then TOD so new altitude is reached at the end (Before)
+ * - immediate: start change at x0 (AS / AE)
+ * - arrive: plateau then change so the new altitude is reached at the end (BS / BE)
  */
 function maneuverToAltitude(
   ctx: BuildCtx,
@@ -196,71 +188,67 @@ function maneuverToAltitude(
   x0: number,
   availNm: number,
   timing: ManeuverTiming = "arrive",
-): { x: number; alt: number; remainNm: number } {
+): { x: number; alt: number; remainNm: number; done: boolean } {
   const { perf, totals } = ctx;
   const delta = toAlt - fromAlt;
-  if (Math.abs(delta) < 1 || availNm <= 0) {
-    return { x: x0, alt: fromAlt, remainNm: availNm };
+  if (Math.abs(delta) < 1) {
+    return { x: x0, alt: fromAlt, remainNm: availNm, done: true };
+  }
+  if (availNm <= 0) {
+    return { x: x0, alt: fromAlt, remainNm: 0, done: false };
   }
 
-  if (delta > 0) {
-    // Climb always starts immediately, then plateau.
-    let needNm = altitudeChangeDistanceNm(delta, perf.climbRateFpm, perf.climbSpeedKt);
-    let hours = altitudeChangeHours(delta, perf.climbRateFpm);
-    let reachAlt = toAlt;
-    if (needNm > availNm && availNm > 0) {
-      const ratio = availNm / needNm;
-      needNm = availNm;
-      hours *= ratio;
-      reachAlt = Math.round(fromAlt + delta * ratio);
-    }
-    const tocX = x0 + needNm;
-    ctx.eteHours += hours;
-    totals.climbNm += needNm;
-    totals.climbHours += hours;
-    pushPoint(ctx, tocX, reachAlt, "toc", "TOC");
-    addMarker(ctx, tocX, reachAlt, "TOC");
-    return { x: tocX, alt: reachAlt, remainNm: Math.max(0, availNm - needNm) };
-  }
-
-  let needNm = altitudeChangeDistanceNm(-delta, perf.descentRateFpm, perf.descentSpeedKt);
-  let hours = altitudeChangeHours(-delta, perf.descentRateFpm);
-  let endAlt = toAlt;
-  if (needNm > availNm && availNm > 0) {
-    const ratio = availNm / needNm;
-    needNm = availNm;
-    hours *= ratio;
-    endAlt = Math.round(fromAlt + delta * ratio);
-  }
+  const climb = delta > 0;
+  const rate = climb ? perf.climbRateFpm : perf.descentRateFpm;
+  const speed = climb ? perf.climbSpeedKt : perf.descentSpeedKt;
+  const fullNm = altitudeChangeDistanceNm(Math.abs(delta), rate, speed);
+  const fullHours = altitudeChangeHours(Math.abs(delta), rate);
+  const changeNm = Math.min(fullNm, availNm);
+  const ratio = fullNm > 0 ? changeNm / fullNm : 1;
+  const hours = fullHours * ratio;
+  const reachAlt = Math.round(fromAlt + delta * ratio);
+  const done = Math.abs(reachAlt - toAlt) < 1;
 
   if (timing === "immediate") {
-    // After: descend right away, then plateau at the new level.
-    pushPoint(ctx, x0, fromAlt, "tod", "TOD");
-    addMarker(ctx, x0, fromAlt, "TOD");
+    if (!climb) {
+      pushPoint(ctx, x0, fromAlt, "tod", "TOD");
+      addMarker(ctx, x0, fromAlt, "TOD");
+    }
     ctx.eteHours += hours;
-    totals.descentNm += needNm;
-    totals.descentHours += hours;
-    const levelX = x0 + needNm;
-    pushPoint(ctx, levelX, endAlt, "level");
-    return { x: levelX, alt: endAlt, remainNm: Math.max(0, availNm - needNm) };
+    if (climb) {
+      totals.climbNm += changeNm;
+      totals.climbHours += hours;
+    } else {
+      totals.descentNm += changeNm;
+      totals.descentHours += hours;
+    }
+    const levelX = x0 + changeNm;
+    pushPoint(ctx, levelX, reachAlt, climb ? "toc" : "level", climb && done ? "TOC" : undefined);
+    if (climb && done) addMarker(ctx, levelX, reachAlt, "TOC");
+    return { x: levelX, alt: reachAlt, remainNm: Math.max(0, availNm - changeNm), done };
   }
 
-  // Before: plateau first, then TOD so we reach the new altitude at the end.
-  const plateauNm = Math.max(0, availNm - needNm);
-  const todX = x0 + plateauNm;
+  const plateauNm = Math.max(0, availNm - fullNm);
   if (plateauNm > 0) {
     const cruiseH = plateauNm / Math.max(perf.cruiseSpeedKt, 1e-6);
     ctx.eteHours += cruiseH;
     totals.cruiseHours += cruiseH;
   }
-  pushPoint(ctx, todX, fromAlt, "tod", "TOD");
-  addMarker(ctx, todX, fromAlt, "TOD");
+  const changeX = x0 + plateauNm;
+  pushPoint(ctx, changeX, fromAlt, climb ? "level" : "tod", climb ? undefined : "TOD");
+  if (!climb) addMarker(ctx, changeX, fromAlt, "TOD");
   ctx.eteHours += hours;
-  totals.descentNm += needNm;
-  totals.descentHours += hours;
-  const endX = x0 + availNm;
-  pushPoint(ctx, endX, endAlt, "level");
-  return { x: endX, alt: endAlt, remainNm: 0 };
+  if (climb) {
+    totals.climbNm += changeNm;
+    totals.climbHours += hours;
+  } else {
+    totals.descentNm += changeNm;
+    totals.descentHours += hours;
+  }
+  const endX = changeX + changeNm;
+  pushPoint(ctx, endX, reachAlt, climb ? "toc" : "level", climb && done ? "TOC" : undefined);
+  if (climb && done) addMarker(ctx, endX, reachAlt, "TOC");
+  return { x: endX, alt: reachAlt, remainNm: Math.max(0, availNm - (plateauNm + changeNm)), done };
 }
 
 function levelFor(ctx: BuildCtx, nm: number, alt: number, x: number, kind: ProfilePhasePoint["kind"], label?: string) {
@@ -273,12 +261,49 @@ function levelFor(ctx: BuildCtx, nm: number, alt: number, x: number, kind: Profi
   return xEnd;
 }
 
+function applyChange(
+  ctx: BuildCtx,
+  alt: number,
+  target: number,
+  x: number,
+  xLegEnd: number,
+  timing: ManeuverTiming,
+): { x: number; alt: number; done: boolean } {
+  if (Math.abs(target - alt) < 1) return { x, alt, done: true };
+  const remain = Math.max(0, xLegEnd - x);
+  const man = maneuverToAltitude(ctx, alt, target, x, remain, timing);
+  return { x: man.x, alt: man.alt, done: man.done };
+}
+
+function closeLeg(
+  ctx: BuildCtx,
+  x: number,
+  alt: number,
+  xLegEnd: number,
+  isLast: boolean,
+  label: string | undefined,
+): number {
+  const remain = Math.max(0, xLegEnd - x);
+  if (remain > 0.001) {
+    return levelFor(ctx, remain, alt, x, isLast ? "destination" : "level", label);
+  }
+  const lastPt = ctx.profile[ctx.profile.length - 1];
+  if (lastPt && Math.abs(lastPt.xNm - xLegEnd) < 0.05) {
+    lastPt.kind = isLast ? "destination" : lastPt.kind;
+    lastPt.label = label;
+    lastPt.eteHours = ctx.eteHours;
+  } else {
+    pushPoint(ctx, xLegEnd, alt, isLast ? "destination" : "waypoint", label);
+  }
+  return xLegEnd;
+}
+
 /**
- * Multi-leg vertical profile with start/before/after altitude semantics.
- * - start (I): begin climb/descent at the start of the leg TO the waypoint
- * - before (B, default): change on the leg TO the waypoint so you pass already at altitude
- *   (descent is delayed to arrive at the new level at the point)
- * - after (A): keep prior level until the waypoint, then start climb/descent immediately after it
+ * Perfil vertical BS / AS / BE / AE:
+ * - BS (padrão): conclui a mudança no ponto anterior, antes de começar o segmento
+ * - AS: começa a mudança logo após iniciar o segmento (legado I)
+ * - BE: conclui a mudança no ponto final do segmento (legado B)
+ * - AE: começa a mudança logo após passar o ponto (legado A)
  */
 export function buildRoutePerformanceProfile(
   waypoints: FlightPlanWaypoint[],
@@ -297,7 +322,6 @@ export function buildRoutePerformanceProfile(
 
   const startAltFt = fieldElev(waypoints[0], 0);
   const endFieldFt = fieldElev(waypoints[waypoints.length - 1], startAltFt);
-  const cruiseFallback = Math.round(perf.cruiseAltitudeFt) || 0;
 
   const ctx: BuildCtx = {
     waypoints,
@@ -311,119 +335,86 @@ export function buildRoutePerformanceProfile(
   let x = 0;
   let alt = startAltFt;
   let maxLevel = startAltFt;
+  let pendingAlt: number | null = null;
   pushPoint(ctx, 0, alt, "origin", waypoints[0]?.label);
 
+  const fly = (target: number, xLegEnd: number, timing: ManeuverTiming) => {
+    const applied = applyChange(ctx, alt, target, x, xLegEnd, timing);
+    x = applied.x;
+    alt = applied.alt;
+    maxLevel = Math.max(maxLevel, alt);
+    pendingAlt = applied.done ? null : target;
+    return applied.done;
+  };
+
   for (let i = 1; i < waypoints.length; i++) {
-    const legNm = legDistancesNm[i - 1]!;
     const fromWp = waypoints[i - 1]!;
     const toWp = waypoints[i]!;
+    const nextWp = waypoints[i + 1];
     const isLast = i === waypoints.length - 1;
-    const xLegEnd = x + legNm;
-    let remain = legNm;
+    const xLegEnd = x + legDistancesNm[i - 1]!;
+    const fromMode = altitudeRefMode(fromWp);
+    const toMode = altitudeRefMode(toWp);
+    const nextMode = nextWp ? altitudeRefMode(nextWp) : null;
+    const fromAlt = plannedAlt(fromWp, alt);
+    const toAlt = plannedAlt(toWp, alt);
+    const nextAlt = nextWp ? plannedAlt(nextWp, alt) : toAlt;
+    const nextIsDest = i + 1 === waypoints.length - 1;
 
-    // 1) If leaving a waypoint marked "after", start climb/descent immediately after it.
-    if (i > 1 && isAfter(fromWp)) {
-      const afterAlt = plannedAlt(fromWp, alt, cruiseFallback);
-      if (Math.abs(afterAlt - alt) >= 1) {
-        const man = maneuverToAltitude(ctx, alt, afterAlt, x, remain, "immediate");
-        x = man.x;
-        alt = man.alt;
-        remain = Math.max(0, xLegEnd - x);
-        maxLevel = Math.max(maxLevel, alt);
-      }
-    }
-
-    // 2) Target altitude for arriving at `toWp`
-    let arriveTarget: number;
-    if (isLast) {
-      arriveTarget = endFieldFt;
-    } else if (isAfter(toWp)) {
-      // Arrive still at current level; toWp.altitudeFt applies after leaving.
-      arriveTarget = alt;
+    if (pendingAlt != null && Math.abs(alt - pendingAlt) >= 1) {
+      fly(pendingAlt, xLegEnd, "immediate");
     } else {
-      arriveTarget = plannedAlt(toWp, alt, cruiseFallback);
+      pendingAlt = null;
     }
 
-    // On last leg, if planned alt (corridor/cruise) is above field elev, cruise then descend.
-    if (isLast) {
-      const legCruise = plannedAlt(toWp, alt, cruiseFallback);
-      const cruiseTarget = Math.max(legCruise, endFieldFt);
-      maxLevel = Math.max(maxLevel, cruiseTarget);
+    if (i > 1 && fromMode === "ae") {
+      fly(fromAlt, xLegEnd, "immediate");
+    }
 
-      if (arriveTarget < cruiseTarget) {
-        let finalDescentNm = altitudeChangeDistanceNm(
-        cruiseTarget - endFieldFt,
+    if (isLast) {
+      const remain = Math.max(0, xLegEnd - x);
+      const descentNm = altitudeChangeDistanceNm(
+        Math.max(0, alt - endFieldFt),
         perf.descentRateFpm,
         perf.descentSpeedKt,
       );
-      finalDescentNm = Math.min(remain, finalDescentNm);
-        let availBefore = Math.max(0, remain - finalDescentNm);
-
-        if (Math.abs(cruiseTarget - alt) >= 1 && availBefore > 0) {
-          const man = maneuverToAltitude(ctx, alt, cruiseTarget, x, availBefore);
-          x = man.x;
-          alt = man.alt;
-          availBefore = Math.max(0, xLegEnd - finalDescentNm - x);
-        }
-        if (availBefore > 0.001) {
-          x = levelFor(ctx, availBefore, alt, x, "level");
-        } else {
-          x = xLegEnd - finalDescentNm;
-        }
-
-        if (Math.abs(alt - endFieldFt) >= 1) {
-          pushPoint(ctx, x, alt, "tod", "TOD");
-          addMarker(ctx, x, alt, "TOD");
-          const hours = altitudeChangeHours(alt - endFieldFt, perf.descentRateFpm);
-          ctx.eteHours += hours;
-          ctx.totals.descentHours += hours;
-          ctx.totals.descentNm += Math.max(0, xLegEnd - x);
-          x = xLegEnd;
-          alt = endFieldFt;
-          pushPoint(ctx, x, alt, "destination", toWp.label);
-        } else {
-          x = xLegEnd;
-          alt = endFieldFt;
-          pushPoint(ctx, x, alt, "destination", toWp.label);
-        }
-        continue;
+      const levelNm = Math.max(0, remain - descentNm);
+      if (levelNm > 0.001) {
+        x = levelFor(ctx, levelNm, alt, x, "level");
       }
-    }
-
-    maxLevel = Math.max(maxLevel, arriveTarget);
-
-    // 3) Change to arriveTarget within this leg
-    // start (I): begin immediately at leg start; before (B): arrive at altitude at the point
-    if (Math.abs(arriveTarget - alt) >= 1) {
-      const timing = isStart(toWp) ? "immediate" : "arrive";
-      const man = maneuverToAltitude(ctx, alt, arriveTarget, x, remain, timing);
-      x = man.x;
-      alt = man.alt;
-      remain = Math.max(0, xLegEnd - x);
-    }
-
-    // 4) Plateau to the waypoint
-    if (remain > 0.001) {
-      x = levelFor(ctx, remain, alt, x, isLast ? "destination" : "level", toWp.label);
-    } else {
-      x = xLegEnd;
-      const lastPt = ctx.profile[ctx.profile.length - 1];
-      if (lastPt && Math.abs(lastPt.xNm - x) < 0.05) {
-        lastPt.kind = isLast ? "destination" : lastPt.kind;
-        lastPt.label = toWp.label;
-        lastPt.eteHours = ctx.eteHours;
-      } else {
-        pushPoint(ctx, x, alt, isLast ? "destination" : "waypoint", toWp.label);
+      if (Math.abs(alt - endFieldFt) >= 1) {
+        fly(endFieldFt, xLegEnd, "immediate");
       }
+      x = closeLeg(ctx, x, alt, xLegEnd, true, toWp.label);
+      continue;
     }
+
+    if (toMode === "as" || (toMode === "bs" && i === 1)) {
+      fly(toAlt, xLegEnd, "immediate");
+    } else if (toMode === "bs" && i > 1 && Math.abs(alt - toAlt) >= 1) {
+      fly(toAlt, xLegEnd, "immediate");
+    }
+
+    const holdThroughPoint = toMode === "ae";
+    if (toMode === "be") {
+      fly(toAlt, xLegEnd, "arrive");
+    } else if (
+      nextMode === "bs" &&
+      nextWp &&
+      !nextIsDest &&
+      !holdThroughPoint
+    ) {
+      fly(nextAlt, xLegEnd, "arrive");
+    }
+
+    x = closeLeg(ctx, x, alt, xLegEnd, false, toWp.label);
   }
 
   const lastWp = waypoints[waypoints.length - 1]!;
   const last = ctx.profile[ctx.profile.length - 1];
   if (!last || Math.abs(last.xNm - totalDistanceNm) > 0.001) {
-    pushPoint(ctx, totalDistanceNm, endFieldFt, "destination", lastWp.label);
+    pushPoint(ctx, totalDistanceNm, alt, "destination", lastWp.label);
   } else {
-    last.altFt = endFieldFt;
     last.kind = "destination";
     last.label = lastWp.label;
     last.eteHours = ctx.eteHours;
@@ -444,7 +435,7 @@ export function buildRoutePerformanceProfile(
   return {
     totalDistanceNm,
     startAltFt,
-    endAltFt: endFieldFt,
+    endAltFt: Math.round(alt),
     cruiseAltFt: maxLevel,
     climbNm: ctx.totals.climbNm,
     descentNm: ctx.totals.descentNm,

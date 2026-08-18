@@ -113,7 +113,12 @@ function parseRoutePayload(raw: unknown): {
     return { waypoints: parsed as FlightPlanWaypoint[], alternates: [], customAreas: [] };
   }
   if (parsed && typeof parsed === "object") {
-    const obj = parsed as { waypoints?: unknown; alternates?: unknown; customAreas?: unknown; areas?: unknown };
+    const obj = parsed as {
+      waypoints?: unknown;
+      alternates?: unknown;
+      customAreas?: unknown;
+      areas?: unknown;
+    };
     return {
       waypoints: Array.isArray(obj.waypoints) ? (obj.waypoints as FlightPlanWaypoint[]) : [],
       alternates: normalizeAlternates(obj.alternates),

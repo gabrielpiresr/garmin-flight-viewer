@@ -18,6 +18,19 @@ const MAX_RIDES = 12;
 const ENTRY_SNAPS_PER_COMP = 10;
 const GATE_ENTRY_NM = 15;
 const GATE_HEADING_DEG = 25;
+const LOCAL_TMA_NEAR_NM = 40;
+
+function isRehFeature(feature: ReaRouteFeature & { _kind?: string }): boolean {
+  if (feature._kind === "reh") return true;
+  if (feature._kind === "rea") return false;
+  return /CV_REH/i.test(String(feature.id || ""));
+}
+
+/** Rota automática de avião usa REA. REH só entra se não houver REA carregada. */
+function airplaneVisualFeatures(features: ReaRouteFeature[]): ReaRouteFeature[] {
+  const rea = features.filter((feature) => !isRehFeature(feature));
+  return rea.length ? rea : features;
+}
 
 export type ReaCorridorSnapOk = {
   ok: true;
@@ -52,6 +65,7 @@ type Seg = {
   altAb: number | null;
   altBa: number | null;
   componentId: string;
+  carta: string;
 };
 type RidePoint = {
   lat: number;
@@ -220,6 +234,7 @@ function buildGraph(features: ReaRouteFeature[]): {
       altAb,
       altBa,
       componentId: "",
+      carta: String(props.carta_nome || "").trim().toUpperCase(),
     });
   }
 
@@ -296,9 +311,23 @@ function rideTotalCost(ride: Ride): number {
   return ride.entryDistM + ride.pathMeters + ride.exitDistToDestM;
 }
 
-/** Prefere sair mais perto do destino, sem aceitar rodeio longo na rede. */
+/** Prefere juntar cedo na REA e sair perto do destino; DCT pesa mais que voar o corredor. */
 function rideScore(ride: Ride): number {
-  return ride.entryDistM + ride.pathMeters + 2 * ride.exitDistToDestM;
+  return 2 * ride.entryDistM + ride.pathMeters + 3 * ride.exitDistToDestM;
+}
+
+function nearestDistToSegs(point: LatLng, segs: Seg[]): number {
+  let best = Infinity;
+  for (const seg of segs) {
+    const d = projectOnSegment(point, seg.a, seg.b).distM;
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Rede visual sentada na origem ou no destino (TMA local), não um desvio intermediário. */
+function anchoredToLocalTma(point: LatLng, segs: Seg[]): boolean {
+  return nearestDistToSegs(point, segs) <= LOCAL_TMA_NEAR_NM * NM_IN_M;
 }
 
 function pathMetersFromWalk(
@@ -499,6 +528,7 @@ function bestRideForComponent(
   componentSegs: Seg[],
   adj: Map<string, GraphEdge[]>,
   nodes: Map<string, GraphNode>,
+  options?: { skipProgress?: boolean },
 ): Ride | null {
   const destNow = haversineM(pos, dest);
   const destBrng = bearingDeg(pos, dest);
@@ -517,10 +547,18 @@ function bestRideForComponent(
   const alignedGates = gates.filter(
     (gate) => gate.heading <= GATE_HEADING_DEG && haversineM(gate.node, dest) < destNow - PROGRESS_M,
   );
+  const usefulGates = gates.filter((gate) => haversineM(gate.node, dest) < destNow - PROGRESS_M);
 
   const candidates: Array<{ adj: Map<string, GraphEdge[]>; nodes: Map<string, GraphNode>; startId: string; distM: number }> = [];
-  const gateList = far && alignedGates.length ? alignedGates : far ? gates.slice(0, 16) : [...alignedGates.slice(0, 4), ...gates.slice(0, 4)];
+  // Longe da rede: entra no primeiro nó útil (Pedras, Limeira, …), não só em
+  // “Portão …” alinhado com o destino. Perto: snap no corredor + alguns gates.
+  const gateList = far ? usefulGates.slice(0, 16) : [...alignedGates.slice(0, 4), ...usefulGates.slice(0, 4)];
   if (far) {
+    for (const snap of snaps) {
+      if (headingDiffDeg(destBrng, bearingDeg(pos, snap)) > 90) continue;
+      const attached = attachSnap(adj, nodes, snap.seg, snap);
+      candidates.push({ adj: attached.adj, nodes: attached.nodes, startId: attached.startId, distM: snap.distM });
+    }
     for (const gate of gateList) {
       candidates.push({ adj, nodes, startId: gate.node.id, distM: gate.distM });
     }
@@ -536,10 +574,11 @@ function bestRideForComponent(
 
   let best: Ride | null = null;
   const componentId = componentSegs[0]?.componentId || "";
+  const skipProgress = Boolean(options?.skipProgress);
   for (const candidate of candidates) {
     const ride = rideFromStart(candidate.adj, candidate.nodes, candidate.startId, dest, candidate.distM, componentId);
     if (!ride) continue;
-    if (destNow - ride.exitDistToDestM < PROGRESS_M) continue;
+    if (!skipProgress && destNow - ride.exitDistToDestM < PROGRESS_M) continue;
     if (
       !best ||
       rideScore(ride) < rideScore(best) - 50 ||
@@ -592,6 +631,7 @@ function appendRidePoints(
       kind: point.kind,
       ...(point.kind === "rea" ? { reaName: point.name } : {}),
       altitudeFt: altMax != null && Number.isFinite(altMax) ? Math.round(altMax) : null,
+      altitudeRef: "bs",
     });
     if (altMax != null) lastAlt.value = altMax;
   }
@@ -600,8 +640,9 @@ function appendRidePoints(
 /**
  * Encaixa origem/destino nos corredores visuais pela rota mais curta: usa a
  * rede perto da origem (TMA de partida), segue até o ponto em que continuar
- * alonga o voo, e DCT até o destino. Só entra em outra rede se ela estiver
- * perto — não desvia para uma TMA intermediária.
+ * alonga o voo, e DCT até o destino. Depois da rede nacional, ainda entra na
+ * TMA visual do destino (Londrina, BH, Curitiba, …) em vez de DCT direto.
+ * Não desvia para uma TMA intermediária. Ignora REH (helicóptero) quando há REA.
  */
 export function snapRouteToVisualCorridors(
   waypoints: FlightPlanWaypoint[],
@@ -610,13 +651,14 @@ export function snapRouteToVisualCorridors(
   if (waypoints.length < 2) {
     return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
   }
-  if (!features.length) {
+  const visual = airplaneVisualFeatures(features);
+  if (!visual.length) {
     return { ok: false, error: "Corredores visuais ainda não carregaram." };
   }
 
   const origin = waypoints[0]!;
   const dest = waypoints[waypoints.length - 1]!;
-  const { nodes, adj, segs } = buildGraph(features);
+  const { nodes, adj, segs } = buildGraph(visual);
   if (!segs.length) {
     return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
   }
@@ -641,15 +683,21 @@ export function snapRouteToVisualCorridors(
     if (destNow < NEAR_WP_M * 2) break;
 
     const ridesFound: Ride[] = [];
+    const mandatory: Ride[] = [];
     for (const [componentId, componentSegs] of byComponent) {
       if (used.has(componentId)) continue;
-      const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes);
+      const destTma = anchoredToLocalTma(dest, componentSegs);
+      const localTma = destTma || anchoredToLocalTma(pos, componentSegs);
+      const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
+        skipProgress: destTma && rides > 0,
+      });
       if (!ride) continue;
-      if (rides > 0 && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
+      if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
       ridesFound.push(ride);
+      if (localTma) mandatory.push(ride);
     }
     const nearby = ridesFound.filter((ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M);
-    const pool = nearby.length ? nearby : ridesFound;
+    const pool = mandatory.length && rides > 0 ? mandatory : nearby.length ? nearby : ridesFound;
     let chosen: Ride | null = null;
     for (const ride of pool) {
       if (

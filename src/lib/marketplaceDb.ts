@@ -11,6 +11,7 @@ import {
   MARKETPLACE_ORDERS_COL_ID,
   MARKETPLACE_PRODUCTS_COL_ID,
   Permission,
+  PLATFORM_SETTINGS_COL_ID,
   Role,
   storage,
 } from "./appwrite";
@@ -33,8 +34,7 @@ import {
 } from "../types/marketplace";
 
 const DB_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID as string;
-const SETTINGS_COL_ID =
-  (import.meta.env.VITE_APPWRITE_PLATFORM_SETTINGS_COL_ID as string | undefined) ?? "platform_settings";
+const SETTINGS_COL_ID = PLATFORM_SETTINGS_COL_ID;
 
 function isReady(): boolean {
   return Boolean(isAppwriteConfigured && databases && DB_ID);

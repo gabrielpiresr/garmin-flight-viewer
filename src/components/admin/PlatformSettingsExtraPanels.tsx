@@ -1468,7 +1468,7 @@ export function SoloFlightRulesPanel() {
         </button>
       </div>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-4">
+      <div className="mt-5 grid gap-4 md:grid-cols-3 lg:grid-cols-5">
         <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 text-sm text-slate-200">
           <input type="checkbox" checked={solo.enabled} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, enabled: e.target.checked } }))} />
           Fluxo ativo
@@ -1479,8 +1479,13 @@ export function SoloFlightRulesPanel() {
         <label className="text-xs font-medium text-slate-400">Idade mínima
           <input type="number" min={14} max={80} value={solo.minimumAge} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, minimumAge: Number(e.target.value) } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
         </label>
-        <label className="text-xs font-medium text-slate-400">Corte antes de
+        <label className="text-xs font-medium text-slate-400">Corte geral
           <input type="time" value={solo.cutoffBeforeTime} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, cutoffBeforeTime: e.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+          <span className="mt-1 block text-[11px] text-slate-500">PC, INVA e demais cursos</span>
+        </label>
+        <label className="text-xs font-medium text-slate-400">Corte piloto privado
+          <input type="time" value={solo.cutoffBeforeTimePrivatePilot || "19:00"} onChange={(e) => setForm((current) => ({ ...current, soloFlight: { ...solo, cutoffBeforeTimePrivatePilot: e.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+          <span className="mt-1 block text-[11px] text-slate-500">Somente alunos de piloto privado</span>
         </label>
       </div>
 

@@ -29,6 +29,8 @@ export const FLIGHT_PLAN_INFO_OPTIONS: Array<{
   { id: "cartas", label: "Cartas", description: "Lista de cartas AIP disponíveis" },
 ];
 
+export type AltitudeRefMode = "bs" | "as" | "be" | "ae";
+
 export type FlightPlanRouteTableRow = {
   index: number;
   point: string;
@@ -59,12 +61,13 @@ export type FlightPlanWaypoint = {
   /** Elevação publicada do campo (ft); usada como início/fim do perfil TOC/TOD. */
   fieldElevFt?: number | null;
   /**
-   * Quando aplicar a altitudeFt em relação ao trecho/ponto:
-   * - start: iniciar subida/descida no início do trecho até o ponto
-   * - before (padrão): alcançar a altitude imediatamente antes do ponto (passa nele já na altitude)
-   * - after: iniciar subida/descida logo após passar o ponto
+   * Quando aplicar a altitudeFt em relação ao trecho até este ponto:
+   * - bs (padrão): Before Segment — conclui a mudança logo antes de começar o segmento
+   * - as: After Segment — começa a mudança logo após iniciar o segmento (legado: start / I)
+   * - be: Before End — conclui a mudança no ponto final do segmento (legado: before / B)
+   * - ae: After End — começa a mudança logo após passar o ponto (legado: after / A)
    */
-  altitudeRef?: "start" | "before" | "after";
+  altitudeRef?: AltitudeRefMode | "start" | "before" | "after";
 };
 
 export type FlightPlanRouteSummary = {

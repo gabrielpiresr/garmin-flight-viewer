@@ -592,7 +592,9 @@ export function MainLayout() {
     () => availableNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
     [availableNavItems, mobilePrimaryIds],
   );
-  const isMobileMoreActive = section === "flight-review-club" || !mobilePrimaryIds.has(section as StudentSection);
+  const clubInStudentMenu = rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu;
+  const isMobileMoreActive =
+    section === "flight-review-club" ? !clubInStudentMenu : !mobilePrimaryIds.has(section as StudentSection);
 
   function openSection(target: StudentSection) {
     const targetIsAvailable = availableNavItems.some((item) => item.id === target);
@@ -700,7 +702,8 @@ export function MainLayout() {
       return;
     }
     if (!availableNavItems.some((item) => item.id === section)) {
-      setSection(availableNavItems[0]!.id, { replace: true });
+      const homeItem = availableNavItems.find((item) => item.id === "home") ?? availableNavItems[0]!;
+      setSection(homeItem.id, { replace: true });
     }
   }, [availableNavItems, section, permissionsLoading, referProgramLoaded, rulesLoaded, rules.flightReviewClub.enabled, rules.flightReviewClub.showInStudentMenu]);
 
@@ -826,6 +829,48 @@ export function MainLayout() {
         </div>
 
         <nav className={`flex min-h-0 flex-1 flex-col gap-2.5 py-3 ${sidebarNavScrollClass(sidebarCollapsed)} ${sidebarCollapsed ? "px-2" : "px-3"}`}>
+          {clubInStudentMenu ? (
+            clubLpExternal ? (
+              <a
+                href={clubLpUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={sidebarCollapsed ? "FRC" : undefined}
+                aria-label={sidebarCollapsed ? "FRC" : undefined}
+                className={`group flex w-full items-center rounded-lg border border-transparent text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)}`}
+              >
+                <span className={sidebarCompactIconClass(sidebarCollapsed, "opacity-70 group-hover:opacity-100")}>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <div className={sidebarRevealClass(sidebarCollapsed)}>
+                  <p className="text-sm font-medium leading-none">FRC</p>
+                </div>
+                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>FRC</span>
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={openClubSection}
+                title={sidebarCollapsed ? "FRC" : undefined}
+                aria-label={sidebarCollapsed ? "FRC" : undefined}
+                className={`group flex w-full items-center rounded-lg border text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)} ${
+                  section === "flight-review-club" ? "border-amber-600/60 bg-amber-500/10 text-amber-200" : "border-transparent"
+                }`}
+              >
+                <span className={sidebarCompactIconClass(sidebarCollapsed, section === "flight-review-club" ? "" : "opacity-70 group-hover:opacity-100")}>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <div className={sidebarRevealClass(sidebarCollapsed)}>
+                  <p className="text-sm font-medium leading-none">FRC</p>
+                </div>
+                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>FRC</span>
+              </button>
+            )
+          ) : null}
           {desktopNavGroups.map((group) => (
             <div key={group.label} className="space-y-1">
               <p className={sidebarGroupLabelClass(sidebarCollapsed)}>
@@ -856,48 +901,6 @@ export function MainLayout() {
               })}
             </div>
           ))}
-          {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
-            clubLpExternal ? (
-              <a
-                href={clubLpUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={sidebarCollapsed ? "Flight Review Club" : undefined}
-                aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
-                className={`group flex w-full items-center rounded-lg border border-transparent text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)}`}
-              >
-                <span className={sidebarCompactIconClass(sidebarCollapsed, "opacity-70 group-hover:opacity-100")}>
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                  </svg>
-                </span>
-                <div className={sidebarRevealClass(sidebarCollapsed)}>
-                  <p className="text-sm font-medium leading-none">Flight Review Club</p>
-                </div>
-                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Flight Review Club</span>
-              </a>
-            ) : (
-              <button
-                type="button"
-                onClick={openClubSection}
-                title={sidebarCollapsed ? "Flight Review Club" : undefined}
-                aria-label={sidebarCollapsed ? "Flight Review Club" : undefined}
-                className={`group flex w-full items-center rounded-lg border text-amber-400 transition-all hover:border-amber-700/40 hover:bg-amber-950/30 hover:text-amber-300 ${sidebarCompactItemClass(sidebarCollapsed)} ${
-                  section === "flight-review-club" ? "border-amber-600/60 bg-amber-500/10 text-amber-200" : "border-transparent"
-                }`}
-              >
-                <span className={sidebarCompactIconClass(sidebarCollapsed, section === "flight-review-club" ? "" : "opacity-70 group-hover:opacity-100")}>
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                    <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                  </svg>
-                </span>
-                <div className={sidebarRevealClass(sidebarCollapsed)}>
-                  <p className="text-sm font-medium leading-none">Flight Review Club</p>
-                </div>
-                <span className={sidebarCompactLabelClass(sidebarCollapsed)}>Flight Review Club</span>
-              </button>
-            )
-          ) : null}
           {onboardingInMenu ? (
             <a
               href="/apresentacao"
@@ -1214,53 +1217,45 @@ export function MainLayout() {
                     </span>
                   </a>
                 ) : null}
-                {rules.flightReviewClub.enabled && rules.flightReviewClub.showInStudentMenu ? (
-                  clubLpExternal ? (
-                    <a
-                      href={clubLpUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-700/40 bg-amber-950/20 p-3 text-left text-amber-300"
-                    >
-                      <span className="shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                          <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                        </svg>
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">Flight Club</span>
-                        <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
-                      </span>
-                    </a>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={openClubSection}
-                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left text-amber-300 ${
-                        section === "flight-review-club"
-                          ? "border-amber-500/70 bg-amber-500/15"
-                          : "border-amber-700/40 bg-amber-950/20"
-                      }`}
-                    >
-                      <span className="shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                          <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
-                        </svg>
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">Flight Club</span>
-                        <span className="block truncate text-[11px] text-amber-300/70">Review premium</span>
-                      </span>
-                    </button>
-                  )
-                ) : null}
               </div>
             </div>
           </div>
         ) : null}
 
         <nav className="fixed inset-x-3 bottom-3 z-50 pb-[env(safe-area-inset-bottom)] lg:hidden">
-          <div className="grid grid-cols-5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
+          <div className={`grid rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur ${clubInStudentMenu ? "grid-cols-6" : "grid-cols-5"}`}>
+            {clubInStudentMenu ? (
+              clubLpExternal ? (
+                <a
+                  href={clubLpUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium text-amber-400 transition hover:text-amber-300"
+                >
+                  <span className="h-4 w-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                      <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                  <span className="max-w-full truncate">FRC</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={openClubSection}
+                  className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition ${
+                    section === "flight-review-club" ? "school-nav-active" : "text-amber-400 hover:text-amber-300"
+                  }`}
+                >
+                  <span className="h-4 w-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                      <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                  <span className="max-w-full truncate">FRC</span>
+                </button>
+              )
+            ) : null}
             {mobilePrimaryItems.map((item) => {
               const isActive = section === item.id;
               return (

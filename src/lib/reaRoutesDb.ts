@@ -1,4 +1,5 @@
-/** GeoAISWEB CV_REA / CV_REH — rotas especiais VFR (AIC). */
+import cvReaWhBh from "../../public/geo/cv-rea-wh-bh.json";
+import cvReaWtCt from "../../public/geo/cv-rea-wt-ct.json";
 
 export type ReaRouteKind = "rea" | "reh";
 
@@ -138,7 +139,7 @@ async function writeStoredCollection(key: string, collection: ReaRouteCollection
 }
 
 function fullCacheKey(kind: ReaRouteKind): string {
-  return `${kind}:full`;
+  return `${kind}:full:v2`;
 }
 
 function bboxCacheKey(kind: ReaRouteKind, bbox: {
@@ -157,6 +158,52 @@ function bboxCacheKey(kind: ReaRouteKind, bbox: {
 
 function featureIdentity(feature: ReaRouteFeature): string {
   return String(feature.id ?? JSON.stringify(feature.properties));
+}
+
+function mergeFeatureLists(base: ReaRouteFeature[], extra: ReaRouteFeature[]): ReaRouteFeature[] {
+  if (!extra.length) return base;
+  const byId = new Map<string, ReaRouteFeature>();
+  for (const f of base) byId.set(featureIdentity(f), f);
+  for (const f of extra) byId.set(featureIdentity(f), f);
+  return [...byId.values()];
+}
+
+function localComplements(kind: ReaRouteKind): ReaRouteFeature[] {
+  if (kind !== "rea") return [];
+  return [...asCollection(cvReaWhBh).features, ...asCollection(cvReaWtCt).features];
+}
+
+function withLocalComplements(kind: ReaRouteKind, collection: ReaRouteCollection): ReaRouteCollection {
+  const extra = localComplements(kind);
+  if (!extra.length) return collection;
+  return { type: "FeatureCollection", features: mergeFeatureLists(collection.features, extra) };
+}
+
+function featureIntersectsBbox(
+  feature: ReaRouteFeature,
+  bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+): boolean {
+  const props = feature.properties || {};
+  const ends = [endpointA(props), endpointB(props)];
+  for (const end of ends) {
+    if (end.lat == null || end.lon == null) continue;
+    if (end.lon >= bbox.minLng && end.lon <= bbox.maxLng && end.lat >= bbox.minLat && end.lat <= bbox.maxLat) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function rememberCollection(
+  kind: ReaRouteKind,
+  collection: ReaRouteCollection,
+  persistFull = false,
+): ReaRouteCollection {
+  const merged = withLocalComplements(kind, collection);
+  cache[kind] = merged;
+  cacheLoadedAt[kind] = Date.now();
+  if (persistFull) void writeStoredCollection(fullCacheKey(kind), merged);
+  return merged;
 }
 
 function mergeIntoMemoryCache(kind: ReaRouteKind, features: ReaRouteFeature[]): ReaRouteCollection {
@@ -219,11 +266,12 @@ export async function loadReaRoutes(
 ): Promise<ReaRouteCollection> {
   const hit = cache[kind];
   if (hit) {
-    // Ainda tenta refrescar em background (snapshot local pode estar incompleto — ex.: TMA BH).
+    const merged = withLocalComplements(kind, hit);
+    if (merged.features.length !== hit.features.length) cache[kind] = merged;
     if (Date.now() - (cacheLoadedAt[kind] ?? 0) > FULL_REFRESH_TTL_MS) {
       void refreshReaRoutesFromWfs(kind, options?.onUpdate);
     }
-    return hit;
+    return merged;
   }
   const pending = inflight[kind];
   if (pending) return pending;
@@ -232,19 +280,15 @@ export async function loadReaRoutes(
   const promise = (async () => {
     const persisted = await readStoredCollection(fullCacheKey(kind), FULL_REFRESH_TTL_MS);
     if (persisted?.features.length) {
-      cache[kind] = persisted;
-      cacheLoadedAt[kind] = Date.now();
-      return persisted;
+      return rememberCollection(kind, persisted);
     }
 
     try {
       const fallback = await fetchFallback(spec.fallback);
       if (fallback.features.length > 0) {
-        cache[kind] = fallback;
-        cacheLoadedAt[kind] = Date.now();
-        void writeStoredCollection(fullCacheKey(kind), fallback);
+        const merged = rememberCollection(kind, fallback, true);
         void refreshReaRoutesFromWfs(kind, options?.onUpdate);
-        return fallback;
+        return merged;
       }
     } catch {
       // continue to live
@@ -254,14 +298,16 @@ export async function loadReaRoutes(
       try {
         const collection = await fetchWfs(kind, base, spec.wfs);
         if (collection.features.length > 0) {
-          cache[kind] = collection;
-          cacheLoadedAt[kind] = Date.now();
-          void writeStoredCollection(fullCacheKey(kind), collection);
-          return collection;
+          return rememberCollection(kind, collection, true);
         }
       } catch {
         // try next
       }
+    }
+
+    const localOnly = localComplements(kind);
+    if (localOnly.length) {
+      return rememberCollection(kind, { type: "FeatureCollection", features: [] });
     }
     throw new Error(`Não foi possível carregar ${kind.toUpperCase()}.`);
   })();
@@ -284,10 +330,8 @@ async function refreshReaRoutesFromWfs(
       const live = await fetchWfs(kind, base, spec.wfs);
       if (live.features.length === 0) continue;
       const prev = cache[kind]?.features.length ?? 0;
-      cache[kind] = live;
-      cacheLoadedAt[kind] = Date.now();
-      void writeStoredCollection(fullCacheKey(kind), live);
-      if (live.features.length !== prev) onUpdate?.(live);
+      const merged = rememberCollection(kind, live, true);
+      if (merged.features.length !== prev) onUpdate?.(merged);
       return;
     } catch {
       // try next
@@ -295,7 +339,7 @@ async function refreshReaRoutesFromWfs(
   }
 }
 
-/** Busca REA/REH só na viewport (completa gaps do snapshot local, ex. TMA BH). */
+/** Busca REA/REH na viewport. Completa o WFS com os complementos locais (TMA BH e Curitiba). */
 export async function loadReaRoutesInBbox(
   kind: ReaRouteKind,
   bbox: { minLng: number; minLat: number; maxLng: number; maxLat: number },
@@ -304,25 +348,32 @@ export async function loadReaRoutesInBbox(
   const pending = bboxInflight.get(key);
   if (pending) return pending;
 
-  const stored = await readStoredCollection(key, BBOX_CACHE_TTL_MS);
-  if (stored?.features.length) {
-    mergeIntoMemoryCache(kind, stored.features);
-    return stored.features;
-  }
-
-  const spec = LAYER_BY_KIND[kind];
   const request = (async () => {
+    const localHits = localComplements(kind).filter((feature) => featureIntersectsBbox(feature, bbox));
+    const stored = await readStoredCollection(key, BBOX_CACHE_TTL_MS);
+    if (stored?.features.length) {
+      const merged = mergeFeatureLists(stored.features, localHits);
+      mergeIntoMemoryCache(kind, merged);
+      return merged;
+    }
+
+    const spec = LAYER_BY_KIND[kind];
     for (const base of wfsBases({ bbox: true })) {
       try {
         const collection = await fetchWfs(kind, base, spec.wfs, bbox);
         if (collection.features.length > 0) {
-          mergeIntoMemoryCache(kind, collection.features);
-          void writeStoredCollection(key, collection);
-          return collection.features;
+          const merged = mergeFeatureLists(collection.features, localHits);
+          mergeIntoMemoryCache(kind, merged);
+          void writeStoredCollection(key, { type: "FeatureCollection", features: merged });
+          return merged;
         }
       } catch {
         // try next
       }
+    }
+    if (localHits.length) {
+      mergeIntoMemoryCache(kind, localHits);
+      return localHits;
     }
     return [];
   })();
@@ -336,7 +387,11 @@ export async function loadReaRoutesInBbox(
 }
 
 export function getCachedReaRoutes(kind: ReaRouteKind): ReaRouteCollection | null {
-  return cache[kind] ?? null;
+  const hit = cache[kind];
+  if (!hit) return null;
+  const merged = withLocalComplements(kind, hit);
+  if (merged.features.length !== hit.features.length) cache[kind] = merged;
+  return merged;
 }
 
 export function numOrNull(value: unknown): number | null {

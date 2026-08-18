@@ -76,6 +76,8 @@ export async function saveWppNotificationTemplates(
     bookingRequestedTemplate: WppTransactionalTemplateSettings;
     soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
     soloFlightAwarenessTemplate: WppTransactionalTemplateSettings;
+    soloFlightInstructorApprovedTemplate: WppTransactionalTemplateSettings;
+    soloFlightInstructorRejectedTemplate: WppTransactionalTemplateSettings;
     aiswebAlertTemplate: WppTransactionalTemplateSettings;
     soloFlightCoordinatorPhone: string;
     soloFlightSgsoPhone: string;

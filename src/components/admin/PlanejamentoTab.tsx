@@ -5,6 +5,7 @@ import { parseFieldElevationFt } from "../../lib/fieldElevation";
 import {
   buildRoutePerformanceProfile,
   DEFAULT_FLIGHT_PERFORMANCE,
+  altitudeRefMode,
   type FlightPerformanceSettings,
 } from "../../lib/routePerformanceProfile";
 import { airspacesEnteredVertically, detectAirspacesAlongRoute, sampleRoutePoints, type AirspaceVolume } from "../../lib/airspaceIntersect";
@@ -45,11 +46,13 @@ import { offlineBriefingPath, saveOfflineFlightBriefing } from "../../lib/offlin
 import { getPdfBrand } from "../../lib/pdfBrand";
 import { collectReaFixPoints, getCachedReaRoutes, loadReaRoutes, type ReaFixPoint } from "../../lib/reaRoutesDb";
 import { snapRouteToVisualCorridors } from "../../lib/reaCorridorRoute";
+import { buildFlightPlanRouteTableRows, buildRouteTableViewRows } from "../../lib/routeTableDisplay";
 import { geometryContainsLatLng } from "../../lib/afisCoverage";
 import { buildFplRmkText, buildFplRouteText, originIsInsideTma } from "../../lib/fplRouteExport";
 import { resolveAirportCoords } from "../../lib/resolveAirportCoords";
 import {
   deleteSavedFlightRoute,
+  getSavedFlightRoute,
   listSavedFlightRoutes,
   migrateLocalSavedFlightRoutesIfNeeded,
   saveFlightRoute,
@@ -71,7 +74,6 @@ import {
   FLIGHT_PLAN_INFO_OPTIONS,
   type FlightPlanAirspaceHit,
   type FlightPlanInfoSection,
-  type FlightPlanRouteTableRow,
   type FlightPlanWaypoint,
 } from "../../types/flightPlanning";
 import { IcaoField } from "../AiswebFlightPlanningTab";
@@ -105,7 +107,7 @@ import {
   PlanejamentoSectionHeader,
   type PlanejamentoSectionId,
 } from "./PlanejamentoSectionShell";
-import { PlanejamentoRouteCards } from "./PlanejamentoRouteCards";
+import { PlanejamentoRouteCards, AltitudeRefToggle } from "./PlanejamentoRouteCards";
 import { PlanejamentoLibrary } from "./PlanejamentoLibrary";
 import { PlanejamentoDialog, planejamentoDialogButtons } from "./PlanejamentoDialog";
 import type {
@@ -314,9 +316,7 @@ export function PlanejamentoTab({
   const [accumMode, setAccumMode] = useState<AccumMode>("acumulado");
   const [cruiseSpeedKt, setCruiseSpeedKt] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt));
   const [fuelBurn, setFuelBurn] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour));
-  const [cruiseAltitudeFt, setCruiseAltitudeFt] = useState(
-    String(DEFAULT_FLIGHT_PERFORMANCE.cruiseAltitudeFt),
-  );
+  const [confirmCorridorSnap, setConfirmCorridorSnap] = useState(false);
   const [climbSpeedKt, setClimbSpeedKt] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbSpeedKt));
   const [climbRateFpm, setClimbRateFpm] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbRateFpm));
   const [climbBurn, setClimbBurn] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbBurnPerHour));
@@ -425,7 +425,6 @@ export function PlanejamentoTab({
 
   const cruise = Number(String(cruiseSpeedKt).replace(",", "."));
   const burn = Number(String(fuelBurn).replace(",", "."));
-  const cruiseAlt = Number(String(cruiseAltitudeFt).replace(",", "."));
   const climbKt = Number(String(climbSpeedKt).replace(",", "."));
   const climbFpm = Number(String(climbRateFpm).replace(",", "."));
   const climbBurnN = Number(String(climbBurn).replace(",", "."));
@@ -437,21 +436,9 @@ export function PlanejamentoTab({
   const burnOpt = Number.isFinite(burn) && burn > 0 ? burn : null;
 
   const performanceSettings = useMemo<FlightPerformanceSettings>(() => {
-    const fromSettings =
-      Number.isFinite(cruiseAlt) && cruiseAlt > 0
-        ? Math.round(cruiseAlt)
-        : DEFAULT_FLIGHT_PERFORMANCE.cruiseAltitudeFt;
-    // Keep profile in sync with altitudes typed on intermediate legs in the route table.
-    let fromTable = 0;
-    for (let i = 1; i < waypoints.length - 1; i++) {
-      const alt = waypoints[i]?.altitudeFt;
-      if (alt == null || !Number.isFinite(alt)) continue;
-      fromTable = Math.max(fromTable, Math.round(alt));
-    }
     return {
       cruiseSpeedKt: cruiseOpt ?? DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt,
       cruiseBurnPerHour: burnOpt ?? DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour,
-      cruiseAltitudeFt: Math.max(fromSettings, fromTable),
       climbSpeedKt:
         Number.isFinite(climbKt) && climbKt > 0 ? climbKt : DEFAULT_FLIGHT_PERFORMANCE.climbSpeedKt,
       climbRateFpm:
@@ -476,14 +463,12 @@ export function PlanejamentoTab({
   }, [
     cruiseOpt,
     burnOpt,
-    cruiseAlt,
     climbKt,
     climbFpm,
     climbBurnN,
     descentKt,
     descentFpm,
     descentBurnN,
-    waypoints,
   ]);
 
   const performanceProfile = useMemo(
@@ -661,16 +646,21 @@ export function PlanejamentoTab({
   const nexAtlasText = useMemo(() => waypointsToNexAtlasText(waypoints), [waypoints]);
 
   const legCorridors = useMemo(() => {
-    const features = [
-      ...(getCachedReaRoutes("rea")?.features || []),
-      ...(getCachedReaRoutes("reh")?.features || []),
-    ];
+    const reaFeatures = getCachedReaRoutes("rea")?.features || [];
+    const rehFeatures = getCachedReaRoutes("reh")?.features || [];
     const out: Array<LegCorridorInfo | null> = [null];
     for (let i = 1; i < waypoints.length; i++) {
-      out.push(matchReaCorridorForLeg(waypoints[i - 1]!, waypoints[i]!, features));
+      const from = waypoints[i - 1]!;
+      const to = waypoints[i]!;
+      out.push(matchReaCorridorForLeg(from, to, reaFeatures) || matchReaCorridorForLeg(from, to, rehFeatures));
     }
     return out;
   }, [waypoints, reaFixes, rehFixes]);
+
+  const tableViewRows = useMemo(
+    () => buildRouteTableViewRows(waypoints, legs, legCorridors, performanceProfile, burnOpt),
+    [waypoints, legs, legCorridors, performanceProfile, burnOpt],
+  );
 
   const originInsideTma = useMemo(
     () =>
@@ -737,6 +727,15 @@ export function PlanejamentoTab({
         }
         const routes = await listSavedFlightRoutes();
         if (!cancelled) setSavedRoutes(routes);
+        const params = new URLSearchParams(window.location.search);
+        const routeId = params.get("route")?.trim();
+        if (routeId && !cancelled) {
+          const saved = routes.find((r) => r.id === routeId) || (await getSavedFlightRoute(routeId));
+          if (saved && !cancelled) {
+            handleLoad(saved);
+            openEditor("map");
+          }
+        }
       } catch (err) {
         if (!cancelled) {
           setSavedRoutes([]);
@@ -1070,15 +1069,12 @@ export function PlanejamentoTab({
 
   function insertWaypoint(wp: FlightPlanWaypoint, insertIndex?: number) {
     setWaypoints((prev) => {
-      // Evita duplicar ponto já na rota (~0.4 NM).
-      const dup = prev.findIndex((p) => haversineM(p, wp) < 1852 * 0.4);
-      if (dup >= 0) return prev;
       const next = [...prev];
       const idx =
         insertIndex != null && insertIndex >= 0 && insertIndex <= next.length
           ? insertIndex
           : findRouteInsertHint(next, wp).insertIndex;
-      next.splice(idx, 0, wp);
+      next.splice(idx, 0, { ...wp, altitudeRef: wp.altitudeRef ?? "bs" });
       return normalizeRouteWaypoints(next);
     });
     setGenerated(false);
@@ -1089,10 +1085,17 @@ export function PlanejamentoTab({
   }
 
   function snapToVisualCorridors() {
-    const features = [
-      ...(getCachedReaRoutes("rea")?.features || []),
-      ...(getCachedReaRoutes("reh")?.features || []),
-    ];
+    const intermediates = waypoints.slice(1, -1);
+    if (intermediates.length > 0) {
+      setConfirmCorridorSnap(true);
+      return;
+    }
+    runSnapToVisualCorridors();
+  }
+
+  function runSnapToVisualCorridors() {
+    setConfirmCorridorSnap(false);
+    const features = getCachedReaRoutes("rea")?.features || [];
     const run = (list: typeof features) => {
       const result = snapRouteToVisualCorridors(waypoints, list);
       if (!result.ok) {
@@ -1115,8 +1118,8 @@ export function PlanejamentoTab({
       run(features);
       return;
     }
-    void Promise.all([loadReaRoutes("rea"), loadReaRoutes("reh")])
-      .then(([rea, reh]) => run([...rea.features, ...reh.features]))
+    void loadReaRoutes("rea")
+      .then((rea) => run(rea.features))
       .catch(() => {
         showToast({
           variant: "error",
@@ -1145,15 +1148,6 @@ export function PlanejamentoTab({
       },
       elevFt,
     );
-
-    if (waypoints.some((p) => haversineM(p, wp) < 1852 * 0.4)) {
-      showToast({
-        variant: "warning",
-        title: "Já na rota",
-        message: candidate.icao || candidate.label,
-      });
-      return;
-    }
 
     const forced = opts?.insertIndex;
     const hint =
@@ -1266,13 +1260,6 @@ export function PlanejamentoTab({
     setWaypoints((prev) =>
       prev.map((item, i) => (i === index ? { ...item, altitudeFt: nextAlt } : item)),
     );
-    if (index > 0) {
-      const isLast = index === waypoints.length - 1;
-      const field = waypoints[index]?.fieldElevFt;
-      if (!isLast || field == null || nextAlt !== Math.round(field)) {
-        setCruiseAltitudeFt(String(nextAlt));
-      }
-    }
   }
 
   function clearBriefingState() {
@@ -1846,26 +1833,14 @@ export function PlanejamentoTab({
             })
           : null;
 
-      const routeTableRows: FlightPlanRouteTableRow[] = waypoints.map((wp, idx) => {
-        const leg = idx > 0 ? legs[idx - 1] : null;
-        const corridor = idx > 0 ? legCorridors[idx] : null;
-        return {
-          index: idx + 1,
-          point: waypointDisplayName(wp),
-          bearing: leg ? formatBearingDeg(leg.bearingDeg) : "—",
-          altitude: wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—",
-          corridor: corridor
-            ? `${corridor.name} (${corridor.altMin ?? "—"}/${corridor.altMax ?? "—"})`
-            : "—",
-          distance: leg ? `${leg.distanceNm.toFixed(1)} nm` : "—",
-          distanceAccum: leg ? `${leg.cumulativeDistanceNm.toFixed(1)} nm` : "—",
-          ete: formatEteClock(leg?.eteHours ?? null),
-          eteAccum: formatEteClock(leg?.cumulativeEteHours ?? null),
-          fuel: leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} ${fuelUnit}` : "—",
-          fuelAccum:
-            leg?.cumulativeFuel != null ? `${leg.cumulativeFuel.toFixed(1)} ${fuelUnit}` : "—",
-          note: wp.note || "—",
-        };
+      const routeTableRows = buildFlightPlanRouteTableRows({
+        waypoints,
+        legs,
+        legCorridors,
+        performance: performanceProfile,
+        waypointDisplayName,
+        fuelUnit,
+        burnPerHour: burnOpt,
       });
 
       openFlightPlanPdf({
@@ -1909,26 +1884,14 @@ export function PlanejamentoTab({
       const mapImageDataUrl = waypoints.length
         ? await buildFlightPlanMapDataUrl(waypoints).catch(() => null)
         : null;
-      const routeTableRows: FlightPlanRouteTableRow[] = waypoints.map((wp, idx) => {
-        const leg = idx > 0 ? legs[idx - 1] : null;
-        const corridor = idx > 0 ? legCorridors[idx] : null;
-        return {
-          index: idx + 1,
-          point: waypointDisplayName(wp),
-          bearing: leg ? formatBearingDeg(leg.bearingDeg) : "—",
-          altitude: wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—",
-          corridor: corridor
-            ? `${corridor.name} (${corridor.altMin ?? "—"}/${corridor.altMax ?? "—"})`
-            : "—",
-          distance: leg ? `${leg.distanceNm.toFixed(1)} nm` : "—",
-          distanceAccum: leg ? `${leg.cumulativeDistanceNm.toFixed(1)} nm` : "—",
-          ete: formatEteClock(leg?.eteHours ?? null),
-          eteAccum: formatEteClock(leg?.cumulativeEteHours ?? null),
-          fuel: leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} ${fuelUnit}` : "—",
-          fuelAccum:
-            leg?.cumulativeFuel != null ? `${leg.cumulativeFuel.toFixed(1)} ${fuelUnit}` : "—",
-          note: wp.note || "—",
-        };
+      const routeTableRows = buildFlightPlanRouteTableRows({
+        waypoints,
+        legs,
+        legCorridors,
+        performance: performanceProfile,
+        waypointDisplayName,
+        fuelUnit,
+        burnPerHour: burnOpt,
       });
       let terrainPts: Awaited<ReturnType<typeof getRouteElevation>>["points"] = [];
       try {
@@ -2498,7 +2461,6 @@ export function PlanejamentoTab({
                     const n = Number(String(bulkAltitudeFt).replace(",", "."));
                     if (!Number.isFinite(n)) return;
                     const rounded = Math.round(n);
-                    setCruiseAltitudeFt(String(rounded));
                     setWaypoints((prev) =>
                       prev.map((wp, i) =>
                         i === 0 || i === prev.length - 1 ? wp : { ...wp, altitudeFt: rounded },
@@ -2574,9 +2536,46 @@ export function PlanejamentoTab({
                   </tr>
                 </thead>
                 <tbody>
-                  {waypoints.map((wp, idx) => {
-                    const leg = idx > 0 ? legs[idx - 1] : null;
-                    const corridor = idx > 0 ? legCorridors[idx] : null;
+                  {tableViewRows.map((row) => {
+                    if (row.kind !== "waypoint") {
+                      const dist = accumMode === "acumulado" ? row.cumulativeNm : row.distanceNm;
+                      const ete = accumMode === "acumulado" ? row.cumulativeEteHours : row.eteHours;
+                      const fuel = accumMode === "acumulado" ? row.cumulativeFuel : row.fuel;
+                      const isToc = row.kind === "toc";
+                      return (
+                        <tr
+                          key={row.key}
+                          className={`border-t border-slate-800/80 ${isToc ? "bg-violet-500/10" : "bg-fuchsia-500/10"}`}
+                        >
+                          <td className="px-2 py-1.5 text-slate-600">·</td>
+                          <td className={`px-2 py-1.5 font-bold ${isToc ? "text-violet-300" : "text-fuchsia-300"}`}>
+                            {row.label}
+                          </td>
+                          <td className={`px-2 py-1.5 font-semibold ${isToc ? "text-violet-200" : "text-fuchsia-200"}`}>
+                            {isToc ? "Topo de subida" : "Topo de descida"}
+                          </td>
+                          <td className="px-2 py-1.5 font-mono text-[10px] text-slate-500">
+                            {formatCompactAviationCoord(row.lat, row.lng)}
+                          </td>
+                          <td className="px-2 py-1.5 font-semibold text-emerald-400">{row.bearing}</td>
+                          <td className={`px-2 py-1.5 font-mono ${isToc ? "text-violet-200" : "text-fuchsia-200"}`}>
+                            {Math.round(row.altFt)} ft
+                          </td>
+                          <td className="px-2 py-1.5 text-[10px] text-slate-500">—</td>
+                          <td className="px-2 py-1.5 font-mono text-slate-300">{`${dist.toFixed(1)} nm`}</td>
+                          <td className="px-2 py-1.5 font-mono text-slate-300">{formatEteClock(ete)}</td>
+                          <td className="px-2 py-1.5 font-mono text-slate-300">
+                            {fuel != null ? `${fuel.toFixed(1)} ${fuelUnit}` : "—"}
+                          </td>
+                          <td className="px-2 py-1.5 text-slate-600">—</td>
+                          <td />
+                        </tr>
+                      );
+                    }
+                    const wp = row.wp;
+                    const idx = row.wpIndex;
+                    const leg = row.leg;
+                    const corridor = row.corridor;
                     const dist =
                       leg == null
                         ? null
@@ -2597,7 +2596,7 @@ export function PlanejamentoTab({
                           : leg.fuelEstimate;
                     return (
                       <tr
-                        key={`${wp.lat}-${wp.lng}-${idx}`}
+                        key={row.key}
                         draggable
                         onDragStart={() => setDragIndex(idx)}
                         onDragOver={(e) => {
@@ -2641,11 +2640,9 @@ export function PlanejamentoTab({
                               title={
                                 idx === 0
                                   ? "Elevação / altitude na origem (ft)"
-                                  : wp.altitudeRef === "start"
-                                    ? "Início: muda a altitude no começo do trecho até o ponto"
-                                    : wp.altitudeRef === "after"
-                                      ? "After: inicia subida/descida logo após passar o ponto"
-                                      : "Before: alcança a altitude imediatamente antes do ponto"
+                                  : idx >= waypoints.length - 1
+                                    ? "Altitude / elevação no destino (ft)"
+                                    : "Altitude planejada neste ponto (ft)"
                               }
                               onChange={(e) => {
                                 const raw = e.target.value.trim();
@@ -2661,81 +2658,18 @@ export function PlanejamentoTab({
                                       : item,
                                   ),
                                 );
-                                if (nextAlt != null && idx > 0) {
-                                  const isLast = idx === waypoints.length - 1;
-                                  const field = waypoints[idx]?.fieldElevFt;
-                                  if (!isLast || field == null || nextAlt !== Math.round(field)) {
-                                    setCruiseAltitudeFt(String(nextAlt));
-                                  }
-                                }
                               }}
                             />
-                            {(() => {
-                              if (idx <= 0 || idx >= waypoints.length - 1) return null;
-                              const prevAlt = waypoints[idx - 1]?.altitudeFt;
-                              const curAlt = wp.altitudeFt;
-                              if (
-                                prevAlt == null ||
-                                curAlt == null ||
-                                !Number.isFinite(prevAlt) ||
-                                !Number.isFinite(curAlt) ||
-                                Math.round(prevAlt) === Math.round(curAlt)
-                              ) {
-                                return null;
-                              }
-                              const mode =
-                                wp.altitudeRef === "start" || wp.altitudeRef === "after"
-                                  ? wp.altitudeRef
-                                  : "before";
-                              const setMode = (altitudeRef: "start" | "before" | "after") => {
-                                setWaypoints((prev) =>
-                                  prev.map((item, i) => (i === idx ? { ...item, altitudeRef } : item)),
-                                );
-                              };
-                              return (
-                                <div
-                                  className="inline-flex overflow-hidden rounded border border-slate-700 bg-slate-950"
-                                  title="I = Início do trecho · B = Before (padrão) · A = After"
-                                >
-                                  <button
-                                    type="button"
-                                    className={`px-1.5 py-0.5 text-[9px] font-bold transition ${
-                                      mode === "start"
-                                        ? "bg-emerald-500/20 text-emerald-200"
-                                        : "text-slate-500 hover:text-slate-300"
-                                    }`}
-                                    title="Início: sobe/desce logo no começo do trecho até este ponto"
-                                    onClick={() => setMode("start")}
-                                  >
-                                    I
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`border-l border-slate-700 px-1.5 py-0.5 text-[9px] font-bold transition ${
-                                      mode === "before"
-                                        ? "bg-cyan-500/20 text-cyan-200"
-                                        : "text-slate-500 hover:text-slate-300"
-                                    }`}
-                                    title="Before: alcança a altitude logo antes do ponto"
-                                    onClick={() => setMode("before")}
-                                  >
-                                    B
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`border-l border-slate-700 px-1.5 py-0.5 text-[9px] font-bold transition ${
-                                      mode === "after"
-                                        ? "bg-amber-500/20 text-amber-200"
-                                        : "text-slate-500 hover:text-slate-300"
-                                    }`}
-                                    title="After: inicia subida/descida logo após passar o ponto"
-                                    onClick={() => setMode("after")}
-                                  >
-                                    A
-                                  </button>
-                                </div>
-                              );
-                            })()}
+                            {idx > 0 && idx < waypoints.length - 1 ? (
+                              <AltitudeRefToggle
+                                value={altitudeRefMode(wp)}
+                                onChange={(mode) => {
+                                  setWaypoints((prev) =>
+                                    prev.map((item, i) => (i === idx ? { ...item, altitudeRef: mode } : item)),
+                                  );
+                                }}
+                              />
+                            ) : null}
                           </div>
                         </td>
                         <td className="align-top px-2 py-1.5 text-[10px] text-amber-200/90">
@@ -2816,6 +2750,7 @@ export function PlanejamentoTab({
       ) : (
         <PlanejamentoRouteCards
           waypoints={waypoints}
+          tableViewRows={tableViewRows}
           legs={legs}
           legCorridors={legCorridors}
           accumMode={accumMode}
@@ -2826,7 +2761,6 @@ export function PlanejamentoTab({
             const n = Number(String(bulkAltitudeFt).replace(",", "."));
             if (!Number.isFinite(n)) return;
             const rounded = Math.round(n);
-            setCruiseAltitudeFt(String(rounded));
             setWaypoints((prev) =>
               prev.map((wp, i) =>
                 i === 0 || i === prev.length - 1 ? wp : { ...wp, altitudeFt: rounded },
@@ -2846,6 +2780,11 @@ export function PlanejamentoTab({
                 if (!Number.isFinite(n)) return wp;
                 return { ...wp, altitudeFt: Math.round(n) };
               }),
+            );
+          }}
+          onAltitudeRefChange={(index, mode) => {
+            setWaypoints((prev) =>
+              prev.map((wp, i) => (i === index ? { ...wp, altitudeRef: mode } : wp)),
             );
           }}
           onNoteChange={(index, value) => {
@@ -3654,6 +3593,37 @@ export function PlanejamentoTab({
         </PlanejamentoDialog>
       ) : null}
 
+      {confirmCorridorSnap ? (
+        <PlanejamentoDialog
+          title="Redefinir rota nos corredores"
+          onClose={() => setConfirmCorridorSnap(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => setConfirmCorridorSnap(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.primary}
+                onClick={() => runSnapToVisualCorridors()}
+              >
+                Ajustar rota
+              </button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-300">
+            Já existem pontos intermediários nesta rota. Ajustar nos corredores visuais vai{" "}
+            <span className="font-semibold text-amber-200">redefinir a rota</span> entre origem e destino,
+            substituindo os pontos atuais pelos da REA.
+          </p>
+        </PlanejamentoDialog>
+      ) : null}
+
       {unsavedOpen ? (
         <PlanejamentoDialog
           title="Alterações não salvas"
@@ -3730,17 +3700,6 @@ export function PlanejamentoTab({
             </div>
             <div className="grid gap-3">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cruzeiro</p>
-              <label className="space-y-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Altitude (ft)
-                </span>
-                <input
-                  className={inputClass}
-                  inputMode="decimal"
-                  value={cruiseAltitudeFt}
-                  onChange={(e) => setCruiseAltitudeFt(e.target.value)}
-                />
-              </label>
               <label className="space-y-1">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Velocidade (kt)

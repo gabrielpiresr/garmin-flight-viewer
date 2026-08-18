@@ -23,7 +23,7 @@ const SCHOOL_RULES_SETTING_KEY = "schoolRules";
 const FRC_LP_SETTING_KEY = "frcLandingPage";
 const FRC_LP_SNAPSHOT_ID = "frc-landing-v1";
 const FRC_TRAINING_SNAPSHOT_ID = "frc-training-v1";
-const APPWRITE_STRING_ATTR_MAX = 16_384;
+const APPWRITE_STRING_ATTR_MAX = 100_000;
 
 function cacheSchoolRules(rules: SchoolRules): void {
   try {
@@ -163,7 +163,11 @@ export async function getSchoolRules(): Promise<SchoolRules> {
 
 export async function saveSchoolRules(rules: SchoolRulesInput): Promise<SchoolRules> {
   const intended = normalizeSchoolRules({ ...rules, updatedAt: null });
-  await saveFrcLandingSettings(intended.flightReviewClub);
+  try {
+    await saveFrcLandingSettings(intended.flightReviewClub);
+  } catch {
+    writeLocalLpSnapshot(intended.flightReviewClub);
+  }
   await saveFrcTrainingSnapshot(intended.flightReviewClub.trainingCourses);
   void saveFrcLandingSnapshot(intended.flightReviewClub).catch(() => undefined);
   const compactRules = schoolRulesWithoutFrcTraining(rules);
@@ -197,6 +201,7 @@ async function saveSchoolRulesDirectFallback(rules: SchoolRulesInput): Promise<S
       lpCoverImageUrl: "",
       lpBenefitItems: normalized.flightReviewClub.lpBenefitItems.map((item) => ({ ...item, imageUrl: "" })),
       lpScreenshotItems: normalized.flightReviewClub.lpScreenshotItems.map((item) => ({ ...item, imageUrl: "" })),
+      trainingCourses: [],
     },
   };
   const current = await getSchoolRulesSettingsDoc();

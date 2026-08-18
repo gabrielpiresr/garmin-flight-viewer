@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent, type ReactNode } from "react";
-import type { FlightPlanWaypoint } from "../../types/flightPlanning";
+import type { AltitudeRefMode, FlightPlanWaypoint } from "../../types/flightPlanning";
 import {
   formatBearingDeg,
   formatCompactAviationCoord,
@@ -7,6 +7,8 @@ import {
   formatFuel,
 } from "../../lib/flightPlanningRoute";
 import type { LegCorridorInfo } from "../../lib/legCorridor";
+import { altitudeRefMode } from "../../lib/routePerformanceProfile";
+import type { RouteTableViewRow } from "../../lib/routeTableDisplay";
 
 type LegLike = {
   bearingDeg: number;
@@ -20,6 +22,7 @@ type LegLike = {
 
 type Props = {
   waypoints: FlightPlanWaypoint[];
+  tableViewRows: RouteTableViewRow[];
   legs: LegLike[];
   legCorridors: Array<LegCorridorInfo | null | undefined>;
   accumMode: "etapa" | "acumulado";
@@ -29,6 +32,7 @@ type Props = {
   onApplyBulkAltitude: () => void;
   onAccumModeChange: (mode: "etapa" | "acumulado") => void;
   onAltitudeChange: (index: number, value: string) => void;
+  onAltitudeRefChange: (index: number, mode: AltitudeRefMode) => void;
   onNoteChange: (index: number, value: string) => void;
   onRemove: (index: number) => void;
   onReorder: (from: number, to: number) => void;
@@ -37,6 +41,42 @@ type Props = {
   waypointDisplayName: (wp: FlightPlanWaypoint) => string;
   noteInput: (props: { value: string; onChange: (v: string) => void }) => ReactNode;
 };
+
+const ALTITUDE_REF_OPTIONS: Array<{ id: AltitudeRefMode; label: string; title: string; active: string }> = [
+  { id: "bs", label: "BS", title: "Before Segment: sobe/desce logo antes de começar o segmento", active: "bg-sky-500/20 text-sky-200" },
+  { id: "as", label: "AS", title: "After Segment: sobe/desce logo após iniciar o segmento", active: "bg-emerald-500/20 text-emerald-200" },
+  { id: "be", label: "BE", title: "Before End: atinge a altitude no ponto final do segmento", active: "bg-cyan-500/20 text-cyan-200" },
+  { id: "ae", label: "AE", title: "After End: sobe/desce logo após passar o ponto", active: "bg-amber-500/20 text-amber-200" },
+];
+
+export function AltitudeRefToggle({
+  value,
+  onChange,
+}: {
+  value: AltitudeRefMode;
+  onChange: (mode: AltitudeRefMode) => void;
+}) {
+  return (
+    <div
+      className="inline-flex overflow-hidden rounded border border-slate-700 bg-slate-950"
+      title="BS Before Segment · AS After Segment · BE Before End · AE After End"
+    >
+      {ALTITUDE_REF_OPTIONS.map((opt, i) => (
+        <button
+          key={opt.id}
+          type="button"
+          className={`${i === 0 ? "" : "border-l border-slate-700 "}px-1.5 py-0.5 text-[9px] font-bold transition ${
+            value === opt.id ? opt.active : "text-slate-500 hover:text-slate-300"
+          }`}
+          title={opt.title}
+          onClick={() => onChange(opt.id)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function IconGrip() {
   return (
@@ -48,8 +88,9 @@ function IconGrip() {
 
 export function PlanejamentoRouteCards({
   waypoints,
-  legs,
-  legCorridors,
+  tableViewRows,
+  legs: _legs,
+  legCorridors: _legCorridors,
   accumMode,
   fuelUnit,
   bulkAltitudeFt,
@@ -57,6 +98,7 @@ export function PlanejamentoRouteCards({
   onApplyBulkAltitude,
   onAccumModeChange,
   onAltitudeChange,
+  onAltitudeRefChange,
   onNoteChange,
   onRemove,
   onReorder,
@@ -117,24 +159,26 @@ export function PlanejamentoRouteCards({
   return (
     <div className="space-y-2 pb-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
-          {(
-            [
-              ["etapa", "Etapa"],
-              ["acumulado", "Acumulado"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => onAccumModeChange(id)}
-              className={`min-h-8 rounded-md px-2.5 text-[11px] font-semibold transition ${
-                accumMode === id ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
+            {(
+              [
+                ["etapa", "Etapa"],
+                ["acumulado", "Acumulado"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onAccumModeChange(id)}
+                className={`min-h-8 rounded-md px-2.5 text-[11px] font-semibold transition ${
+                  accumMode === id ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="relative">
           <button
@@ -208,9 +252,55 @@ export function PlanejamentoRouteCards({
         </p>
       ) : (
         <ul className="space-y-1.5">
-          {waypoints.map((wp, idx) => {
-            const leg = idx > 0 ? legs[idx - 1] : null;
-            const corridor = idx > 0 ? legCorridors[idx] : null;
+          {tableViewRows.map((row) => {
+            if (row.kind !== "waypoint") {
+              const dist = accumMode === "acumulado" ? row.cumulativeNm : row.distanceNm;
+              const ete = accumMode === "acumulado" ? row.cumulativeEteHours : row.eteHours;
+              const fuel = accumMode === "acumulado" ? row.cumulativeFuel : row.fuel;
+              const isToc = row.kind === "toc";
+              return (
+                <li
+                  key={row.key}
+                  className={`rounded-xl border px-3 py-2 ${
+                    isToc ? "border-violet-500/40 bg-violet-500/10" : "border-fuchsia-500/40 bg-fuchsia-500/10"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold ${isToc ? "text-violet-300" : "text-fuchsia-300"}`}>
+                      {row.label}
+                    </span>
+                    <p className={`min-w-0 truncate text-sm font-semibold ${isToc ? "text-violet-100" : "text-fuchsia-100"}`}>
+                      {isToc ? "Topo de subida" : "Topo de descida"}
+                    </p>
+                    <span className="ml-auto font-mono text-[11px] text-slate-200">{Math.round(row.altFt)} ft</span>
+                  </div>
+                  <div className="mt-1 grid grid-cols-4 gap-x-2 text-[11px]">
+                    <p>
+                      <span className="text-slate-500">Proa </span>
+                      <span className="font-semibold text-emerald-400">{row.bearing}</span>
+                    </p>
+                    <p>
+                      <span className="text-slate-500">Dist </span>
+                      <span className="font-mono text-slate-200">{dist.toFixed(1)}</span>
+                    </p>
+                    <p>
+                      <span className="text-slate-500">ETE </span>
+                      <span className="font-mono text-slate-200">{formatEteClock(ete)}</span>
+                    </p>
+                    <p>
+                      <span className="text-slate-500">Comb </span>
+                      <span className="font-mono text-slate-200">
+                        {fuel != null ? formatFuel(fuel, fuelUnit) : "—"}
+                      </span>
+                    </p>
+                  </div>
+                </li>
+              );
+            }
+            const wp = row.wp;
+            const idx = row.wpIndex;
+            const leg = row.leg;
+            const corridor = row.corridor;
             const dist =
               leg == null
                 ? null
@@ -231,7 +321,7 @@ export function PlanejamentoRouteCards({
                   : leg.fuelEstimate;
             return (
               <li
-                key={`card-${wp.lat}-${wp.lng}-${idx}`}
+                key={row.key}
                 ref={(el) => {
                   itemRefs.current[idx] = el;
                 }}
@@ -306,7 +396,7 @@ export function PlanejamentoRouteCards({
                       : ""}
                   </p>
                 ) : null}
-                <div className="mt-1.5 flex items-center gap-2 pl-9">
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-9">
                   <label className="flex w-[5.5rem] shrink-0 items-center gap-1">
                     <span className="text-[10px] uppercase text-slate-500">Alt</span>
                     <input
@@ -317,6 +407,9 @@ export function PlanejamentoRouteCards({
                       onChange={(e) => onAltitudeChange(idx, e.target.value)}
                     />
                   </label>
+                  {idx > 0 && idx < waypoints.length - 1 ? (
+                    <AltitudeRefToggle value={altitudeRefMode(wp)} onChange={(mode) => onAltitudeRefChange(idx, mode)} />
+                  ) : null}
                   <div className="min-w-0 flex-1">
                     {noteInput({
                       value: wp.note ?? "",

@@ -85,6 +85,20 @@ const DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE: WppTransactionalTemplateSettings =
   bodyParameters: ["student_name", "flight_date", "route", "status", "request_id"],
 };
 
+const DEFAULT_SOLO_FLIGHT_INSTRUCTOR_APPROVED_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "voo_solo_aprovado_instrutor_v2",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "flight_date", "route", "status", "request_id"],
+};
+
+const DEFAULT_SOLO_FLIGHT_INSTRUCTOR_REJECTED_TEMPLATE: WppTransactionalTemplateSettings = {
+  enabled: true,
+  templateName: "voo_solo_rejeitado_instrutor",
+  language: "pt_BR",
+  bodyParameters: ["student_name", "flight_date", "route", "rejection_reason", "request_id"],
+};
+
 const DEFAULT_AISWEB_ALERT_TEMPLATE: WppTransactionalTemplateSettings = {
   enabled: true,
   templateName: "alerta_aisweb",
@@ -660,6 +674,8 @@ export function WppSettingsPanel() {
   const [bookingRequestedTemplate, setBookingRequestedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_BOOKING_REQUESTED_TEMPLATE);
   const [soloFlightApprovalTemplate, setSoloFlightApprovalTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
   const [soloFlightAwarenessTemplate, setSoloFlightAwarenessTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+  const [soloFlightInstructorApprovedTemplate, setSoloFlightInstructorApprovedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_INSTRUCTOR_APPROVED_TEMPLATE);
+  const [soloFlightInstructorRejectedTemplate, setSoloFlightInstructorRejectedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_INSTRUCTOR_REJECTED_TEMPLATE);
   const [aiswebAlertTemplate, setAiswebAlertTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_AISWEB_ALERT_TEMPLATE);
   const [soloFlightCoordinatorPhone, setSoloFlightCoordinatorPhone] = useState("");
   const [soloFlightSgsoPhone, setSoloFlightSgsoPhone] = useState("");
@@ -707,6 +723,8 @@ export function WppSettingsPanel() {
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setSoloFlightApprovalTemplate(next.soloFlightApprovalTemplate ?? DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
       setSoloFlightAwarenessTemplate(next.soloFlightAwarenessTemplate ?? DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+      setSoloFlightInstructorApprovedTemplate(next.soloFlightInstructorApprovedTemplate ?? DEFAULT_SOLO_FLIGHT_INSTRUCTOR_APPROVED_TEMPLATE);
+      setSoloFlightInstructorRejectedTemplate(next.soloFlightInstructorRejectedTemplate ?? DEFAULT_SOLO_FLIGHT_INSTRUCTOR_REJECTED_TEMPLATE);
       setAiswebAlertTemplate(next.aiswebAlertTemplate ?? DEFAULT_AISWEB_ALERT_TEMPLATE);
       setSoloFlightCoordinatorPhone(next.soloFlightCoordinatorPhone ?? "");
       setSoloFlightSgsoPhone(next.soloFlightSgsoPhone ?? "");
@@ -746,6 +764,18 @@ export function WppSettingsPanel() {
           templateName: soloFlightAwarenessTemplate.templateName.trim().toLowerCase(),
           language: soloFlightAwarenessTemplate.language.trim() || "pt_BR",
           bodyParameters: soloFlightAwarenessTemplate.bodyParameters,
+        },
+        soloFlightInstructorApprovedTemplate: {
+          ...soloFlightInstructorApprovedTemplate,
+          templateName: soloFlightInstructorApprovedTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightInstructorApprovedTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightInstructorApprovedTemplate.bodyParameters,
+        },
+        soloFlightInstructorRejectedTemplate: {
+          ...soloFlightInstructorRejectedTemplate,
+          templateName: soloFlightInstructorRejectedTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightInstructorRejectedTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightInstructorRejectedTemplate.bodyParameters,
         },
         soloFlightCoordinatorPhone: soloFlightCoordinatorPhone.trim(),
         soloFlightSgsoPhone: soloFlightSgsoPhone.trim(),
@@ -876,6 +906,18 @@ export function WppSettingsPanel() {
           language: soloFlightAwarenessTemplate.language.trim() || "pt_BR",
           bodyParameters: soloFlightAwarenessTemplate.bodyParameters,
         },
+        soloFlightInstructorApprovedTemplate: {
+          ...soloFlightInstructorApprovedTemplate,
+          templateName: soloFlightInstructorApprovedTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightInstructorApprovedTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightInstructorApprovedTemplate.bodyParameters,
+        },
+        soloFlightInstructorRejectedTemplate: {
+          ...soloFlightInstructorRejectedTemplate,
+          templateName: soloFlightInstructorRejectedTemplate.templateName.trim().toLowerCase(),
+          language: soloFlightInstructorRejectedTemplate.language.trim() || "pt_BR",
+          bodyParameters: soloFlightInstructorRejectedTemplate.bodyParameters,
+        },
         aiswebAlertTemplate: {
           ...aiswebAlertTemplate,
           templateName: aiswebAlertTemplate.templateName.trim().toLowerCase(),
@@ -891,6 +933,10 @@ export function WppSettingsPanel() {
       setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setAiswebAlertTemplate(next.aiswebAlertTemplate ?? DEFAULT_AISWEB_ALERT_TEMPLATE);
+      setSoloFlightApprovalTemplate(next.soloFlightApprovalTemplate ?? DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
+      setSoloFlightAwarenessTemplate(next.soloFlightAwarenessTemplate ?? DEFAULT_SOLO_FLIGHT_AWARENESS_TEMPLATE);
+      setSoloFlightInstructorApprovedTemplate(next.soloFlightInstructorApprovedTemplate ?? DEFAULT_SOLO_FLIGHT_INSTRUCTOR_APPROVED_TEMPLATE);
+      setSoloFlightInstructorRejectedTemplate(next.soloFlightInstructorRejectedTemplate ?? DEFAULT_SOLO_FLIGHT_INSTRUCTOR_REJECTED_TEMPLATE);
       showToast({ variant: "success", message: "Templates de notificação salvos." });
     } catch (error) {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao salvar os templates." });
@@ -1272,7 +1318,7 @@ export function WppSettingsPanel() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-sm font-semibold text-slate-100">Voo solo</h3>
-              <p className="mt-1 text-xs text-slate-500">Templates utilitários pt_BR para aprovação com flags e ciência sem flags.</p>
+              <p className="mt-1 text-xs text-slate-500">Templates utilitários pt_BR para aprovação com flags, ciência sem flags e aviso ao instrutor após aprovação do admin.</p>
             </div>
             <button type="button" onClick={() => void createSoloTemplates()} disabled={ensuringSoloTemplates || !connected} className={secondaryButton}>
               {ensuringSoloTemplates ? "Criando..." : "Criar templates Meta"}
@@ -1314,6 +1360,36 @@ export function WppSettingsPanel() {
             </label>
             <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros ciência
               <input value={soloFlightAwarenessTemplate.bodyParameters.join(", ")} onChange={(e) => setSoloFlightAwarenessTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, route, status, request_id" className={inputClass} />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-2">
+              <input type="checkbox" checked={soloFlightInstructorApprovedTemplate.enabled} onChange={(e) => setSoloFlightInstructorApprovedTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar ao instrutor quando o admin aprovar um checklist com flags
+            </label>
+            <label className="text-xs font-medium text-slate-400">Template instrutor
+              <input value={soloFlightInstructorApprovedTemplate.templateName} onChange={(e) => setSoloFlightInstructorApprovedTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="voo_solo_aprovado_instrutor_v2" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={soloFlightInstructorApprovedTemplate.language} onChange={(e) => setSoloFlightInstructorApprovedTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros instrutor
+              <input value={soloFlightInstructorApprovedTemplate.bodyParameters.join(", ")} onChange={(e) => setSoloFlightInstructorApprovedTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, route, status, request_id" className={inputClass} />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-2">
+              <input type="checkbox" checked={soloFlightInstructorRejectedTemplate.enabled} onChange={(e) => setSoloFlightInstructorRejectedTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar ao instrutor quando o admin rejeitar o checklist
+            </label>
+            <label className="text-xs font-medium text-slate-400">Template rejeição
+              <input value={soloFlightInstructorRejectedTemplate.templateName} onChange={(e) => setSoloFlightInstructorRejectedTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="voo_solo_rejeitado_instrutor" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={soloFlightInstructorRejectedTemplate.language} onChange={(e) => setSoloFlightInstructorRejectedTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros rejeição
+              <input value={soloFlightInstructorRejectedTemplate.bodyParameters.join(", ")} onChange={(e) => setSoloFlightInstructorRejectedTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="student_name, flight_date, route, rejection_reason, request_id" className={inputClass} />
             </label>
           </div>
         </div>
