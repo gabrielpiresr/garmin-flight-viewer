@@ -575,6 +575,33 @@ export function PartnersMockup() {
   );
 }
 
+export function TrainingMockup() {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+        <div className="flex aspect-video items-center justify-center bg-gradient-to-br from-slate-800 to-slate-950">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-400 text-sm font-black text-slate-950">▶</span>
+        </div>
+        <div className="p-2">
+          <p className="text-[9px] font-bold uppercase tracking-wide text-sky-300">Vídeo</p>
+          <p className="mt-1 text-xs font-black text-white">Aulas em vídeo</p>
+          <p className="mt-1 text-[10px] text-slate-500">Cursos exclusivos FRC</p>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+        <div className="flex aspect-video items-center justify-center bg-gradient-to-br from-rose-950 to-slate-950">
+          <span className="rounded-md border border-red-400/40 bg-red-500/15 px-2 py-1 text-[10px] font-black uppercase text-red-200">PDF</span>
+        </div>
+        <div className="p-2">
+          <p className="text-[9px] font-bold uppercase tracking-wide text-red-300">E-book</p>
+          <p className="mt-1 text-xs font-black text-white">Materiais em PDF</p>
+          <p className="mt-1 text-[10px] text-slate-500">Para revisar em terra</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function HeroPortalMockup() {
   return (
     <DeviceFrame url="epeac.app / jornada / NAV 12">

@@ -245,6 +245,7 @@ function formatWppMetarHelpMessage(nickname) {
     "Depois você também pode pedir:",
     "• *Notam SBSP* — últimos NOTAMs",
     "• *Detalhes SBSP* — operação, frequências e pistas",
+    "• *Rota SBJD SBLO* — traçar rota via REAs (mapa, tabela, perfil e campos FPL)",
     "• *Acompanhar SBSP* — avisar cada METAR/TAF novo por 2, 4 ou 8 horas (pode ativar vários aeródromos)",
     "• *Parar acompanhamento* — encerrar o(s) listener(s)",
   ].join("\n");

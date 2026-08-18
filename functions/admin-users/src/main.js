@@ -20,6 +20,7 @@ const wppMetar = require("./wppMetar");
 const wppFlightRadar = require("./wppFlightRadar");
 const wppFlightRadarEnrich = require("./wppFlightRadarEnrich");
 const wppBooking = require("./wppBooking");
+const wppRoute = require("./wppRoute");
 const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require("./rootAccessPolicy");
 const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
 const { PROVA_ACTIONS, createProvaService } = require("./provas");
@@ -15759,13 +15760,14 @@ function defaultEmailBrandSettings() {
   };
 }
 
-const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "marketplace", "kit"];
+const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "treinamento", "marketplace", "kit"];
 
 const DEFAULT_LP_SECTIONS = [
   { id: "gravacao", navLabel: "Gravação", eyebrow: "Gravação dos voos", title: "Fonia, telemetria, figurinhas, link público e fotos.", copy: "Cada voo vira um pacote completo: áudio, dados, cards para WhatsApp, página para compartilhar e o álbum de fotos." },
   { id: "agenda", navLabel: "Agenda", eyebrow: "Agendamento", title: "Reserve com 30 dias de antecedência.", copy: "Integrantes do FRC abrem a agenda além da janela dos demais alunos e chegam mais cedo na escala." },
   { id: "premium", navLabel: "Premium", eyebrow: "Plataforma premium", title: "Recursos exclusivos e 1 webinar por mês.", copy: "Além das funcionalidades premium no portal, o clube inclui um webinar exclusivo todo mês." },
   { id: "parceiros", navLabel: "Parceiros", eyebrow: "Parceiros", title: "Acesso ao Clube 360 e ao NexAtlas.", copy: "Parcerias da escola liberadas para quem assina o Flight Review Club." },
+  { id: "treinamento", navLabel: "Treinamento", eyebrow: "Treinamento FRC", title: "Cursos, aulas em vídeo e e-books exclusivos.", copy: "Integrantes do clube acessam o treinamento FRC com aulas em vídeo e materiais em PDF." },
   { id: "marketplace", navLabel: "Loja", eyebrow: "Marketplace", title: "Desconto exclusivo na loja da escola.", copy: "O preço FRC aparece no card do produto para integrantes do clube." },
   { id: "kit", navLabel: "Kit", eyebrow: "Kit da escola", title: "Camisa e crachá exclusivos.", copy: "Na primeira assinatura, a escola entrega a camisa e o crachá do Flight Review Club." },
   { id: "assinar", navLabel: "Assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago." },
@@ -15782,17 +15784,19 @@ const DEFAULT_LP_SCREENSHOT_ITEMS = [
   { id: "journey", sectionId: "premium", title: "Portal premium", description: "Funcionalidades exclusivas da plataforma.", imageUrl: "", frameUrl: "epeac.app / jornada", mockupId: "journey" },
   { id: "webinar", sectionId: "premium", title: "Webinar", description: "Encontro exclusivo todo mês.", imageUrl: "", frameUrl: "epeac.app / webinar", mockupId: "webinar" },
   { id: "partners", sectionId: "parceiros", title: "Parceiros", description: "Clube 360 e NexAtlas.", imageUrl: "", frameUrl: "epeac.app / parceiros", mockupId: "partners" },
+  { id: "training", sectionId: "treinamento", title: "Treinamento", description: "Cursos, vídeos e e-books.", imageUrl: "", frameUrl: "epeac.app / treinamento-frc", mockupId: "training" },
   { id: "marketplace", sectionId: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "", frameUrl: "epeac.app / marketplace", mockupId: "marketplace" },
   { id: "kit", sectionId: "kit", title: "Camisa e crachá", description: "Kit da escola na primeira assinatura.", imageUrl: "", frameUrl: "epeac.app / kit", mockupId: "kit" },
 ];
 
 const LEGACY_LP_SCREENSHOT_IDS = ["telemetry", "share", "planning", "journey", "album", "marketplace"];
-const LP_MOCKUP_IDS = ["telemetry", "share", "review", "planning", "schedule", "journey", "stickers", "album", "marketplace", "webinar", "partners", "kit"];
+const LP_MOCKUP_IDS = ["telemetry", "share", "review", "planning", "schedule", "journey", "stickers", "album", "marketplace", "webinar", "partners", "kit", "training"];
 
 function classifyLpBenefitSection(text) {
   const value = String(text || "").toLowerCase();
   if (/(agenda|anteced|planej)/.test(value)) return "agenda";
   if (/(nexatlas|clube 360)/.test(value)) return "parceiros";
+  if (/(treinamento frc|e-book|ebook|aula em v[ií]deo)/.test(value)) return "treinamento";
   if (/(marketplace|desconto)/.test(value)) return "marketplace";
   if (/(camiseta|camisa|crach)/.test(value)) return "kit";
   if (/(webinar|ead|curso|jornada|premium|funcionalidade)/.test(value)) return "premium";
@@ -15826,7 +15830,19 @@ function sanitizeLpScreenshotItems(raw, defaults = DEFAULT_LP_SCREENSHOT_ITEMS) 
       mockupId: LP_MOCKUP_IDS.includes(mockupId) ? mockupId : (slot?.mockupId || ""),
     });
   });
-  return result.slice(0, 30);
+  return ensureLpScreenshotCoverage(result, defaults).slice(0, 30);
+}
+
+function ensureLpScreenshotCoverage(items, defaults = DEFAULT_LP_SCREENSHOT_ITEMS) {
+  const presentSections = new Set(items.map((item) => item.sectionId));
+  const extras = defaults.filter((slot) => !presentSections.has(slot.sectionId));
+  return extras.length === 0 ? items : [...items, ...extras.map((item) => ({ ...item }))];
+}
+
+function ensureLpBenefitCoverage(items, defaults = []) {
+  if (items.some((item) => item.sectionId === "treinamento")) return items;
+  const extras = defaults.filter((item) => item.sectionId === "treinamento");
+  return extras.length === 0 ? items : [...items, ...extras.map((item) => ({ ...item }))].slice(0, 40);
 }
 
 function sanitizeLpSections(raw, defaults = DEFAULT_LP_SECTIONS) {
@@ -15954,6 +15970,8 @@ function defaultSchoolRules() {
         { sectionId: "premium", text: "1 webinar exclusivo por mês", imageUrl: "" },
         { sectionId: "parceiros", text: "Acesso ao Clube 360", imageUrl: "" },
         { sectionId: "parceiros", text: "Acesso ao NexAtlas", imageUrl: "" },
+        { sectionId: "treinamento", text: "Cursos exclusivos do Flight Review Club", imageUrl: "" },
+        { sectionId: "treinamento", text: "Aulas em vídeo e e-books em PDF", imageUrl: "" },
         { sectionId: "marketplace", text: "Desconto no marketplace", imageUrl: "" },
         { sectionId: "kit", text: "Camisa da escola", imageUrl: "" },
         { sectionId: "kit", text: "Crachá exclusivo", imageUrl: "" },
@@ -16407,20 +16425,23 @@ function publicSchoolRules(settings, updatedAt) {
       lpValueProps: Array.isArray(settings?.flightReviewClub?.lpValueProps)
         ? settings.flightReviewClub.lpValueProps.map((b) => cleanString(b).slice(0, 500)).filter(Boolean).slice(0, 12)
         : [],
-      lpBenefitItems: Array.isArray(settings?.flightReviewClub?.lpBenefitItems)
-        ? settings.flightReviewClub.lpBenefitItems
-            .map((item) => {
-              const text = cleanString(item?.text).slice(0, 500);
-              const sectionId = cleanString(item?.sectionId);
-              return {
-                sectionId: LP_FEATURE_SECTION_IDS.includes(sectionId) ? sectionId : classifyLpBenefitSection(text),
-                text,
-                imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
-              };
-            })
-            .filter((item) => item.text)
-            .slice(0, 40)
-        : defaults.flightReviewClub.lpBenefitItems,
+      lpBenefitItems: ensureLpBenefitCoverage(
+        Array.isArray(settings?.flightReviewClub?.lpBenefitItems)
+          ? settings.flightReviewClub.lpBenefitItems
+              .map((item) => {
+                const text = cleanString(item?.text).slice(0, 500);
+                const sectionId = cleanString(item?.sectionId);
+                return {
+                  sectionId: LP_FEATURE_SECTION_IDS.includes(sectionId) ? sectionId : classifyLpBenefitSection(text),
+                  text,
+                  imageUrl: cleanString(item?.imageUrl).slice(0, 2048),
+                };
+              })
+              .filter((item) => item.text)
+              .slice(0, 40)
+          : defaults.flightReviewClub.lpBenefitItems.map((item) => ({ ...item })),
+        defaults.flightReviewClub.lpBenefitItems,
+      ),
       lpScreenshotItems: sanitizeLpScreenshotItems(settings?.flightReviewClub?.lpScreenshotItems, defaults.flightReviewClub.lpScreenshotItems),
       lpSections: sanitizeLpSections(settings?.flightReviewClub?.lpSections, defaults.flightReviewClub.lpSections),
       checklistTemplate: Array.isArray(settings?.flightReviewClub?.checklistTemplate)
@@ -21254,6 +21275,37 @@ async function handleWppIncomingWebhook(payload, log) {
         continue;
       }
 
+      const routeCommand = wppRoute.parseWppRouteCommand(incoming.text, incoming.responseId);
+      if (routeCommand) {
+        const profile = await findWppStudentByPhone(incoming.lookupFrom || incoming.from).catch(() => null);
+        const status = await wppRoute.handleWppRouteCommand(
+          {
+            settings,
+            incoming,
+            nickname: wppProfileDisplayNickname(profile),
+            aisweb: aiswebService,
+            sendText: sendWppTextMessage,
+            sendImage: sendWppImageMessage,
+            uploadPngBuffer: uploadWppPngBuffer,
+            renderSvgToPng: renderWppSvgToPng,
+            getSharp: getSharpModule,
+            appUrl: APP_URL,
+            listAerodromes: loadRadarWatchAerodromes,
+            fetchRouteElevation: routeElevationService.fetchRouteElevation,
+          },
+          routeCommand,
+        );
+        replied += 1;
+        actionResults.push({
+          action: `send_route_${routeCommand.kind || "route"}`,
+          status,
+          matchedRuleId: null,
+          origin: routeCommand.origin || null,
+          destination: routeCommand.destination || null,
+        });
+        continue;
+      }
+
       const aiswebCommand = wppMetar.parseWppAiswebCommand(incoming.text, incoming.responseId);
       if (aiswebCommand) {
         let status = "skipped";
@@ -25626,7 +25678,7 @@ function stableBriefingSourceId(seed) {
 
 function flightBriefingRouteHash(input = {}) {
   const basis = JSON.stringify({
-    pipeline: "briefing-ai-v2",
+    pipeline: "briefing-ai-v3",
     origin: normalizeBriefingIcao(input.origin),
     destination: normalizeBriefingIcao(input.destination),
     alternates: Array.isArray(input.alternates) ? input.alternates.map(normalizeBriefingIcao).filter(Boolean).sort() : [],
@@ -25683,6 +25735,7 @@ function extractAllBriefingUrls(...values) {
 function authUrlPriority(url = "") {
   const value = String(url || "").toLowerCase();
   if (/forms\.office\.com/.test(value)) return 0;
+  if (/agendamentopouso|aenabrasil/.test(value)) return 0;
   if (/ga\.ccraeroportos|webapp/.test(value)) return 1;
   if (/ccraeroportos/.test(value)) return 2;
   if (/redevoa/.test(value) && /form|agend|\/r\//.test(value)) return 3;
@@ -25699,7 +25752,7 @@ function extractPreferredAuthUrl(...values) {
 function inferBriefingContactRelevance(label = "", value = "", type = "", contextText = "") {
   const text = `${label} ${value} ${contextText}`.toLowerCase();
   if (/administra|infraero|torre|ais\b|afis|centro\s*de\s*opera/.test(text) && !isFuelSupplierLabel(label)) {
-    return "auxiliary";
+    if (!/agendamentopouso|aena|autoriza|ppr|slot|\bauth\b|concession|webapp/.test(text)) return "auxiliary";
   }
   if (
     /airbp|air\s*bp|helpjet|waas|w\.a\.a\.s|fbo|hangar|combust|abastec|avgas|jet\s*a|aeroclube|escola de avia|operador|rede\s*voa|slot|ppr|ground\s*handling|rampa|petrobras|marlim|shell|jet\s*fly|br\s*aviation|raizen|ceu\s*azul|gm\s*aviation/.test(
@@ -26003,7 +26056,9 @@ function extractOfficialRotaerProviders(rotaer, sourceId) {
     ? "Rede VOA"
     : /ccr|webapp|ccraeroportos|concession/i.test(authText)
       ? "Concessionária"
-      : "Autorização ROTAER";
+      : /aena|agendamentopouso|administra/i.test(authText)
+        ? "Administração aeroportuária"
+        : "Autorização ROTAER";
   for (const phone of extractPhones(authText)) {
     pushUnique("auth", { type: "phone", label: authLabel, value: phone, sourceIds: [sourceId], relevance: "relevant" });
   }
@@ -26166,6 +26221,11 @@ function authTaskTitleForText(icao, authText = "") {
       ? `Verificar autorização da concessionária noturna - ${icao}`
       : `Verificar autorização da concessionária - ${icao}`;
   }
+  if (/aena|agendamentopouso|administra[cç][aã]o aeroportu[aá]ria/.test(text)) {
+    return night
+      ? `Verificar agendamento da administração noturno - ${icao}`
+      : `Verificar agendamento da administração - ${icao}`;
+  }
   if (/\bppr\b|slot/.test(text)) {
     return night
       ? `Verificar autorização prévia noturna (PPR/slot) - ${icao}`
@@ -26190,6 +26250,13 @@ function buildAuthTaskDescription(authText = "", authUrl = "") {
       420,
     );
   }
+  if (/aena|agendamentopouso|administra[cç][aã]o aeroportu[aá]ria/i.test(text)) {
+    const link = authUrl || extractPreferredAuthUrl(text);
+    return compactBriefingText(
+      `Agendar pátio/pouso da aviação geral com a administração aeroportuária${link ? ` (${link})` : ""} na antecedência exigida no ROTAER. Dúvidas pelos telefones do COMPL/RMK.`,
+      420,
+    );
+  }
   return compactBriefingText(text ? `Como proceder: ${text}` : "Verificar autorização prévia/PPR/slot e seguir o formulário/link da concessionária.", 520);
 }
 
@@ -26199,7 +26266,7 @@ function isPreservedStandardTaskTitle(title = "") {
     /verifica(?:r)?(?:\s+os)?\s+notams?\b/.test(t) ||
     /verifica(?:r)?\s+abastecimento\b/.test(t) ||
     /verifica(?:r)?\s+hangaragem\b/.test(t) ||
-    /verifica(?:r)?\s+(autoriza(?:ção|cao)?(?:\s+pr[eé]via)?(?:\s+noturna)?(?:\s+\([^)]+\))?(?:\s+da\s+concession[aá]ria)?|agendamento\s+rede\s+voa)/.test(
+    /verifica(?:r)?\s+(autoriza(?:ção|cao)?(?:\s+pr[eé]via)?(?:\s+noturna)?(?:\s+\([^)]+\))?(?:\s+da\s+concession[aá]ria)?|agendamento\s+(?:rede\s+voa|da\s+administra))/.test(
       t,
     )
   );
@@ -26384,21 +26451,32 @@ function isHangarBookingOperatorText(text = "") {
 
 function isOperationalAuthText(text = "") {
   const value = String(text || "").toLowerCase();
-  const opsAuth =
-    /slot|\bppr\b|autoriza|formul|rede\s*voa|concession|webapp|ccr(?:aeroportos)?|\bauth\b|compuls|agendamento|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|webapp-?\s*ccr|ga\.ccraeroportos|forms\.office/.test(
-      value,
-    );
-  if (!opsAuth) return false;
-  // Patio/pernoite via FBO (paxaeroportos/WAAS) is hangaragem, not landing AUTH —
-  // unless the same text also has concessionária / Rede VOA / PPR / WebApp.
   if (
     isHangarBookingOperatorText(value) &&
-    !/rede\s*voa|forms\.office|ccr|webapp|\bppr\b|slot|concession|\bauth\b/.test(value) &&
+    !/rede\s*voa|forms\.office|ccr|webapp|\bppr\b|slot|concession|\bauth\b|aena|agendamentopouso/.test(value) &&
     !/pouso|decolagem|aterriss|landing/.test(value)
   ) {
     return false;
   }
-  return true;
+  if (
+    /slot|\bppr\b|autoriza|rede\s*voa|concession|webapp|ccr(?:aeroportos)?|\bauth\b|compuls|solicita(?:ção|cao)\s+pr[eé]via|permiss[aã]o\s+pr[eé]via|webapp-?\s*ccr|ga\.ccraeroportos|forms\.office/.test(
+      value,
+    )
+  ) {
+    return true;
+  }
+  if (/agendamentopouso|aenabrasil|agendamento.?pouso/.test(value)) return true;
+  if (/\bprkg\b/.test(value) && /agend|autoriza|administra|anteced|link|https?:/.test(value)) return true;
+  if (
+    /agendamento/.test(value) &&
+    /administra|concession|aeroportu[aá]ri|somente mediante|anteced[eê]ncia|https?:|formul/.test(value)
+  ) {
+    if (/abastec|combust|avgas|jet\s*a|fuel/.test(value) && !/\bprkg\b|p[aá]tio|pouso|administra|concession/.test(value)) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function isHangarServiceText(text = "") {
@@ -26418,10 +26496,10 @@ function briefingTaskCategory(task) {
   if (/verifica(?:r)?(?:\s+os)?\s+notams?\b/.test(title) || /verifica(?:r)?\s+notam\b/.test(title)) return "";
   if (/verifica(?:r)?\s+abastecimento\b/.test(title)) return "fuel";
   if (/verifica(?:r)?\s+hangaragem\b/.test(title)) return "hangarage";
-  if (/verifica(?:r)?\s+(autoriza|agendamento\s+rede\s+voa)/.test(title)) return "auth";
+  if (/verifica(?:r)?\s+(autoriza|agendamento\s+(?:rede\s+voa|da\s+administra))/.test(title)) return "auth";
   const text = `${task?.title || ""} ${task?.description || ""} ${task?.url || ""}`.toLowerCase();
   if (/notam/.test(text)) return "";
-  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|webapp-?\s*ccr/.test(text)) return "auth";
+  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|webapp-?\s*ccr|agendamentopouso|aenabrasil/.test(text)) return "auth";
   if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
   if (/hangar|pernoite|estadia|fbo|estacionamento|paxaeroportos/.test(text)) return "hangarage";
   if (/p[aá]tio/.test(text) && !isOperationalAuthText(text)) return "hangarage";
@@ -26482,10 +26560,10 @@ function objectiveBriefingTaskTitle(task = {}) {
   }
   if (/verifica(?:r)?\s+abastecimento\b/.test(text)) return standardFuelTaskTitle(icao);
   if (/verifica(?:r)?\s+hangaragem\b/.test(text)) return standardHangarTaskTitle(icao);
-  if (/verifica(?:r)?\s+(autoriza(?:ção|cao)?|agendamento\s+rede\s+voa)/.test(text)) {
+  if (/verifica(?:r)?\s+(autoriza(?:ção|cao)?|agendamento\s+(?:rede\s+voa|da\s+administra))/.test(text)) {
     return isPreservedStandardTaskTitle(title) ? title : authTaskTitleForText(icao, text);
   }
-  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office/i.test(text)) {
+  if (isBriefingAuthText(text) || /ccraeroportos|forms\.office|agendamentopouso|aenabrasil/i.test(text)) {
     return authTaskTitleForText(icao, text);
   }
   if (/notam/.test(text)) return standardNotamTaskTitle(icao);
@@ -26656,7 +26734,7 @@ function fallbackFlightBriefingAiReport(actorUserId, input = {}, reason = "") {
     const score = (task) => {
       const text = `${task.title} ${task.description}`.toLowerCase();
       if (/notam/.test(text)) return 0;
-      if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa/.test(text)) return 1;
+      if (/autoriza|slot|ppr|formul|agendamento\s+(?:rede\s+voa|da\s+administra)|aena|agendamentopouso|\bprkg\b/.test(text)) return 1;
       if (/combust|abastec/.test(text)) return 2;
       if (/hangar|pernoite/.test(text)) return 3;
       return 4;
@@ -27144,7 +27222,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     }
   }
 
-  // Ensure standard checklist tasks: NOTAM (already), fuel always, hangar dest/alt. Auth is decided by the AISWEB auth pass.
+  // Ensure standard checklist tasks: NOTAM (already), fuel always, hangar dest/alt. Auth from AISWEB even if the AI pass omitted it.
   for (const airport of Array.isArray(input.airports) ? input.airports : []) {
     const icao = normalizeBriefingIcao(airport?.icao);
     const role = airport?.role === "destino" || airport?.role === "alternativo" ? airport.role : "origem";
@@ -27181,7 +27259,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
           keys.add(key);
           existing.providers.push({ ...provider, relevance: provider.relevance || "relevant" });
         }
-        if (url && !existing.url) {
+        if (url && (!existing.url || authUrlPriority(url) < authUrlPriority(existing.url))) {
           existing.url = url;
           existing.action = "url";
         }
@@ -27242,6 +27320,26 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
         dueHint: "Se houver pernoite ou permanência",
       });
     }
+
+    // Auth: AISWEB is the floor. The AI pass may refine title/url, but cannot omit a clear ROTAER requirement.
+    if (facts.needsAuth && facts.authText) {
+      const authUrl = extractPreferredAuthUrl(
+        facts.authText,
+        ...(facts.byCategory.auth || []).filter((item) => item.type === "website").map((item) => item.value),
+      );
+      upsertTask({
+        category: "auth",
+        title: authTaskTitleForText(icao, facts.authText),
+        description: buildAuthTaskDescription(facts.authText, authUrl),
+        providers: facts.byCategory.auth || [],
+        priority: "high",
+        dueHint: isNightOnlyAuthText(facts.authText)
+          ? "Somente se a operação for noturna / fora do horário"
+          : "Com a antecedência exigida no ROTAER",
+        action: authUrl ? "url" : "manual",
+        url: authUrl,
+      });
+    }
   }
 
   // Fold leftover "link operacional" / auth-URL extras into the single auth task per ICAO.
@@ -27252,12 +27350,12 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     if (!icao || category === "auth" || category === "fuel" || category === "hangarage") continue;
     if (/notam/i.test(task.title || "")) continue;
     const blob = `${task.title} ${task.description} ${task.url || ""}`;
-    if (!isBriefingAuthText(blob) && !/ccraeroportos|forms\.office|webapp/i.test(blob)) continue;
+    if (!isBriefingAuthText(blob) && !/ccraeroportos|forms\.office|webapp|agendamentopouso|aenabrasil/i.test(blob)) continue;
     const authTask = mergedTasks.find((item) => normalizeBriefingIcao(item.airportIcao) === icao && taskCategory(item) === "auth");
     const url = task.url || extractPreferredAuthUrl(task.description, task.title, task.url);
     const authOnlyProviders = filterProvidersForServiceCategory(task.providers || [], "auth", officialByIcao.get(icao)?.byCategory?.auth || []);
     if (authTask) {
-      if (url && !authTask.url) {
+      if (url && (!authTask.url || authUrlPriority(url) < authUrlPriority(authTask.url))) {
         authTask.url = url;
         authTask.action = "url";
       }
@@ -27474,7 +27572,7 @@ function normalizeAiBriefingReport(raw, input = {}, fallbackReason = "") {
     const score = (task) => {
       const text = `${task.title} ${task.description}`.toLowerCase();
       if (/notam/.test(text)) return 0;
-      if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa/.test(text)) return 1;
+      if (/autoriza|slot|ppr|formul|agendamento\s+(?:rede\s+voa|da\s+administra)|aena|agendamentopouso|\bprkg\b/.test(text)) return 1;
       if (/combust|abastec/.test(text)) return 2;
       if (/hangar|pernoite/.test(text)) return 3;
       return 4;
@@ -27593,10 +27691,36 @@ function buildAuthTaskFromDecision(icao, decision, input, generatedAt) {
 function applyAuthPassToReport(report, authPass, input) {
   const generatedAt = briefingNowIso();
   const tasks = [...(report.tasks || [])].filter((task) => briefingTaskCategory(task) !== "auth");
+  const decisions = new Map();
   for (const decision of Array.isArray(authPass?.airports) ? authPass.airports : []) {
     const icao = normalizeBriefingIcao(decision?.icao);
-    if (!icao || !decision?.needsAuth) continue;
-    tasks.push(buildAuthTaskFromDecision(icao, decision, input, generatedAt));
+    if (icao) decisions.set(icao, decision);
+  }
+  const seen = new Set();
+  for (const airport of Array.isArray(input.airports) ? input.airports : []) {
+    const icao = normalizeBriefingIcao(airport?.icao);
+    if (!icao || seen.has(icao)) continue;
+    seen.add(icao);
+    const decision = decisions.get(icao) || {};
+    const official = extractOfficialRotaerProviders(airport?.bundle?.rotaer || null, "");
+    const aiswebWants = Boolean(official.needsAuth && official.authText);
+    const aiWants = Boolean(decision.needsAuth);
+    if (!aiswebWants && !aiWants) continue;
+    tasks.push(
+      buildAuthTaskFromDecision(
+        icao,
+        {
+          icao,
+          needsAuth: true,
+          nightOnly: typeof decision.nightOnly === "boolean" ? decision.nightOnly : isNightOnlyAuthText(official.authText),
+          title: aiWants ? cleanString(decision.title) : "",
+          description: aiWants ? cleanString(decision.description) : "",
+          url: aiWants ? cleanString(decision.url) : "",
+        },
+        input,
+        generatedAt,
+      ),
+    );
   }
   return { ...report, tasks, warnings: [], summary: "" };
 }
@@ -27702,18 +27826,25 @@ async function callOpenAiBriefingAuthPass(input = {}) {
   const model = cleanString(process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
   const reasoningEffort = cleanString(process.env.OPENAI_BRIEFING_REASONING) || "low";
   const airportBrief = (Array.isArray(input.airports) ? input.airports : []).map((airport) => {
-    const brief = compactAirportBriefForAi(airport);
+    const rotaer = airport?.bundle?.rotaer || {};
     return {
-      role: brief.role,
-      icao: brief.icao,
-      name: brief.name,
-      typeOpr: brief.typeOpr,
-      typeUtil: brief.typeUtil,
-      fuel: brief.fuel,
-      workingHours: brief.workingHours,
-      sun: brief.sun,
-      remarks: brief.remarks,
-      complements: brief.complements,
+      role: airport.role,
+      icao: airport.icao,
+      name: rotaer.name || null,
+      typeOpr: rotaer.typeOpr || null,
+      typeUtil: rotaer.typeUtil || null,
+      fuel: rotaer.fuel || null,
+      workingHours: rotaer.workingHours || null,
+      sun: airport?.bundle?.sun || null,
+      remarks: (rotaer.remarks || []).map((item) => ({
+        code: item?.code || null,
+        text: compactBriefingText(item?.text, 700),
+      })),
+      complements: (rotaer.complements || []).map((item) => ({
+        code: item?.code || null,
+        index: item?.index || null,
+        text: compactBriefingText(item?.text, 700),
+      })),
     };
   });
   const schema = {
@@ -32712,6 +32843,16 @@ module.exports = async ({ req, res, log, error }) => {
       }
       const airport = await aiswebService.fetchAirportBundle(icaoCode);
       return jsonResponse(res, 200, { airport });
+    }
+
+    if (action === "fetchAiswebNotams") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);
+      if (!icaoCode || icaoCode.length !== 4) {
+        throw Object.assign(new Error("Informe um código ICAO válido (4 caracteres)."), { status: 400 });
+      }
+      const notams = await aiswebService.fetchNotams(icaoCode);
+      return jsonResponse(res, 200, { notams });
     }
 
     if (action === "searchAiswebAerodromes") {

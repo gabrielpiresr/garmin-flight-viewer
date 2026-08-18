@@ -191,6 +191,45 @@ export function isDefaultOnlyBriefingReport(report: FlightBriefingAiReport | nul
   return report.model === "defaults" || report.status === "failed";
 }
 
+export const PILOT_CREATED_TASK_SOURCE = "pilot_note";
+
+export function isPilotCreatedTask(task: Pick<FlightBriefingAiTask, "id" | "sourceIds">): boolean {
+  return task.id.startsWith("manual_") || (task.sourceIds || []).includes(PILOT_CREATED_TASK_SOURCE);
+}
+
+export function createPilotBriefingTask(input: {
+  title: string;
+  airportIcao?: string;
+  description?: string;
+}): FlightBriefingAiTask {
+  const now = nowIso();
+  const icao = input.airportIcao && input.airportIcao !== "ROTA" ? normalizeIcao(input.airportIcao) : "";
+  return {
+    id: `manual_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    ...(icao ? { airportIcao: icao } : {}),
+    title: input.title.trim().slice(0, 200),
+    description: (input.description || "").trim().slice(0, 2000),
+    action: "manual",
+    status: "open",
+    priority: "medium",
+    sourceIds: [PILOT_CREATED_TASK_SOURCE],
+    pilotNote: "",
+    updatedAt: now,
+  };
+}
+
+export function mergePilotCreatedTasks(
+  prev: FlightBriefingAiReport | null | undefined,
+  next: FlightBriefingAiReport,
+): FlightBriefingAiReport {
+  const extras = (prev?.tasks || []).filter(isPilotCreatedTask);
+  if (!extras.length) return next;
+  const ids = new Set(next.tasks.map((task) => task.id));
+  const missing = extras.filter((task) => !ids.has(task.id));
+  if (!missing.length) return next;
+  return { ...next, tasks: [...next.tasks, ...missing] };
+}
+
 export function buildDefaultFlightBriefingReport(input: {
   origin: string;
   destination: string;
@@ -258,7 +297,7 @@ export function buildDefaultFlightBriefingReport(input: {
   const rank = (task: FlightBriefingAiTask) => {
     const text = `${task.title} ${task.description}`.toLowerCase();
     if (/notam/.test(text)) return 0;
-    if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa/.test(text)) return 1;
+    if (/autoriza|slot|ppr|formul|agendamento\s+(?:rede\s+voa|da\s+administra)/.test(text)) return 1;
     if (/combust|abastec/.test(text)) return 2;
     if (/hangar|pernoite/.test(text)) return 3;
     return 4;

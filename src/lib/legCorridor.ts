@@ -4,6 +4,7 @@ import {
   endpointB,
   numOrNull,
   resolveReaAltitudes,
+  resolveReaAltitudesDirected,
   type ReaRouteFeature,
 } from "./reaRoutesDb";
 import { asGeoPoly, destinationPoint, type GeoPoly } from "./geoClip";
@@ -117,7 +118,10 @@ export function matchReaCorridorForLeg(
     score += insideCount * 10;
     if (fromNames.has(normName(name)) || toNames.has(normName(name))) score += 5;
 
-    const { max, min } = resolveReaAltitudes(props);
+    const aToB = Boolean(aName && fromNames.has(aName) && toNames.has(bName));
+    const { max, min } = bothEnds
+      ? resolveReaAltitudesDirected(props, aToB ? "ab" : "ba")
+      : resolveReaAltitudes(props);
     const aPt =
       a.lat != null && a.lon != null ? { lat: a.lat, lng: a.lon } : null;
     const bPt =

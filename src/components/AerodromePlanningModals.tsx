@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { lookupAiswebIcao } from "../lib/aiswebDb";
+import { aiswebAerodromeUrl } from "../lib/aiswebLinks";
 import type { AiswebAirportBundle, AiswebRotaer, AiswebSunTimes } from "../types/aisweb";
 import { AiswebAirportDetailTabs, AiswebAirportTopCards } from "./AiswebAirportDetails";
 import { AiswebMeteorologyPanel } from "./AiswebMeteorologyPanel";
@@ -179,6 +180,16 @@ export function AerodromeMapPopupContent({
         >
           Detalhes
         </button>
+        {aiswebAerodromeUrl(icao) ? (
+          <a
+            href={aiswebAerodromeUrl(icao)!}
+            target="_blank"
+            rel="noreferrer"
+            className="min-w-0 flex-1 rounded bg-cyan-700 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-white hover:bg-cyan-600"
+          >
+            AISWEB
+          </a>
+        ) : null}
       </div>
     </div>
   );
@@ -204,13 +215,25 @@ export function AerodromeDetailsSidePanel({ bundle, open, onClose }: SideProps) 
             <p className="font-mono text-sm font-bold tracking-widest text-cyan-300">{bundle.icao}</p>
             <p className="text-[11px] text-slate-400">{bundle.rotaer?.name || "Detalhes AISWEB"}</p>
           </div>
-          <button
-            type="button"
-            className="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-            onClick={onClose}
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-1">
+            {aiswebAerodromeUrl(bundle.icao) ? (
+              <a
+                href={aiswebAerodromeUrl(bundle.icao)!}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20"
+              >
+                AISWEB
+              </a>
+            ) : null}
+            <button
+              type="button"
+              className="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+              onClick={onClose}
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <div className="@container flex-1 overflow-y-auto p-3">
           <div className="mb-3">

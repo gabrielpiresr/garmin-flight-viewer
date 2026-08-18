@@ -10,7 +10,7 @@ import {
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
-export const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "marketplace", "kit"] as const;
+export const LP_FEATURE_SECTION_IDS = ["gravacao", "agenda", "premium", "parceiros", "treinamento", "marketplace", "kit"] as const;
 
 export type FlightReviewClubFeatureSectionId = (typeof LP_FEATURE_SECTION_IDS)[number];
 
@@ -36,7 +36,8 @@ export type LpMockupId =
   | "marketplace"
   | "webinar"
   | "partners"
-  | "kit";
+  | "kit"
+  | "training";
 
 export type LpScreenshotSlotId = LpMockupId;
 
@@ -364,6 +365,7 @@ export const DEFAULT_LP_SECTIONS: FlightReviewClubLpSection[] = [
   { id: "agenda", navLabel: "Agenda", eyebrow: "Agendamento", title: "Reserve com 30 dias de antecedência.", copy: "Integrantes do FRC abrem a agenda além da janela dos demais alunos e chegam mais cedo na escala." },
   { id: "premium", navLabel: "Premium", eyebrow: "Plataforma premium", title: "Recursos exclusivos e 1 webinar por mês.", copy: "Além das funcionalidades premium no portal, o clube inclui um webinar exclusivo todo mês." },
   { id: "parceiros", navLabel: "Parceiros", eyebrow: "Parceiros", title: "Acesso ao Clube 360 e ao NexAtlas.", copy: "Parcerias da escola liberadas para quem assina o Flight Review Club." },
+  { id: "treinamento", navLabel: "Treinamento", eyebrow: "Treinamento FRC", title: "Cursos, aulas em vídeo e e-books exclusivos.", copy: "Integrantes do clube acessam o treinamento FRC com aulas em vídeo e materiais em PDF." },
   { id: "marketplace", navLabel: "Loja", eyebrow: "Marketplace", title: "Desconto exclusivo na loja da escola.", copy: "O preço FRC aparece no card do produto para integrantes do clube." },
   { id: "kit", navLabel: "Kit", eyebrow: "Kit da escola", title: "Camisa e crachá exclusivos.", copy: "Na primeira assinatura, a escola entrega a camisa e o crachá do Flight Review Club." },
   { id: "assinar", navLabel: "Assinar", eyebrow: "Assinatura", title: "Entre, revise seus voos e acompanhe sua jornada.", copy: "O cancelamento programado mantém o acesso até o fim do período pago." },
@@ -380,6 +382,7 @@ export const DEFAULT_LP_SCREENSHOT_ITEMS: FlightReviewClubScreenshotItem[] = [
   { id: "journey", sectionId: "premium", title: "Portal premium", description: "Funcionalidades exclusivas da plataforma.", imageUrl: "", frameUrl: "epeac.app / jornada", mockupId: "journey" },
   { id: "webinar", sectionId: "premium", title: "Webinar", description: "Encontro exclusivo todo mês.", imageUrl: "", frameUrl: "epeac.app / webinar", mockupId: "webinar" },
   { id: "partners", sectionId: "parceiros", title: "Parceiros", description: "Clube 360 e NexAtlas.", imageUrl: "", frameUrl: "epeac.app / parceiros", mockupId: "partners" },
+  { id: "training", sectionId: "treinamento", title: "Treinamento", description: "Cursos, vídeos e e-books.", imageUrl: "", frameUrl: "epeac.app / treinamento-frc", mockupId: "training" },
   { id: "marketplace", sectionId: "marketplace", title: "Marketplace", description: "Descontos exclusivos FRC.", imageUrl: "", frameUrl: "epeac.app / marketplace", mockupId: "marketplace" },
   { id: "kit", sectionId: "kit", title: "Camisa e crachá", description: "Kit da escola na primeira assinatura.", imageUrl: "", frameUrl: "epeac.app / kit", mockupId: "kit" },
 ];
@@ -388,7 +391,7 @@ const LEGACY_LP_SCREENSHOT_IDS = ["telemetry", "share", "planning", "journey", "
 
 const LP_MOCKUP_IDS: LpMockupId[] = [
   "telemetry", "share", "review", "planning", "schedule", "journey",
-  "stickers", "album", "marketplace", "webinar", "partners", "kit",
+  "stickers", "album", "marketplace", "webinar", "partners", "kit", "training",
 ];
 
 function isFeatureSectionId(value: string): value is FlightReviewClubFeatureSectionId {
@@ -399,6 +402,7 @@ export function classifyLpBenefitSection(text: string): FlightReviewClubFeatureS
   const value = text.toLowerCase();
   if (/(agenda|anteced|planej)/.test(value)) return "agenda";
   if (/(nexatlas|clube 360)/.test(value)) return "parceiros";
+  if (/(treinamento frc|e-book|ebook|aula em v[ií]deo)/.test(value)) return "treinamento";
   if (/(marketplace|desconto)/.test(value)) return "marketplace";
   if (/(camiseta|camisa|crach)/.test(value)) return "kit";
   if (/(webinar|ead|curso|jornada|premium|funcionalidade)/.test(value)) return "premium";
@@ -433,7 +437,13 @@ function sanitizeLpScreenshotItems(raw: unknown): FlightReviewClubScreenshotItem
       mockupId: LP_MOCKUP_IDS.includes(mockupId as LpMockupId) ? mockupId as LpMockupId : (slot?.mockupId ?? ""),
     });
   });
-  return result.slice(0, 30);
+  return ensureLpScreenshotCoverage(result).slice(0, 30);
+}
+
+export function ensureLpScreenshotCoverage(items: FlightReviewClubScreenshotItem[]): FlightReviewClubScreenshotItem[] {
+  const presentSections = new Set(items.map((item) => item.sectionId));
+  const extras = DEFAULT_LP_SCREENSHOT_ITEMS.filter((slot) => !presentSections.has(slot.sectionId));
+  return extras.length === 0 ? items : [...items, ...extras.map((item) => ({ ...item }))];
 }
 
 function sanitizeLpSections(raw: unknown): FlightReviewClubLpSection[] {
@@ -460,6 +470,12 @@ function sanitizeLpSections(raw: unknown): FlightReviewClubLpSection[] {
       copy: saved?.copy || section.copy,
     };
   });
+}
+
+export function ensureLpBenefitCoverage(items: FlightReviewClubBenefitItem[]): FlightReviewClubBenefitItem[] {
+  if (items.some((item) => item.sectionId === "treinamento")) return items;
+  const extras = DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpBenefitItems.filter((item) => item.sectionId === "treinamento");
+  return [...items, ...extras.map((item) => ({ ...item }))].slice(0, 40);
 }
 
 function normalizeTrainingLessonKind(value: unknown): FlightReviewClubTrainingLessonKind {
@@ -552,6 +568,8 @@ export const DEFAULT_FLIGHT_REVIEW_CLUB_RULES: FlightReviewClubRules = {
     { sectionId: "premium", text: "1 webinar exclusivo por mês", imageUrl: "" },
     { sectionId: "parceiros", text: "Acesso ao Clube 360", imageUrl: "" },
     { sectionId: "parceiros", text: "Acesso ao NexAtlas", imageUrl: "" },
+    { sectionId: "treinamento", text: "Cursos exclusivos do Flight Review Club", imageUrl: "" },
+    { sectionId: "treinamento", text: "Aulas em vídeo e e-books em PDF", imageUrl: "" },
     { sectionId: "marketplace", text: "Desconto no marketplace", imageUrl: "" },
     { sectionId: "kit", text: "Camisa da escola", imageUrl: "" },
     { sectionId: "kit", text: "Crachá exclusivo", imageUrl: "" },
@@ -928,20 +946,22 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
         lpValueProps: Array.isArray(club?.lpValueProps)
           ? club.lpValueProps.map((b) => String(b).slice(0, 500)).filter(Boolean).slice(0, 12)
           : [],
-        lpBenefitItems: Array.isArray(club?.lpBenefitItems)
-          ? club.lpBenefitItems
-              .map((item) => {
-                const text = String(item?.text ?? "").slice(0, 500).trim();
-                const sectionId = String(item?.sectionId ?? "").trim();
-                return {
-                  sectionId: isFeatureSectionId(sectionId) ? sectionId : classifyLpBenefitSection(text),
-                  text,
-                  imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
-                };
-              })
-              .filter((item) => item.text)
-              .slice(0, 40)
-          : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpBenefitItems,
+        lpBenefitItems: ensureLpBenefitCoverage(
+          Array.isArray(club?.lpBenefitItems)
+            ? club.lpBenefitItems
+                .map((item) => {
+                  const text = String(item?.text ?? "").slice(0, 500).trim();
+                  const sectionId = String(item?.sectionId ?? "").trim();
+                  return {
+                    sectionId: isFeatureSectionId(sectionId) ? sectionId : classifyLpBenefitSection(text),
+                    text,
+                    imageUrl: String(item?.imageUrl ?? "").slice(0, 2048).trim(),
+                  };
+                })
+                .filter((item) => item.text)
+                .slice(0, 40)
+            : DEFAULT_FLIGHT_REVIEW_CLUB_RULES.lpBenefitItems.map((item) => ({ ...item })),
+        ),
         lpScreenshotItems: sanitizeLpScreenshotItems(club?.lpScreenshotItems),
         lpSections: sanitizeLpSections(club?.lpSections),
         checklistTemplate: Array.isArray(club?.checklistTemplate)

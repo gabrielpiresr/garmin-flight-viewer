@@ -132,15 +132,96 @@ function FitBounds({ positions }: { positions: [number, number][] }) {
   return null;
 }
 
+function DeferredHeavyLayers({
+  defer,
+  onReady,
+}: {
+  defer: boolean;
+  onReady: () => void;
+}) {
+  const map = useMap();
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+
+  useEffect(() => {
+    if (!defer) {
+      onReadyRef.current();
+      return;
+    }
+
+    let cancelled = false;
+    let armed = false;
+    let tileDelay = 0;
+    let fallback = 0;
+    let idleHandle = 0;
+    let idleTimeout = 0;
+
+    const go = () => {
+      if (cancelled || armed) return;
+      armed = true;
+      if (fallback) {
+        window.clearTimeout(fallback);
+        fallback = 0;
+      }
+      const run = () => {
+        if (!cancelled) onReadyRef.current();
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(run, { timeout: 2_800 });
+      } else {
+        idleTimeout = window.setTimeout(run, 500);
+      }
+    };
+
+    const onTilesReady = () => {
+      if (tileDelay) window.clearTimeout(tileDelay);
+      tileDelay = window.setTimeout(go, 450);
+    };
+
+    const bind = (layer: L.Layer) => {
+      if (layer instanceof L.TileLayer) {
+        layer.on("load", onTilesReady);
+      }
+    };
+    map.eachLayer(bind);
+    const onLayerAdd = (event: L.LayerEvent) => bind(event.layer);
+    map.on("layeradd", onLayerAdd);
+    fallback = window.setTimeout(go, 2_200);
+
+    return () => {
+      cancelled = true;
+      map.off("layeradd", onLayerAdd);
+      map.eachLayer((layer) => {
+        if (layer instanceof L.TileLayer) layer.off("load", onTilesReady);
+      });
+      if (tileDelay) window.clearTimeout(tileDelay);
+      if (fallback) window.clearTimeout(fallback);
+      if (idleTimeout) window.clearTimeout(idleTimeout);
+      if (idleHandle && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleHandle);
+      }
+    };
+  }, [defer, map]);
+
+  return null;
+}
+
 function ResizeInvalidator() {
   const map = useMap();
   useEffect(() => {
     const container = map.getContainer();
     let frame = 0;
+    let lastW = 0;
+    let lastH = 0;
     const invalidate = () => {
       if (frame) window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         frame = 0;
+        const w = Math.round(container.clientWidth);
+        const h = Math.round(container.clientHeight);
+        if (w === lastW && h === lastH) return;
+        lastW = w;
+        lastH = h;
         map.invalidateSize(false);
       });
     };
@@ -162,21 +243,24 @@ function MapBoundsTracker({
   boundsCallbackRef: React.MutableRefObject<((b: L.LatLngBounds) => void) | null>;
 }) {
   const userMoveRef = useRef(false);
+  const zoomingRef = useRef(false);
 
   useMapEvents({
     dragstart() {
       userMoveRef.current = true;
     },
     zoomstart(e) {
+      zoomingRef.current = true;
       if ((e as L.LeafletEvent & { originalEvent?: Event }).originalEvent) {
         userMoveRef.current = true;
       }
     },
     moveend(e) {
-      if (!userMoveRef.current) return;
+      if (!userMoveRef.current || zoomingRef.current) return;
       boundsCallbackRef.current?.(e.target.getBounds());
     },
     zoomend(e) {
+      zoomingRef.current = false;
       if (!userMoveRef.current) return;
       boundsCallbackRef.current?.(e.target.getBounds());
       window.setTimeout(() => {
@@ -303,7 +387,6 @@ function ImperativeRouteLayers({
       }).addTo(group);
     }
 
-    map.invalidateSize(false);
     return () => {
       group.removeFrom(map);
     };
@@ -341,20 +424,11 @@ export const FlightMap = memo(
     const [layersOn, setLayersOn] = useState<Record<FlightMapLayerId, boolean>>(() =>
       Object.fromEntries([
         ...AIRSPACE_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn]),
-        ...REA_LAYER_TOGGLES.map((l) => [l.id, l.defaultOn]),
+        ...REA_LAYER_TOGGLES.map((l) => [l.id, deferHeavyLayers ? false : l.defaultOn]),
       ]) as Record<FlightMapLayerId, boolean>,
     );
     const [heavyLayersReady, setHeavyLayersReady] = useState(!deferHeavyLayers);
     const tiles = TILES[mapStyle];
-
-    useEffect(() => {
-      if (!deferHeavyLayers) {
-        setHeavyLayersReady(true);
-        return;
-      }
-      const timer = window.setTimeout(() => setHeavyLayersReady(true), 1_600);
-      return () => window.clearTimeout(timer);
-    }, [deferHeavyLayers]);
 
     const selectedPoints = useMemo(() => {
       if (!selectedRangeT) return [];
@@ -567,7 +641,7 @@ export const FlightMap = memo(
           className="h-full w-full [&_.leaflet-control-attribution]:text-[9px]"
           scrollWheelZoom
           zoomAnimation
-          markerZoomAnimation
+          markerZoomAnimation={false}
           fadeAnimation
           preferCanvas
         >
@@ -581,7 +655,7 @@ export const FlightMap = memo(
             opacity={1}
             {...(tiles.subdomains ? { subdomains: tiles.subdomains } : {})}
           />
-          {AIRSPACE_WFS_LAYER_DEFS.some((l) => layersOn[l.id]) ? (
+          {heavyLayersReady && AIRSPACE_WFS_LAYER_DEFS.some((l) => layersOn[l.id]) ? (
             <AirspaceLayersOverlay
               enabledTypes={layersOn}
               selectedKey={selectedAirspace?.key ?? null}
@@ -596,6 +670,10 @@ export const FlightMap = memo(
             <ReaRoutesOverlay kind="reh" enabled={heavyLayersReady && layersOn.reh === true} />
           </ReaRoutesOverlayBoundary>
           <ResizeInvalidator />
+          <DeferredHeavyLayers
+            defer={deferHeavyLayers}
+            onReady={() => setHeavyLayersReady(true)}
+          />
           <ImperativeRouteLayers
             positions={positions}
             selectedPositions={selectedPositions}
@@ -612,7 +690,8 @@ export const FlightMap = memo(
   },
   (prev, next) =>
     prev.points === next.points &&
-    prev.selectedRangeT === next.selectedRangeT &&
+    prev.selectedRangeT?.[0] === next.selectedRangeT?.[0] &&
+    prev.selectedRangeT?.[1] === next.selectedRangeT?.[1] &&
     prev.className === next.className &&
     prev.hoverCallbackRef === next.hoverCallbackRef &&
     prev.boundsCallbackRef === next.boundsCallbackRef &&

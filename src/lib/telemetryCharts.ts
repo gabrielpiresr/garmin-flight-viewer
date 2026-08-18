@@ -106,7 +106,16 @@ export type ChartRow = { x: number } & Record<string, number | null>;
 export function panelHasData(panel: TelemetryChartPanel, data: ChartRow[], resolved: Map<string, string>): boolean {
   const keys = panel.seriesKeys.filter((k) => resolved.has(k));
   if (keys.length === 0) return false;
-  return data.some((row) => keys.some((k) => row[k] !== null && row[k] !== undefined));
+  const step = data.length > 800 ? Math.ceil(data.length / 400) : 1;
+  for (let i = 0; i < data.length; i += step) {
+    const row = data[i]!;
+    for (const key of keys) {
+      const value = row[key];
+      if (value !== null && value !== undefined) return true;
+    }
+  }
+  const last = data[data.length - 1];
+  return last ? keys.some((key) => last[key] !== null && last[key] !== undefined) : false;
 }
 
 export function labelForKey(key: string): string {

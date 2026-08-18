@@ -4,6 +4,7 @@ import type {
   AiswebRotaer,
 } from "../types/aisweb";
 import { airportSummaryFromBundle } from "../lib/flightPlanFormat";
+import { isPilotCreatedTask } from "../lib/flightBriefingDefaults";
 import type {
   FlightBriefingAiContact,
   FlightBriefingAiReport,
@@ -158,7 +159,7 @@ function taskServiceCategory(task?: FlightBriefingAiTask): "fuel" | "hangarage" 
   const text = `${task?.title || ""} ${task?.description || ""} ${task?.url || ""}`.toLowerCase();
   if (/notam/.test(text)) return "";
   // Auth before hangar — CCR RMKs mention "pátio" but are not hangaragem.
-  if (/slot|ppr|autoriza|formul|rede\s*voa|agendamento\s+rede\s+voa|concession|webapp|ccr|\bauth\b|compuls|anteced/.test(text)) {
+  if (/slot|ppr|autoriza|formul|rede\s*voa|agendamento\s+(?:rede\s+voa|da\s+administra)|concession|webapp|ccr|\bauth\b|compuls|anteced|agendamentopouso|aenabrasil|\bprkg\b/.test(text)) {
     return "auth";
   }
   if (/combust|abastec|avgas|jet\s*a|querosene/.test(text)) return "fuel";
@@ -341,7 +342,7 @@ function sortAirportTasks(tasks: FlightBriefingAiTask[]): FlightBriefingAiTask[]
     if (aNotam !== bNotam) return aNotam - bNotam;
     const rank = (t: FlightBriefingAiTask) => {
       const text = `${t.title} ${t.description}`.toLowerCase();
-      if (/autoriza|slot|ppr|formul|agendamento\s+rede\s+voa|compuls|\bauth\b|ccr/.test(text)) return 1;
+      if (/autoriza|slot|ppr|formul|agendamento\s+(?:rede\s+voa|da\s+administra)|compuls|\bauth\b|ccr|aena|agendamentopouso|\bprkg\b/.test(text)) return 1;
       if (/combust|abastec/.test(text)) return 2;
       if (/hangar|pernoite/.test(text)) return 3;
       return 4;
@@ -353,7 +354,7 @@ function sortAirportTasks(tasks: FlightBriefingAiTask[]): FlightBriefingAiTask[]
 }
 
 function airportGroupLabel(icao: string): string {
-  return icao === "ROTA" ? "Rota" : icao;
+  return icao === "ROTA" ? "Geral" : icao;
 }
 
 function formatWorkingScheduleShort(rotaer: AiswebRotaer | null | undefined): string {
@@ -475,12 +476,14 @@ function TaskDetailModal({
   task,
   onClose,
   onTaskUpdate,
+  onTaskRemove,
   onCopy,
   onOpenAirportNotams,
 }: {
   task: FlightBriefingAiTask;
   onClose: () => void;
   onTaskUpdate: (taskId: string, patch: { status?: FlightBriefingAiTaskStatus; pilotNote?: string }) => void;
+  onTaskRemove?: (taskId: string) => void;
   onCopy: (text: string, label: string) => void;
   onOpenAirportNotams?: (icao: string, notamNumber?: string) => void;
 }) {
@@ -600,6 +603,18 @@ function TaskDetailModal({
         <TaskNoteTextarea task={task} onTaskUpdate={onTaskUpdate} />
 
         <div className="mt-4 flex flex-wrap justify-end gap-2">
+          {isPilotCreatedTask(task) && onTaskRemove ? (
+            <button
+              type="button"
+              className={`${btn} border-rose-500/40 text-rose-200 hover:bg-rose-500/10`}
+              onClick={() => {
+                onTaskRemove(task.id);
+                onClose();
+              }}
+            >
+              Excluir
+            </button>
+          ) : null}
           <button
             type="button"
             className={btn}
@@ -620,17 +635,50 @@ function TaskDetailModal({
   );
 }
 
+function AddManualTaskForm({ onAdd }: { onAdd: (title: string) => void }) {
+  const [title, setTitle] = useState("");
+  function submit() {
+    const next = title.trim();
+    if (!next) return;
+    onAdd(next);
+    setTitle("");
+  }
+  return (
+    <form
+      className="mt-2 flex gap-1.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <input
+        className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-600"
+        placeholder="Nova tarefa..."
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        maxLength={200}
+      />
+      <button type="submit" className={btn} disabled={!title.trim()}>
+        Adicionar
+      </button>
+    </form>
+  );
+}
+
 function TaskCard({
   task,
   onOpen,
   onTaskUpdate,
+  onTaskRemove,
 }: {
   task: FlightBriefingAiTask;
   onOpen: (task: FlightBriefingAiTask) => void;
   onTaskUpdate: (taskId: string, patch: { status?: FlightBriefingAiTaskStatus }) => void;
+  onTaskRemove?: (taskId: string) => void;
 }) {
   const done = task.status === "done";
   const inactive = task.status === "inactive";
+  const pilotCreated = isPilotCreatedTask(task);
 
   return (
     <article
@@ -668,6 +716,19 @@ function TaskCard({
             {statusLabel(task.status)} · {actionLabel(task)}
           </span>
         </div>
+        {pilotCreated && onTaskRemove ? (
+          <button
+            type="button"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-sm leading-none text-slate-500 hover:bg-slate-800 hover:text-rose-300"
+            aria-label={`Remover ${task.title}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTaskRemove(task.id);
+            }}
+          >
+            ×
+          </button>
+        ) : null}
       </div>
     </article>
   );
@@ -691,6 +752,8 @@ export function FlightBriefingAiPanel({
   loading,
   error,
   onTaskUpdate,
+  onTaskAdd,
+  onTaskRemove,
   onCopy,
   airports = [],
   onAirportNoteChange,
@@ -700,6 +763,8 @@ export function FlightBriefingAiPanel({
   loading: boolean;
   error: string | null;
   onTaskUpdate: (taskId: string, patch: { status?: FlightBriefingAiTaskStatus; pilotNote?: string }) => void;
+  onTaskAdd?: (input: { title: string; airportIcao?: string }) => void;
+  onTaskRemove?: (taskId: string) => void;
   onCopy: (text: string, label: string) => void;
   airports?: BriefingAirportDoc[];
   onAirportNoteChange?: (role: BriefingAirportDoc["role"], icao: string, note: string) => void;
@@ -727,13 +792,15 @@ export function FlightBriefingAiPanel({
       if (icao !== "ROTA" && !seen.has(icao)) rows.push({ icao, airport: null });
     }
     if (tasksByIcao.has("ROTA")) rows.push({ icao: "ROTA", airport: null });
+    else if (onTaskAdd) rows.push({ icao: "ROTA", airport: null });
     return rows;
-  }, [airports, tasksByIcao]);
+  }, [airports, onTaskAdd, tasksByIcao]);
 
   useEffect(() => {
     if (!selectedTask) return;
     const updated = report?.tasks.find((task) => task.id === selectedTask.id);
     if (updated) setSelectedTask(updated);
+    else setSelectedTask(null);
   }, [report, selectedTask?.id]);
 
   if (loading && !report) {
@@ -750,9 +817,15 @@ export function FlightBriefingAiPanel({
 
   if (!report) {
     return (
-      <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+      <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
         <p className="text-sm font-semibold text-slate-200">Checklist IA ainda não gerado.</p>
         {error ? <p className="mt-1 text-xs text-amber-200">{error}</p> : null}
+        {onTaskAdd ? (
+          <div>
+            <p className="text-xs text-slate-500">Você já pode criar tarefas manuais para se organizar.</p>
+            <AddManualTaskForm onAdd={(title) => onTaskAdd({ title })} />
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -862,8 +935,14 @@ export function FlightBriefingAiPanel({
                 task={task}
                 onOpen={setSelectedTask}
                 onTaskUpdate={onTaskUpdate}
+                onTaskRemove={onTaskRemove}
               />
             ))}
+            {onTaskAdd ? (
+              <AddManualTaskForm
+                onAdd={(title) => onTaskAdd({ title, airportIcao: icao === "ROTA" ? undefined : icao })}
+              />
+            ) : null}
             </div>
           </div>
           );
@@ -889,6 +968,7 @@ export function FlightBriefingAiPanel({
           task={selectedTask}
           onClose={() => setSelectedTask(null)}
           onTaskUpdate={onTaskUpdate}
+          onTaskRemove={onTaskRemove}
           onCopy={onCopy}
           onOpenAirportNotams={onOpenAirportNotams}
         />

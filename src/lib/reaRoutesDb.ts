@@ -386,6 +386,43 @@ export function resolveReaAltitudes(props: ReaRouteProps): { max: number | null;
   return { max, min };
 }
 
+/** Teto/piso no sentido do voo (A→B ou B→A). */
+export function resolveReaAltitudesDirected(
+  props: ReaRouteProps,
+  dir: "ab" | "ba",
+): { max: number | null; min: number | null } {
+  if (dir === "ab") {
+    const max =
+      numOrNull(props.altmaxa_to_b) ??
+      numOrNull(props.altcompa_to_b) ??
+      numOrNull(props.altmax) ??
+      numOrNull(props.altcomp);
+    const min =
+      numOrNull(props.altmina_to_b) ??
+      numOrNull(props.altmin) ??
+      (numOrNull(props.altcomp) != null && numOrNull(props.altmax) == null ? numOrNull(props.altcomp) : null);
+    return { max, min };
+  }
+  const max =
+    numOrNull(props.altmaxb_to_a) ??
+    numOrNull(props.altcompb_to_a) ??
+    numOrNull(props.altmax) ??
+    numOrNull(props.altcomp);
+  const min =
+    numOrNull(props.altminb_to_a) ??
+    numOrNull(props.altmin) ??
+    (numOrNull(props.altcomp) != null && numOrNull(props.altmax) == null ? numOrNull(props.altcomp) : null);
+  return { max, min };
+}
+
+/** Sentido publicado na carta. Sem rumo = trecho bidirecional. */
+export function reaCorridorDirections(props: ReaRouteProps): { ab: boolean; ba: boolean } {
+  const ab = numOrNull(props.rumoa_to_b);
+  const ba = numOrNull(props.rumob_to_a);
+  if (ab == null && ba == null) return { ab: true, ba: true };
+  return { ab: ab != null, ba: ba != null };
+}
+
 export function formatReaHeading(deg: number | null | undefined): string | null {
   const n = numOrNull(deg);
   if (n == null) return null;

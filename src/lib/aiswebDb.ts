@@ -3,6 +3,7 @@ import type {
   AiswebAerodromeMatch,
   AiswebAirportBundle,
   AiswebDashboard,
+  AiswebNotam,
   AiswebPlatformSettings,
   AiswebPlatformSettingsInput,
   AiswebWebcamsResult,
@@ -42,6 +43,7 @@ type AiswebResponse = {
     } | null;
   }>;
   mets?: AiswebAirportBundle["met"][];
+  notams?: AiswebNotam[];
   webcams?: AiswebWebcamsResult;
 };
 
@@ -108,6 +110,20 @@ export async function lookupAiswebIcao(icaoCode: string): Promise<AiswebAirportB
   });
   if (!response.airport) throw new Error("Dados do aeródromo não retornados.");
   return response.airport;
+}
+
+export async function fetchAiswebNotams(icaoCode: string): Promise<AiswebNotam[]> {
+  try {
+    const response = await execute({
+      action: "fetchAiswebNotams",
+      icaoCode,
+    });
+    if (Array.isArray(response.notams)) return response.notams;
+  } catch {
+    /* fallback abaixo — function antiga sem a action */
+  }
+  const airport = await lookupAiswebIcao(icaoCode);
+  return airport.notams || [];
 }
 
 export async function searchAiswebAerodromes(

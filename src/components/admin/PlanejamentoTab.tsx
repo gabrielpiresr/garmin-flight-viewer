@@ -7,14 +7,8 @@ import {
   DEFAULT_FLIGHT_PERFORMANCE,
   type FlightPerformanceSettings,
 } from "../../lib/routePerformanceProfile";
-import { airspaceEntryEteHours, airspacesEnteredVertically, detectAirspacesAlongRoute, sampleRoutePoints, type AirspaceVolume } from "../../lib/airspaceIntersect";
+import { airspacesEnteredVertically, detectAirspacesAlongRoute, sampleRoutePoints, type AirspaceVolume } from "../../lib/airspaceIntersect";
 import { suggestAlternateAerodromes, type AlternateSuggestion } from "../../lib/flightPlanAlternates";
-import {
-  formatAirspaceFreqCell,
-  airspaceHitTypeBadgeClass,
-  formatAirspaceEntryDistance,
-  formatAirspaceEntryEte,
-} from "../../lib/flightPlanFormat";
 import { buildFlightPlanMapDataUrl } from "../../lib/flightPlanMapImage";
 import { openFlightPlanPdf } from "../../lib/flightPlanPdf";
 import { buildRouteVerticalProfileSvg } from "../../lib/flightPlanProfileSvg";
@@ -25,8 +19,10 @@ import {
 } from "../../lib/flightBriefingAiDb";
 import {
   buildDefaultFlightBriefingReport,
+  createPilotBriefingTask,
   importantNotamCardsFromAirports,
   isDefaultOnlyBriefingReport,
+  mergePilotCreatedTasks,
 } from "../../lib/flightBriefingDefaults";
 import { getRouteElevation } from "../../lib/routeElevationDb";
 import {
@@ -48,6 +44,9 @@ import {
 import { offlineBriefingPath, saveOfflineFlightBriefing } from "../../lib/offlineFlightBriefing";
 import { getPdfBrand } from "../../lib/pdfBrand";
 import { collectReaFixPoints, getCachedReaRoutes, loadReaRoutes, type ReaFixPoint } from "../../lib/reaRoutesDb";
+import { snapRouteToVisualCorridors } from "../../lib/reaCorridorRoute";
+import { geometryContainsLatLng } from "../../lib/afisCoverage";
+import { buildFplRmkText, buildFplRouteText, originIsInsideTma } from "../../lib/fplRouteExport";
 import { resolveAirportCoords } from "../../lib/resolveAirportCoords";
 import {
   deleteSavedFlightRoute,
@@ -56,6 +55,7 @@ import {
   saveFlightRoute,
   suggestRouteName,
   type SavedFlightRoute,
+  type SavedRouteArea,
 } from "../../lib/savedFlightRoutes";
 import {
   deleteSavedFlightBriefing,
@@ -66,7 +66,7 @@ import {
   type SavedFlightBriefingIndexItem,
 } from "../../lib/savedFlightBriefings";
 import { normalizeIcao } from "../../lib/aiswebMetar";
-import type { AiswebAerodromeMatch, AiswebAirportBundle } from "../../types/aisweb";
+import type { AiswebAerodromeMatch, AiswebAirportBundle, AiswebNotam } from "../../types/aisweb";
 import {
   FLIGHT_PLAN_INFO_OPTIONS,
   type FlightPlanAirspaceHit,
@@ -86,6 +86,13 @@ import { matchReaCorridorForLeg, type LegCorridorInfo } from "../../lib/legCorri
 import { useAuth } from "../../contexts/AuthContext";
 import { sendFplExportEmail } from "../../lib/notificationsDb";
 import { FlightBriefingAiPanel } from "../FlightBriefingAiPanel";
+import { AirspaceRouteList } from "../AirspaceRouteList";
+import { loadNotamsByLocation } from "../../lib/airspaceNotams";
+import {
+  buildRouteNotamHits,
+  collectRouteNotamLocations,
+  nearbyAerodromeIcaos,
+} from "../../lib/routeNotams";
 import { useIsDesktopLg } from "../../hooks/useMediaQuery";
 import {
   IconFolderSmall,
@@ -151,114 +158,6 @@ function waypointDisplayName(wp: FlightPlanWaypoint): string {
 
 function isAirportLike(wp: FlightPlanWaypoint): boolean {
   return wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination";
-}
-
-function normalizeFplText(value: string): string {
-  return String(value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^A-Z0-9\s]/gi, " ")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toUpperCase();
-}
-
-function formatFplSpeed(speedKt: number | null): string {
-  const speed = speedKt != null && Number.isFinite(speedKt) && speedKt > 0 ? speedKt : DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt;
-  return `N${String(Math.max(1, Math.round(speed))).padStart(4, "0")}`;
-}
-
-function formatFplLevel(altitudeFt: number | null | undefined): string {
-  if (altitudeFt != null && Number.isFinite(altitudeFt) && altitudeFt > 0) {
-    return `A${String(Math.round(altitudeFt / 100)).padStart(3, "0")}`;
-  }
-  return "VFR";
-}
-
-function formatFplPointSpeedLevel(wp: FlightPlanWaypoint, speedKt: number | null): string {
-  return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(wp.altitudeFt)}`;
-}
-
-function pushFplToken(tokens: string[], token: string): void {
-  const clean = token.trim().toUpperCase();
-  if (!clean) return;
-  if (tokens[tokens.length - 1] === clean) return;
-  tokens.push(clean);
-}
-
-function buildFplRouteText(
-  waypoints: FlightPlanWaypoint[],
-  legCorridors: Array<LegCorridorInfo | null>,
-  speedKt: number | null,
-): string {
-  if (waypoints.length < 2) return "";
-  const isCorridorLeg = (idx: number) => Boolean(legCorridors[idx]);
-  const legIndexes = waypoints.slice(1).map((_, idx) => idx + 1);
-  const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
-  if (allCorridor) return "REA";
-
-  const tokens: string[] = [];
-  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
-
-  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
-    const to = waypoints[legIdx]!;
-    const inside = isCorridorLeg(legIdx);
-    const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
-    const isLastLeg = legIdx === waypoints.length - 1;
-
-    if (inside) {
-      if (nextInside === false) {
-        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
-        pushFplToken(tokens, "DCT");
-      }
-      continue;
-    }
-
-    if (nextInside === true) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
-      pushFplToken(tokens, "REA");
-      continue;
-    }
-
-    if (!isLastLeg) {
-      pushFplToken(tokens, formatCompactAviationCoord(to.lat, to.lng));
-      pushFplToken(tokens, "DCT");
-    }
-  }
-
-  return tokens.join(" ");
-}
-
-function buildFplRmkText(
-  waypoints: FlightPlanWaypoint[],
-  legCorridors: Array<LegCorridorInfo | null>,
-): string {
-  const corridorNames: string[] = [];
-  const seenCorridors = new Set<string>();
-  for (const corridor of legCorridors) {
-    const clean = normalizeFplText(corridor?.name || "");
-    if (!clean || seenCorridors.has(clean)) continue;
-    seenCorridors.add(clean);
-    corridorNames.push(clean);
-  }
-
-  const tglAerodromes = waypoints
-    .slice(1, Math.max(1, waypoints.length - 1))
-    .filter(isAirportLike)
-    .map((wp) => normalizeFplText(wp.label || wp.raw))
-    .filter((code) => /^[A-Z0-9]{4}$/.test(code));
-
-  const tokens: string[] = [];
-  if (corridorNames.length > 0) {
-    tokens.push("REA", ...corridorNames);
-  }
-  for (const icao of tglAerodromes) {
-    tokens.push("TGL", icao);
-  }
-  if (corridorNames.length > 0) {
-    tokens.push("AD", "CFM", "ALT", "MAX", "REA");
-  }
-  return tokens.join(" ");
 }
 
 function fieldElevFtFromAerodrome(ad: Aerodrome | undefined | null): number | null {
@@ -488,6 +387,11 @@ export function PlanejamentoTab({
   const [airspaceVolumes, setAirspaceVolumes] = useState<AirspaceVolume[]>([]);
   const [airspaceLoading, setAirspaceLoading] = useState(false);
   const [airspaceError, setAirspaceError] = useState<string | null>(null);
+  const [airspaceNotamsByIcao, setAirspaceNotamsByIcao] = useState<Record<string, AiswebNotam[]>>({});
+  const [airspaceNotamsLoading, setAirspaceNotamsLoading] = useState(false);
+  const [showRouteNotamsOnMap, setShowRouteNotamsOnMap] = useState(true);
+  const [filterNotamsByVerticalProfile, setFilterNotamsByVerticalProfile] = useState(true);
+  const [customAreas, setCustomAreas] = useState<SavedRouteArea[]>([]);
   const [activeBriefingId, setActiveBriefingId] = useState<string | null>(null);
   const [briefingName, setBriefingName] = useState("");
   const [editingBriefingName, setEditingBriefingName] = useState(false);
@@ -625,6 +529,58 @@ export function PlanejamentoTab({
     return last && /^[A-Z0-9]{4}$/.test(last.label) ? last.label : "";
   }, [waypoints]);
 
+  const nearbyNotamIcaos = useMemo(
+    () => (waypoints.length >= 2 ? nearbyAerodromeIcaos(aerodromes, waypoints) : []),
+    [aerodromes, waypoints],
+  );
+
+  const routeNotamLocations = useMemo(
+    () =>
+      collectRouteNotamLocations({
+        airspaces,
+        originIcao,
+        destIcao,
+        alternates,
+        nearbyIcaos: nearbyNotamIcaos,
+      }),
+    [airspaces, originIcao, destIcao, alternates, nearbyNotamIcaos],
+  );
+
+  useEffect(() => {
+    if (!routeNotamLocations.length) {
+      setAirspaceNotamsByIcao({});
+      setAirspaceNotamsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAirspaceNotamsLoading(true);
+    void loadNotamsByLocation(routeNotamLocations)
+      .then((map) => {
+        if (!cancelled) setAirspaceNotamsByIcao(map);
+      })
+      .finally(() => {
+        if (!cancelled) setAirspaceNotamsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeNotamLocations]);
+
+  const routeNotamHits = useMemo(
+    () =>
+      buildRouteNotamHits({
+        waypoints,
+        airspaces,
+        volumes: airspaceVolumes,
+        aerodromes,
+        notamsByIcao: airspaceNotamsByIcao,
+        plannedProfile: performanceProfile?.profile ?? null,
+        cruiseAltFt: performanceProfile?.cruiseAltFt ?? null,
+        filterByPlannedAltitude: filterNotamsByVerticalProfile,
+      }),
+    [waypoints, airspaces, airspaceVolumes, aerodromes, airspaceNotamsByIcao, performanceProfile, filterNotamsByVerticalProfile],
+  );
+
   const routeLabel = useMemo(() => {
     if (waypoints.length === 0) return "Nova rota";
     return `${waypointDisplayName(waypoints[0]!)} – ${waypointDisplayName(waypoints[waypoints.length - 1]!)}`;
@@ -640,6 +596,7 @@ export function PlanejamentoTab({
       name: saveName.trim(),
       waypoints,
       alternates,
+      customAreas,
     });
   }
 
@@ -648,12 +605,14 @@ export function PlanejamentoTab({
     name: string;
     waypoints: FlightPlanWaypoint[];
     alternates: string[];
+    customAreas?: SavedRouteArea[];
   }) {
     cleanFingerprintRef.current = JSON.stringify({
       id: next.id,
       name: next.name.trim(),
       waypoints: next.waypoints,
       alternates: next.alternates,
+      customAreas: next.customAreas ?? [],
     });
   }
 
@@ -713,13 +672,21 @@ export function PlanejamentoTab({
     return out;
   }, [waypoints, reaFixes, rehFixes]);
 
+  const originInsideTma = useMemo(
+    () =>
+      originIsInsideTma(waypoints[0], airspaces, airspaceVolumes, (geometry, lat, lng) =>
+        geometryContainsLatLng(geometry, lat, lng),
+      ),
+    [waypoints, airspaces, airspaceVolumes],
+  );
+
   const fplExport = useMemo(
     () => ({
-      route: buildFplRouteText(waypoints, legCorridors, cruiseOpt),
+      route: buildFplRouteText(waypoints, legCorridors, cruiseOpt, { originInsideTma }),
       rmk: buildFplRmkText(waypoints, legCorridors),
       eet: formatEteClock(summary.eteHours).replace(":", ""),
     }),
-    [waypoints, legCorridors, cruiseOpt, summary.eteHours],
+    [waypoints, legCorridors, cruiseOpt, summary.eteHours, originInsideTma],
   );
 
   // Auto ALT = teto do corredor quando o trecho está em um corredor REA/REH.
@@ -1090,6 +1057,7 @@ export function PlanejamentoTab({
         name: (saveName.trim() || suggestRouteName(waypoints)).trim(),
         waypoints,
         alternates,
+        customAreas,
         cruiseSpeedKt: cruiseOpt,
         fuelBurnPerHour: burnOpt,
         fuelUnit,
@@ -1098,7 +1066,7 @@ export function PlanejamentoTab({
       });
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [alternates, activeSavedId]);
+  }, [alternates, customAreas, activeSavedId]);
 
   function insertWaypoint(wp: FlightPlanWaypoint, insertIndex?: number) {
     setWaypoints((prev) => {
@@ -1118,6 +1086,44 @@ export function PlanejamentoTab({
 
   function appendWaypoint(wp: FlightPlanWaypoint) {
     insertWaypoint(wp);
+  }
+
+  function snapToVisualCorridors() {
+    const features = [
+      ...(getCachedReaRoutes("rea")?.features || []),
+      ...(getCachedReaRoutes("reh")?.features || []),
+    ];
+    const run = (list: typeof features) => {
+      const result = snapRouteToVisualCorridors(waypoints, list);
+      if (!result.ok) {
+        showToast({ variant: "warning", title: "Corredores visuais", message: result.error });
+        return;
+      }
+      setWaypoints(normalizeRouteWaypoints(result.waypoints));
+      setFitKey(`rea-${Date.now()}`);
+      setGenerated(false);
+      const names = result.corridorNames.slice(0, 3).join(", ");
+      showToast({
+        variant: "success",
+        title: "Rota ajustada nos corredores",
+        message: `${result.inserted} ponto(s) REA · ${result.distanceNm.toFixed(0)} NM${
+          result.dctLegs ? ` · ${result.dctLegs} DCT` : ""
+        }${result.oneWayLegs ? ` · ${result.oneWayLegs} mão única` : ""}${names ? ` · ${names}` : ""}`,
+      });
+    };
+    if (features.length) {
+      run(features);
+      return;
+    }
+    void Promise.all([loadReaRoutes("rea"), loadReaRoutes("reh")])
+      .then(([rea, reh]) => run([...rea.features, ...reh.features]))
+      .catch(() => {
+        showToast({
+          variant: "error",
+          title: "Corredores visuais",
+          message: "Não foi possível carregar os corredores REA.",
+        });
+      });
   }
 
   function handlePickPoint(candidate: MapPickCandidate, opts?: { insertIndex?: number; confirmBetween?: boolean }) {
@@ -1285,6 +1291,7 @@ export function PlanejamentoTab({
   function clearRoute() {
     setWaypoints([]);
     setAlternates([]);
+    setCustomAreas([]);
     setActiveSavedId(null);
     setSaveName("");
     setLinkedBriefings([]);
@@ -1293,7 +1300,7 @@ export function PlanejamentoTab({
 
   function newRoute() {
     clearRoute();
-    setCleanFingerprint({ id: null, name: "", waypoints: [], alternates: [] });
+    setCleanFingerprint({ id: null, name: "", waypoints: [], alternates: [], customAreas: [] });
     showToast({ variant: "success", title: "Nova rota", message: "Roteiro limpo para começar do zero." });
   }
 
@@ -1340,6 +1347,7 @@ export function PlanejamentoTab({
           name: (saveName.trim() || suggestRouteName(waypoints)).trim(),
           waypoints,
           alternates,
+          customAreas,
           cruiseSpeedKt: cruiseOpt,
           fuelBurnPerHour: burnOpt,
           fuelUnit,
@@ -1352,6 +1360,7 @@ export function PlanejamentoTab({
           name: saved.name,
           waypoints,
           alternates,
+          customAreas,
         });
         showToast({ variant: "success", title: "Rota atualizada", message: saved.name });
         return true;
@@ -1389,6 +1398,7 @@ export function PlanejamentoTab({
         name: trimmed,
         waypoints,
         alternates,
+        customAreas,
         cruiseSpeedKt: cruiseOpt,
         fuelBurnPerHour: burnOpt,
         fuelUnit,
@@ -1401,6 +1411,7 @@ export function PlanejamentoTab({
         name: saved.name,
         waypoints,
         alternates,
+        customAreas,
       });
       showToast({ variant: "success", title: "Rota salva como", message: saved.name });
       const after = runAfterSaveAsRef.current;
@@ -1423,8 +1434,10 @@ export function PlanejamentoTab({
   function handleLoad(route: SavedFlightRoute) {
     const nextWaypoints = normalizeRouteWaypoints(route.waypoints);
     const nextAlternates = Array.isArray(route.alternates) ? [...route.alternates] : [];
+    const nextAreas = Array.isArray(route.customAreas) ? [...route.customAreas] : [];
     setWaypoints(nextWaypoints);
     setAlternates(nextAlternates);
+    setCustomAreas(nextAreas);
     setActiveSavedId(route.id);
     setSaveName(route.name);
     if (route.cruiseSpeedKt != null) setCruiseSpeedKt(String(route.cruiseSpeedKt));
@@ -1438,6 +1451,7 @@ export function PlanejamentoTab({
       name: route.name,
       waypoints: nextWaypoints,
       alternates: nextAlternates,
+      customAreas: nextAreas,
     });
     showToast({ variant: "success", title: "Rota carregada", message: route.name });
   }
@@ -1671,14 +1685,14 @@ export function PlanejamentoTab({
       airports: airportDocs,
     });
     if (forceRegenerate || !aiReport) {
-      setAiReport(defaultReport);
+      setAiReport((prev) => mergePilotCreatedTasks(prev, defaultReport));
       if (forceRegenerate) setAiReportId(null);
     }
     try {
       const input = buildAiBriefingInput(airportDocs);
       const saved = forceRegenerate ? null : await getLatestFlightBriefingAiReport(input);
       const result = saved || (await generateFlightBriefingAiReport(input));
-      setAiReport(result.report);
+      setAiReport((prev) => mergePilotCreatedTasks(prev, result.report));
       setAiReportId(result.reportId || result.report.id || null);
       if (result.report.status === "fallback") {
         setAiError("IA online indisponível. Checklist criado com dados AISWEB/ROTAER e itens para confirmação.");
@@ -1730,10 +1744,44 @@ export function PlanejamentoTab({
     const reportId = aiReportId || aiReport?.id;
     if (!reportId) return;
     void updateFlightBriefingAiTask({ reportId, taskId, ...patch })
-      .then((report) => setAiReport(report))
+      .then((report) => setAiReport((prev) => mergePilotCreatedTasks(prev, report)))
       .catch((err) => {
         setAiError(err instanceof Error ? err.message : "Não foi possível salvar a task IA.");
       });
+  }
+
+  function handleAiTaskAdd(input: { title: string; airportIcao?: string }) {
+    const title = input.title.trim();
+    if (!title) return;
+    const task = createPilotBriefingTask({ title, airportIcao: input.airportIcao });
+    setAiReport((prev) => {
+      if (prev) {
+        return {
+          ...prev,
+          tasks: [...prev.tasks, task],
+          updatedAt: task.updatedAt,
+        };
+      }
+      const base = buildDefaultFlightBriefingReport({
+        origin: originIcao,
+        destination: destIcao,
+        alternates,
+        airports,
+      });
+      return { ...base, tasks: [...base.tasks, task] };
+    });
+  }
+
+  function handleAiTaskRemove(taskId: string) {
+    setAiReport((prev) =>
+      prev
+        ? {
+            ...prev,
+            tasks: prev.tasks.filter((task) => task.id !== taskId),
+            updatedAt: new Date().toISOString(),
+          }
+        : prev,
+    );
   }
 
   async function copyAiText(text: string, label: string) {
@@ -2116,6 +2164,15 @@ export function PlanejamentoTab({
         onMeasureModeChange={setMeasureMode}
         onWaypointRemove={(index) => removeWaypoint(index)}
         onAerodromeDetails={(bundle) => setDetailBundle(bundle)}
+        customAreas={customAreas}
+        onCustomAreasChange={setCustomAreas}
+        routeNotams={routeNotamHits}
+        showRouteNotamsOnMap={showRouteNotamsOnMap}
+        onShowRouteNotamsOnMapChange={setShowRouteNotamsOnMap}
+        filterNotamsByVerticalProfile={filterNotamsByVerticalProfile}
+        onFilterNotamsByVerticalProfileChange={setFilterNotamsByVerticalProfile}
+        onSnapToVisualCorridors={snapToVisualCorridors}
+        corridorSnapEnabled={waypoints.length >= 2}
         mapOverlayMaxWidthClass={
           planningPanelCollapsed ? "w-auto" : "w-[min(100%-1rem,24rem)]"
         }
@@ -2137,13 +2194,13 @@ export function PlanejamentoTab({
             </button>
           ) : (
           <aside
-            className={`flex max-h-[inherit] w-full flex-col overflow-hidden rounded-2xl border border-slate-600/80 shadow-2xl shadow-black/40 ${
+            className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-2xl border border-slate-600/80 shadow-2xl shadow-black/40 ${
               compactMode
                 ? "bg-slate-950 opacity-100"
                 : "bg-slate-950/80 opacity-80 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100"
             }`}
           >
-          <div className="space-y-3 overflow-y-auto p-3">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-100">Planejamento</h2>
               <button
@@ -2984,69 +3041,15 @@ export function PlanejamentoTab({
 
         {openedSections.has("airspace") ? (
         <div hidden={activeSection !== "airspace"}>
-        <section className="rounded-2xl border border-slate-700/70 bg-slate-950/40 p-4">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
-            {airspaceLoading ? <span className="text-[11px] text-slate-500">Consultando…</span> : null}
-          </div>
-          <p className="mb-2 text-[11px] text-slate-500">
-            Ordem cronológica · FIR/FIS/TMA/CTA/CTR/ATZ/FIZ + P/R/D na altitude planejada
-          </p>
-          {airspaceError ? (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-              {airspaceError}
-            </p>
-          ) : null}
-          {!airspaceLoading && !airspaceError && waypoints.length >= 2 && enteredAirspaces.length === 0 ? (
-            <p className="text-xs text-slate-500">Nenhum espaço aéreo detectado ao longo da rota na altitude planejada.</p>
-          ) : null}
-          {waypoints.length < 2 ? (
-            <p className="text-xs text-slate-500">Monte a rota com pelo menos 2 pontos para detectar espaços aéreos.</p>
-          ) : null}
-          {enteredAirspaces.length > 0 ? (
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 font-semibold">#</th>
-                    <th className="px-3 py-2 font-semibold">Tipo</th>
-                    <th className="px-3 py-2 font-semibold">Nome</th>
-                    <th className="px-3 py-2 font-semibold">Ident</th>
-                    <th className="px-3 py-2 font-semibold">Limites</th>
-                    <th className="px-3 py-2 font-semibold">Frequências</th>
-                    <th className="px-3 py-2 font-semibold">Entrada</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {enteredAirspaces.map((a, idx) => (
-                    <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
-                      <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
-                      <td className="px-3 py-2">
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${airspaceHitTypeBadgeClass(a.type)}`}>
-                          {a.type}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-slate-200">{a.name}</td>
-                      <td className="px-3 py-2 font-mono text-slate-400">{a.ident}</td>
-                      <td className="px-3 py-2 text-slate-400">
-                        {a.lower || "—"} / {a.upper || "—"}
-                      </td>
-                      <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
-                      <td className="px-3 py-2 font-mono text-slate-400">
-                        <span>{formatAirspaceEntryDistance(a.entryDistanceNm)}</span>
-                        {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile)) ? (
-                          <span className="mt-0.5 block text-[10px] text-slate-500">
-                            {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile))}
-                          </span>
-                        ) : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-        </section>
+        <AirspaceRouteList
+          hits={enteredAirspaces}
+          loading={airspaceLoading}
+          error={airspaceError}
+          waypointsLength={waypoints.length}
+          notamsByIcao={airspaceNotamsByIcao}
+          notamsLoading={airspaceNotamsLoading}
+          profile={performanceProfile?.profile}
+        />
         </div>
         ) : null}
 
@@ -3335,6 +3338,8 @@ export function PlanejamentoTab({
                 loading={aiLoading}
                 error={aiError}
                 onTaskUpdate={handleAiTaskUpdate}
+                onTaskAdd={handleAiTaskAdd}
+                onTaskRemove={handleAiTaskRemove}
                 onCopy={copyAiText}
                 airports={airports}
                 onOpenAirportNotams={openBriefingAirportNotams}
@@ -3489,63 +3494,15 @@ export function PlanejamentoTab({
                   </div>
                 </section>
 
-                <div>
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-slate-100">Espaço aéreo na rota</h3>
-                    {airspaceLoading ? <span className="text-[11px] text-slate-500">Consultando…</span> : null}
-                  </div>
-                  {airspaceError ? (
-                    <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                      {airspaceError}
-                    </p>
-                  ) : null}
-                  {!airspaceLoading && !airspaceError && waypoints.length >= 2 && enteredAirspaces.length === 0 ? (
-                    <p className="text-xs text-slate-500">Nenhum espaço aéreo detectado ao longo da rota na altitude planejada.</p>
-                  ) : null}
-                  {enteredAirspaces.length > 0 ? (
-                    <div className="overflow-x-auto rounded-xl border border-slate-800">
-                      <table className="min-w-full text-left text-xs">
-                        <thead className="bg-slate-950/80 text-[10px] uppercase tracking-wider text-slate-500">
-                          <tr>
-                            <th className="px-3 py-2 font-semibold">#</th>
-                            <th className="px-3 py-2 font-semibold">Tipo</th>
-                            <th className="px-3 py-2 font-semibold">Nome</th>
-                            <th className="px-3 py-2 font-semibold">Ident</th>
-                            <th className="px-3 py-2 font-semibold">Limites</th>
-                            <th className="px-3 py-2 font-semibold">Frequências</th>
-                            <th className="px-3 py-2 font-semibold">Entrada</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {enteredAirspaces.map((a, idx) => (
-                            <tr key={`${a.type}-${a.ident}-${a.name}`} className="border-t border-slate-800/80">
-                              <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
-                              <td className="px-3 py-2">
-                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${airspaceHitTypeBadgeClass(a.type)}`}>
-                                  {a.type}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-slate-200">{a.name}</td>
-                              <td className="px-3 py-2 font-mono text-slate-400">{a.ident}</td>
-                              <td className="px-3 py-2 text-slate-400">
-                                {a.lower || "—"} / {a.upper || "—"}
-                              </td>
-                              <td className="max-w-[220px] px-3 py-2 text-slate-300">{formatAirspaceFreqCell(a)}</td>
-                              <td className="px-3 py-2 font-mono text-slate-400">
-                                <span>{formatAirspaceEntryDistance(a.entryDistanceNm)}</span>
-                                {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile)) ? (
-                                  <span className="mt-0.5 block text-[10px] text-slate-500">
-                                    {formatAirspaceEntryEte(airspaceEntryEteHours(a, performanceProfile?.profile))}
-                                  </span>
-                                ) : null}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : null}
-                </div>
+                <AirspaceRouteList
+                  hits={enteredAirspaces}
+                  loading={airspaceLoading}
+                  error={airspaceError}
+                  waypointsLength={waypoints.length}
+                  notamsByIcao={airspaceNotamsByIcao}
+                  notamsLoading={airspaceNotamsLoading}
+                  profile={performanceProfile?.profile}
+                />
               </div>
             ) : null}
 

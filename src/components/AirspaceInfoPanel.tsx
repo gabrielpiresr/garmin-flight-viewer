@@ -1,4 +1,5 @@
 import { airspaceTypeLabel, type AirspaceInfo } from "../lib/airspaceLayersDb";
+import { aiswebAirspaceUrl } from "../lib/aiswebLinks";
 
 /** Painel flutuante com detalhes da área selecionada. */
 export function AirspaceInfoPanel({
@@ -60,6 +61,14 @@ export function AirspaceInfoPanel({
             </p>
           </div>
         ))}
+        <a
+          href={aiswebAirspaceUrl({ ident: info.ident, fir: info.fir })}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-flex w-full items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20"
+        >
+          Abrir AISWEB
+        </a>
       </div>
     </aside>
   );

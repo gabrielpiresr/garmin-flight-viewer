@@ -1,0 +1,730 @@
+"use strict";
+
+const rea = require("./reaCorridorRoute");
+
+const GEOAISWEB = "https://geoaisweb.decea.mil.br/geoserver/ows";
+const ESRI_EXPORT = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export";
+const CRUISE_KT = 90;
+const BURN_LPH = 20;
+const ICAO_RE = /^[A-Z0-9]{4}$/;
+
+function cleanString(value) {
+  return String(value ?? "").trim();
+}
+
+function normalizeIcao(value) {
+  return cleanString(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 4);
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function parseWppRouteCommand(text, responseId = "") {
+  const candidates = [cleanString(text), cleanString(responseId)].filter(Boolean);
+  for (const raw of candidates) {
+    const normalized = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const help = normalized.toLowerCase();
+    if (help === "rota" || help === "help_rota" || help === "como rota") {
+      return { kind: "help" };
+    }
+    const match = normalized.match(
+      /^rota\s+([A-Za-z0-9]{4})\s*(?:para|to|-|\/|->|→)?\s*([A-Za-z0-9]{4})\s*$/i,
+    );
+    if (!match) continue;
+    const origin = normalizeIcao(match[1]);
+    const destination = normalizeIcao(match[2]);
+    if (!ICAO_RE.test(origin) || !ICAO_RE.test(destination)) continue;
+    return { kind: "route", origin, destination };
+  }
+  return null;
+}
+
+function formatWppRouteHelpMessage(nickname) {
+  const greet = nickname ? `${nickname}, ` : "";
+  return [
+    `${greet}para traçar uma rota via REAs, envie:`,
+    "",
+    "*Rota {ICAO} {ICAO}*",
+    "",
+    "Exemplo:",
+    "• Rota SBJD SBLO",
+    "",
+    "Eu confirmo o pedido, monto a rota automaticamente e te mando mapa, tabela, perfil, espaços aéreos, resumo e os campos Rota e RMK para copiar.",
+  ].join("\n");
+}
+
+function routeBbox(points, padDeg = 0.6) {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const p of points) {
+    if (!Number.isFinite(p?.lat) || !Number.isFinite(p?.lng)) continue;
+    minLat = Math.min(minLat, p.lat);
+    maxLat = Math.max(maxLat, p.lat);
+    minLng = Math.min(minLng, p.lng);
+    maxLng = Math.max(maxLng, p.lng);
+  }
+  if (!Number.isFinite(minLat)) return null;
+  const spanLng = Math.max(0.2, maxLng - minLng);
+  const spanLat = Math.max(0.15, maxLat - minLat);
+  return {
+    minLng: minLng - spanLng * padDeg,
+    minLat: minLat - spanLat * padDeg,
+    maxLng: maxLng + spanLng * padDeg,
+    maxLat: maxLat + spanLat * padDeg,
+  };
+}
+
+function fitBboxToAspect(bbox, width, height) {
+  const midLat = (bbox.minLat + bbox.maxLat) / 2;
+  const cosLat = Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
+  let minLng = bbox.minLng;
+  let maxLng = bbox.maxLng;
+  let minLat = bbox.minLat;
+  let maxLat = bbox.maxLat;
+  const spanLng = Math.max(0.15, maxLng - minLng);
+  const spanLat = Math.max(0.12, maxLat - minLat);
+  const targetAspect = width / Math.max(1, height);
+  const geoAspect = (spanLng * cosLat) / Math.max(1e-9, spanLat);
+  if (geoAspect < targetAspect) {
+    const needLng = (spanLat * targetAspect) / cosLat;
+    const grow = (needLng - spanLng) / 2;
+    minLng -= grow;
+    maxLng += grow;
+  } else if (geoAspect > targetAspect) {
+    const needLat = (spanLng * cosLat) / targetAspect;
+    const grow = (needLat - spanLat) / 2;
+    minLat -= grow;
+    maxLat += grow;
+  }
+  return { minLng, minLat, maxLng, maxLat };
+}
+
+function project(lat, lng, bbox, width, height) {
+  const x = ((lng - bbox.minLng) / (bbox.maxLng - bbox.minLng || 1)) * width;
+  const y = ((bbox.maxLat - lat) / (bbox.maxLat - bbox.minLat || 1)) * height;
+  return [x, y];
+}
+
+function featureInBbox(feature, bbox) {
+  const props = feature?.properties || {};
+  const a = rea.endpointA(props);
+  const b = rea.endpointB(props);
+  const pts = [
+    a.lat != null && a.lon != null ? { lat: a.lat, lng: a.lon } : null,
+    b.lat != null && b.lon != null ? { lat: b.lat, lng: b.lon } : null,
+  ].filter(Boolean);
+  if (!pts.length) return false;
+  return pts.some(
+    (p) => p.lat >= bbox.minLat && p.lat <= bbox.maxLat && p.lng >= bbox.minLng && p.lng <= bbox.maxLng,
+  );
+}
+
+async function fetchWfsJson(typeName, bbox, maxFeatures = 2000) {
+  const params = new URLSearchParams({
+    service: "WFS",
+    version: "1.0.0",
+    request: "GetFeature",
+    typeName,
+    outputFormat: "application/json",
+    maxFeatures: String(maxFeatures),
+  });
+  if (bbox) params.set("bbox", `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`);
+  const response = await fetch(`${GEOAISWEB}?${params.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(`WFS ${typeName} falhou (${response.status})`);
+  const data = await response.json();
+  return Array.isArray(data?.features) ? data.features : [];
+}
+
+async function fetchJsonCollection(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Falha ao baixar ${url} (${response.status})`);
+  const data = await response.json();
+  return Array.isArray(data?.features) ? data.features : [];
+}
+
+async function fetchReaFeatures(appUrl) {
+  const origin = cleanString(appUrl).replace(/\/+$/, "") || "https://app.epeac.com.br";
+  const collected = [];
+  const sources = [
+    { url: `${origin}/geo/cv-rea-br.json`, kind: "rea" },
+    { url: `${origin}/geo/cv-reh-br.json`, kind: "reh" },
+  ];
+  for (const source of sources) {
+    try {
+      const features = await fetchJsonCollection(source.url);
+      collected.push(...features.map((feature) => ({ ...feature, _kind: source.kind })));
+    } catch {
+      /* WFS below */
+    }
+  }
+  if (collected.length < 8) {
+    const layers = [
+      { layer: "ICA:CV_REA_BR_COMPLETO", kind: "rea" },
+      { layer: "ICA:CV_REH_BR_COMPLETO", kind: "reh" },
+    ];
+    await Promise.all(
+      layers.map(async ({ layer, kind }) => {
+        try {
+          const features = await fetchWfsJson(layer, null, 5000);
+          collected.push(...features.map((feature) => ({ ...feature, _kind: kind })));
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+  }
+  const seen = new Set();
+  return collected.filter((feature) => {
+    const id = `${feature._kind || ""}:${String(feature?.id ?? JSON.stringify(feature?.properties || {}))}`;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+async function fetchImageBuffer(url) {
+  const response = await fetch(url, { headers: { Accept: "image/png,image/jpeg,*/*" } });
+  if (!response.ok) return null;
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return buffer.length ? buffer : null;
+}
+
+function airportWaypoint(icao, rotaer) {
+  const lat = Number(rotaer?.lat);
+  const lng = Number(rotaer?.lng);
+  const elev = Number(rotaer?.altFt);
+  return {
+    raw: icao,
+    lat,
+    lng,
+    label: icao,
+    kind: "airport",
+    fieldElevFt: Number.isFinite(elev) ? Math.round(elev) : null,
+    altitudeFt: Number.isFinite(elev) ? Math.round(elev) : null,
+  };
+}
+
+function originInsideTma(origin, airspaces) {
+  if (!origin) return false;
+  return (airspaces || []).some(
+    (hit) =>
+      String(hit?.type || "").toUpperCase() === "TMA" &&
+      hit.entryDistanceNm != null &&
+      Number.isFinite(hit.entryDistanceNm) &&
+      hit.entryDistanceNm < 3,
+  );
+}
+
+function formatFreq(hit) {
+  const freqs = Array.isArray(hit?.frequencies) ? hit.frequencies : [];
+  if (!freqs.length) return "—";
+  return freqs.map((f) => `${f.service || ""} ${f.mhz || ""}`.trim()).filter(Boolean).join(" · ") || "—";
+}
+
+function formatLimit(value) {
+  return value ? String(value) : "—";
+}
+
+function svgCard(width, height, title, body) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" rx="28" fill="#020617"/>
+  <rect x="18" y="18" width="${width - 36}" height="${height - 36}" rx="22" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+  <text x="40" y="58" fill="#67e8f9" font-size="22" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(title)}</text>
+  ${body}
+</svg>`;
+}
+
+function buildRouteTableSvg(origin, dest, waypoints, legs, corridors) {
+  const rowH = 34;
+  const headerH = 86;
+  const width = 1180;
+  const height = Math.max(220, headerH + 28 + (waypoints.length + 1) * rowH + 24);
+  const cols = [
+    { x: 40, label: "#" },
+    { x: 80, label: "Ponto" },
+    { x: 280, label: "Coord" },
+    { x: 470, label: "Proa" },
+    { x: 545, label: "Alt" },
+    { x: 640, label: "Corredor" },
+    { x: 860, label: "Dist" },
+    { x: 960, label: "Tempo" },
+    { x: 1070, label: "Cons." },
+  ];
+  const header = cols
+    .map((c) => `<text x="${c.x}" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${c.label}</text>`)
+    .join("");
+  const rows = waypoints
+    .map((wp, idx) => {
+      const y = headerH + 28 + idx * rowH;
+      const leg = idx > 0 ? legs[idx - 1] : null;
+      const corridor = idx > 0 ? corridors[idx] : null;
+      const fill = idx % 2 === 0 ? "#0b1220" : "transparent";
+      const name = escapeXml(wp.reaName || wp.label || "—");
+      const coord = escapeXml(rea.formatCompactAviationCoord(wp.lat, wp.lng));
+      const proa = leg ? escapeXml(rea.formatBearingDeg(leg.bearingDeg)) : "—";
+      const alt = wp.altitudeFt != null ? `${Math.round(wp.altitudeFt)} ft` : "—";
+      const corr = corridor ? escapeXml(corridor.name) : "DCT";
+      const dist = leg ? `${leg.distanceNm.toFixed(1)} NM` : "—";
+      const ete = leg ? escapeXml(rea.formatEteClock(leg.eteHours)) : "—";
+      const fuel = leg?.fuelEstimate != null ? `${leg.fuelEstimate.toFixed(1)} L` : "—";
+      return `<rect x="28" y="${y - 22}" width="${width - 56}" height="${rowH}" fill="${fill}" rx="8"/>
+        <text x="40" y="${y}" fill="#94a3b8" font-size="13" font-family="ui-monospace,monospace">${idx + 1}</text>
+        <text x="80" y="${y}" fill="#e2e8f0" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${name}</text>
+        <text x="280" y="${y}" fill="#67e8f9" font-size="13" font-family="ui-monospace,monospace">${coord}</text>
+        <text x="470" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-monospace,monospace">${proa}</text>
+        <text x="545" y="${y}" fill="#fbbf24" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(alt)}</text>
+        <text x="640" y="${y}" fill="${corridor ? "#34d399" : "#64748b"}" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${corr}</text>
+        <text x="860" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(dist)}</text>
+        <text x="960" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${ete}</text>
+        <text x="1070" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(fuel)}</text>`;
+    })
+    .join("");
+  return svgCard(width, height, `Tabela da rota · ${origin} → ${dest}`, `${header}${rows}`);
+}
+
+function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain) {
+  const width = 1180;
+  const height = 520;
+  const padL = 70;
+  const padR = 30;
+  const padT = 90;
+  const padB = 50;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const totalNm = legs[legs.length - 1]?.cumulativeDistanceNm || 1;
+  const minFt = 0;
+  let maxFt = 1500;
+  const marks = [{ xNm: 0, label: waypoints[0]?.label || origin, alt: waypoints[0]?.altitudeFt ?? 0 }];
+  for (const leg of legs) {
+    marks.push({
+      xNm: leg.cumulativeDistanceNm,
+      label: leg.to?.reaName || leg.to?.label || "",
+      alt: leg.to?.altitudeFt ?? null,
+    });
+  }
+  for (const m of marks) {
+    if (m.alt != null) maxFt = Math.max(maxFt, m.alt);
+  }
+  for (const c of corridors) {
+    if (c?.altMax != null) maxFt = Math.max(maxFt, c.altMax);
+  }
+  for (const p of terrain || []) {
+    if (p?.elevFt != null) maxFt = Math.max(maxFt, p.elevFt);
+  }
+  maxFt += 400;
+  const xScale = (nm) => padL + (nm / totalNm) * plotW;
+  const yScale = (ft) => padT + plotH - ((ft - minFt) / (maxFt - minFt || 1)) * plotH;
+
+  const corridorRects = [];
+  let cum = 0;
+  for (let i = 0; i < legs.length; i++) {
+    const corridor = corridors[i + 1];
+    const x0 = xScale(cum);
+    cum = legs[i].cumulativeDistanceNm;
+    if (!corridor) continue;
+    const x1 = xScale(cum);
+    const yTop = yScale(corridor.altMax || maxFt);
+    const yBot = yScale(corridor.altMin || 0);
+    corridorRects.push(
+      `<rect x="${x0.toFixed(1)}" y="${Math.min(yTop, yBot).toFixed(1)}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="${Math.max(1, Math.abs(yBot - yTop)).toFixed(1)}" fill="#f87171" fill-opacity="0.12" stroke="#ef4444" stroke-opacity="0.7" stroke-dasharray="4 3"/>
+       <text x="${((x0 + x1) / 2).toFixed(1)}" y="${(Math.min(yTop, yBot) + 16).toFixed(1)}" text-anchor="middle" fill="#fca5a5" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(corridor.name)}</text>`,
+    );
+  }
+
+  const planned = marks
+    .filter((m) => m.alt != null)
+    .map((m) => `${xScale(m.xNm).toFixed(1)},${yScale(m.alt).toFixed(1)}`)
+    .join(" ");
+  const terrainPts = (terrain || [])
+    .map((p, i, arr) => {
+      const xNm = arr.length > 1 ? (i / (arr.length - 1)) * totalNm : 0;
+      if (p?.elevFt == null) return null;
+      return `${xScale(xNm).toFixed(1)},${yScale(p.elevFt).toFixed(1)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  const labels = marks
+    .map((m) => {
+      const x = xScale(m.xNm);
+      const y = m.alt != null ? yScale(m.alt) : padT + plotH;
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#22d3ee" stroke="#fff" stroke-width="1.4"/>
+        <text x="${x.toFixed(1)}" y="${padT - 10}" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="ui-monospace,monospace">${escapeXml(String(m.label || "").slice(0, 10))}</text>`;
+    })
+    .join("");
+
+  const yTicks = [];
+  const step = maxFt > 8000 ? 2000 : maxFt > 3000 ? 1000 : 500;
+  for (let y = 0; y <= maxFt; y += step) yTicks.push(y);
+  const yGrid = yTicks
+    .map(
+      (y) =>
+        `<line x1="${padL}" y1="${yScale(y).toFixed(1)}" x2="${padL + plotW}" y2="${yScale(y).toFixed(1)}" stroke="#1e293b"/>
+         <text x="${padL - 8}" y="${(yScale(y) + 4).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif">${y}</text>`,
+    )
+    .join("");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" rx="28" fill="#020617"/>
+  <text x="40" y="58" fill="#67e8f9" font-size="22" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">Perfil vertical · ${escapeXml(origin)} → ${escapeXml(dest)}</text>
+  <rect x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="#020617" stroke="#1e293b"/>
+  ${yGrid}
+  ${corridorRects.join("")}
+  ${terrainPts ? `<polyline fill="none" stroke="#b45309" stroke-width="1.6" points="${terrainPts}"/>` : ""}
+  ${planned ? `<polyline fill="none" stroke="#22d3ee" stroke-width="3" points="${planned}"/>` : ""}
+  ${labels}
+  <text x="${padL}" y="${height - 18}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">0 NM</text>
+  <text x="${padL + plotW}" y="${height - 18}" text-anchor="end" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">${totalNm.toFixed(0)} NM</text>
+</svg>`;
+}
+
+function buildAirspacesSvg(origin, dest, hits) {
+  const rowH = 42;
+  const headerH = 90;
+  const width = 1180;
+  const list = Array.isArray(hits) ? hits : [];
+  const height = Math.max(240, headerH + 20 + Math.max(1, list.length) * rowH + 28);
+  const rows =
+    list.length === 0
+      ? `<text x="40" y="${headerH + 30}" fill="#94a3b8" font-size="16" font-family="ui-sans-serif,system-ui,sans-serif">Nenhum espaço aéreo detectado na altitude planejada.</text>`
+      : list
+          .map((hit, idx) => {
+            const y = headerH + 28 + idx * rowH;
+            const fill = idx % 2 === 0 ? "#0b1220" : "transparent";
+            return `<rect x="28" y="${y - 26}" width="${width - 56}" height="${rowH}" fill="${fill}" rx="8"/>
+              <text x="40" y="${y}" fill="#64748b" font-size="13" font-family="ui-monospace,monospace">${idx + 1}</text>
+              <text x="80" y="${y}" fill="#a78bfa" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(hit.type || "—")}</text>
+              <text x="160" y="${y}" fill="#e2e8f0" font-size="14" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(hit.name || hit.ident || "—")}</text>
+              <text x="560" y="${y}" fill="#94a3b8" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(formatLimit(hit.lower))} / ${escapeXml(formatLimit(hit.upper))}</text>
+              <text x="780" y="${y}" fill="#67e8f9" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${escapeXml(formatFreq(hit))}</text>
+              <text x="1040" y="${y}" fill="#cbd5e1" font-size="13" font-family="ui-sans-serif,system-ui,sans-serif">${hit.entryDistanceNm != null ? `${Number(hit.entryDistanceNm).toFixed(1)} NM` : "—"}</text>`;
+          })
+          .join("");
+  const header = `<text x="80" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">TIPO</text>
+    <text x="160" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">NOME</text>
+    <text x="560" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">LIMITES</text>
+    <text x="780" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">FREQ</text>
+    <text x="1040" y="${headerH}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">ENTRADA</text>`;
+  return svgCard(width, height, `Espaços aéreos · ${origin} → ${dest}`, `${header}${rows}`);
+}
+
+function airportsInMapBbox(airports, bbox, waypoints, limit = 70) {
+  const listed = [];
+  for (const ad of Array.isArray(airports) ? airports : []) {
+    const lat = Number(ad?.lat);
+    const lng = Number(ad?.lon ?? ad?.lng);
+    const icao = cleanString(ad?.icao).toUpperCase();
+    if (!ICAO_RE.test(icao) || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (lat < bbox.minLat || lat > bbox.maxLat || lng < bbox.minLng || lng > bbox.maxLng) continue;
+    listed.push({ icao, lat, lng });
+  }
+  if (listed.length <= limit) return listed;
+  return listed
+    .map((ad) => ({
+      ad,
+      d: Math.min(...waypoints.map((wp) => rea.haversineM(wp, { lat: ad.lat, lng: ad.lng }))),
+    }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, limit)
+    .map((row) => row.ad);
+}
+
+function buildReaLinesSvg(features, bbox, width, height) {
+  const parts = [];
+  for (const feature of Array.isArray(features) ? features : []) {
+    if (!featureInBbox(feature, bbox)) continue;
+    if (feature._kind === "reh") continue;
+    const props = feature.properties || {};
+    const a = rea.endpointA(props);
+    const b = rea.endpointB(props);
+    if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
+    const [x1, y1] = project(a.lat, a.lon, bbox, width, height);
+    const [x2, y2] = project(b.lat, b.lon, bbox, width, height);
+    parts.push(
+      `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#a16207" stroke-width="2.4" stroke-opacity="0.9" stroke-linecap="round"/>`,
+    );
+  }
+  return parts.join("");
+}
+
+function buildAirportsSvg(airports, bbox, width, height, hideIcaos) {
+  const skip = new Set((hideIcaos || []).map((code) => String(code || "").toUpperCase()));
+  return airports
+    .filter((ad) => !skip.has(ad.icao))
+    .map((ad) => {
+      const [x, y] = project(ad.lat, ad.lng, bbox, width, height);
+      return `<g>
+        <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#0f172a" stroke="#f8fafc" stroke-width="1.2"/>
+        <text x="${(x + 5).toFixed(1)}" y="${(y - 5).toFixed(1)}" fill="#0f172a" stroke="#fff" stroke-width="3" paint-order="stroke" font-size="10" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(ad.icao)}</text>
+      </g>`;
+    })
+    .join("");
+}
+
+function buildRouteOverlaySvg(waypoints, bbox, width, height, extras = {}) {
+  const pts = waypoints.map((wp) => project(wp.lat, wp.lng, bbox, width, height));
+  if (pts.length < 2) return null;
+  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const reaLines = buildReaLinesSvg(extras.reaFeatures, bbox, width, height);
+  const airportMarks = buildAirportsSvg(extras.airports || [], bbox, width, height, [
+    waypoints[0]?.label,
+    waypoints[waypoints.length - 1]?.label,
+  ]);
+  const labels = waypoints
+    .map((wp, idx) => {
+      const [x, y] = pts[idx];
+      const label = escapeXml(wp.label || "");
+      const isEnd = idx === 0 || idx === waypoints.length - 1;
+      if (!isEnd && wp.kind !== "airport") {
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#22d3ee" stroke="#fff" stroke-width="1.5"/>`;
+      }
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${idx === 0 ? "#22c55e" : "#f97316"}" stroke="#fff" stroke-width="2"/>
+        <rect x="${(x - 28).toFixed(1)}" y="${(y - 28).toFixed(1)}" width="56" height="18" rx="6" fill="rgb(2 6 23)" fill-opacity="0.82"/>
+        <text x="${x.toFixed(1)}" y="${(y - 15).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="11" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${label}</text>`;
+    })
+    .join("");
+  return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  ${reaLines}
+  ${airportMarks}
+  <polyline fill="none" stroke="rgb(15 23 42)" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
+  <polyline fill="none" stroke="rgb(34 211 238)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
+  ${labels}
+</svg>`);
+}
+
+function wmsQuery(layers, bboxStr, width, height) {
+  return new URLSearchParams({
+    service: "WMS",
+    version: "1.1.1",
+    request: "GetMap",
+    layers,
+    styles: "",
+    bbox: bboxStr,
+    width: String(width),
+    height: String(height),
+    srs: "EPSG:4326",
+    format: "image/png",
+    transparent: "true",
+  });
+}
+
+async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
+  if (!sharpFactory || waypoints.length < 2) return null;
+  const width = 1200;
+  const height = 780;
+  const raw = routeBbox(waypoints, 0.18);
+  if (!raw) return null;
+  const bbox = fitBboxToAspect(raw, width, height);
+  const bboxStr = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
+  const esriQs = new URLSearchParams({
+    bbox: bboxStr,
+    bboxSR: "4326",
+    imageSR: "4326",
+    size: `${width},${height}`,
+    format: "png",
+    f: "image",
+  });
+  const airspaceQs = wmsQuery("ICA:TMA,ICA:CTR,ICA:ATZ", bboxStr, width, height);
+  const reaQs = wmsQuery("ICA:CV_REA_BR_COMPLETO", bboxStr, width, height);
+  const airports = airportsInMapBbox(extras.airports, bbox, waypoints);
+  const [base, airspace, reaOverlay] = await Promise.all([
+    fetchImageBuffer(`${ESRI_EXPORT}?${esriQs}`),
+    fetchImageBuffer(`${GEOAISWEB}?${airspaceQs}`),
+    fetchImageBuffer(`${GEOAISWEB}?${reaQs}`),
+  ]);
+  const overlaySvg = buildRouteOverlaySvg(waypoints, bbox, width, height, {
+    reaFeatures: extras.reaFeatures,
+    airports,
+  });
+  const layers = [];
+  if (base) layers.push({ input: base, left: 0, top: 0 });
+  if (airspace) layers.push({ input: airspace, left: 0, top: 0 });
+  if (reaOverlay) layers.push({ input: reaOverlay, left: 0, top: 0 });
+  if (overlaySvg) layers.push({ input: overlaySvg, left: 0, top: 0 });
+  if (!layers.length) return null;
+  return sharpFactory({
+    create: { width, height, channels: 3, background: { r: 15, g: 23, b: 42 } },
+  })
+    .composite(layers)
+    .jpeg({ quality: 84 })
+    .toBuffer();
+}
+
+async function sendImageFromSvg(deps, to, svg, fileName, caption) {
+  const png = await deps.renderSvgToPng(svg, { scale: 2 });
+  const link = await deps.uploadPngBuffer(png, fileName);
+  await deps.sendImage(deps.settings, { to, link, caption: caption || "" });
+}
+
+async function handleWppRouteCommand(deps, command) {
+  const incoming = deps.incoming;
+  const nickname = deps.nickname || "";
+  const greet = nickname ? `${nickname}, ` : "";
+
+  if (!command || command.kind === "help") {
+    await deps.sendText(deps.settings, { to: incoming.from, body: formatWppRouteHelpMessage(nickname) });
+    return "route_help";
+  }
+
+  const origin = command.origin;
+  const dest = command.destination;
+  if (origin === dest) {
+    await deps.sendText(deps.settings, {
+      to: incoming.from,
+      body: `${greet}informe dois ICAOs diferentes. Ex.: Rota SBJD SBLO`,
+    });
+    return "same_icao";
+  }
+
+  await deps.sendText(deps.settings, {
+    to: incoming.from,
+    body: `${greet}recebi *Rota ${origin} ${dest}*. Estou montando a rota via REAs…`,
+  });
+
+  const [originRotaer, destRotaer] = await Promise.all([
+    deps.aisweb.fetchRotaer(origin),
+    deps.aisweb.fetchRotaer(dest),
+  ]);
+  const originWp = airportWaypoint(origin, originRotaer);
+  const destWp = airportWaypoint(dest, destRotaer);
+  if (!Number.isFinite(originWp.lat) || !Number.isFinite(originWp.lng)) {
+    await deps.sendText(deps.settings, { to: incoming.from, body: `Não encontrei coordenadas de *${origin}*.` });
+    return "origin_not_found";
+  }
+  if (!Number.isFinite(destWp.lat) || !Number.isFinite(destWp.lng)) {
+    await deps.sendText(deps.settings, { to: incoming.from, body: `Não encontrei coordenadas de *${dest}*.` });
+    return "dest_not_found";
+  }
+
+  originWp.kind = "origin";
+  destWp.kind = "destination";
+  const [features, airports] = await Promise.all([
+    fetchReaFeatures(deps.appUrl),
+    typeof deps.listAerodromes === "function" ? deps.listAerodromes().catch(() => []) : Promise.resolve([]),
+  ]);
+  let waypoints = [originWp, destWp];
+  const snap = rea.snapRouteToVisualCorridors(waypoints, features);
+  if (snap.ok) waypoints = snap.waypoints;
+  let corridors = rea.matchLegCorridors(waypoints, features);
+  waypoints = rea.applyCorridorAltitudes(waypoints, corridors);
+  corridors = rea.matchLegCorridors(waypoints, features);
+
+  const legs = rea.buildFlightPlanLegs(waypoints, { cruiseSpeedKt: CRUISE_KT, fuelBurnPerHour: BURN_LPH });
+  let airspaces = [];
+  try {
+    airspaces = await deps.aisweb.queryAirspaceAlongRoute(waypoints);
+  } catch (err) {
+    console.warn(`[wppRoute] airspace failed ${origin}-${dest} ${String(err?.message || err).slice(0, 180)}`);
+  }
+  const inTma = originInsideTma(originWp, airspaces);
+  const routeText = rea.buildFplRouteText(waypoints, corridors, CRUISE_KT, { originInsideTma: inTma });
+  const rmkText = rea.buildFplRmkText(waypoints, corridors);
+
+  let terrain = [];
+  try {
+    if (typeof deps.fetchRouteElevation === "function") {
+      const elev = await deps.fetchRouteElevation({ waypoints, samples: 40 });
+      terrain = Array.isArray(elev?.points) ? elev.points : [];
+    }
+  } catch {
+    terrain = [];
+  }
+
+  const stamp = `${origin}-${dest}`.toLowerCase();
+  try {
+    const mapJpeg = await buildRouteMapJpeg(waypoints, deps.getSharp?.(), {
+      reaFeatures: features,
+      airports,
+    });
+    if (mapJpeg) {
+      const link = await deps.uploadPngBuffer(mapJpeg, `wpp-rota-map-${stamp}.jpg`);
+      await deps.sendImage(deps.settings, { to: incoming.from, link, caption: `🗺️ Rota ${origin} → ${dest}` });
+    }
+  } catch (err) {
+    console.warn(`[wppRoute] map image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
+  }
+
+  try {
+    await sendImageFromSvg(
+      deps,
+      incoming.from,
+      buildRouteTableSvg(origin, dest, waypoints, legs, corridors),
+      `wpp-rota-table-${stamp}.png`,
+      `📋 Tabela · ${origin} → ${dest}`,
+    );
+  } catch (err) {
+    console.warn(`[wppRoute] table image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
+  }
+
+  try {
+    await sendImageFromSvg(
+      deps,
+      incoming.from,
+      buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain),
+      `wpp-rota-profile-${stamp}.png`,
+      `📈 Perfil vertical · ${origin} → ${dest}`,
+    );
+  } catch (err) {
+    console.warn(`[wppRoute] profile image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
+  }
+
+  try {
+    await sendImageFromSvg(
+      deps,
+      incoming.from,
+      buildAirspacesSvg(origin, dest, airspaces),
+      `wpp-rota-airspace-${stamp}.png`,
+      `✈️ Espaços aéreos · ${origin} → ${dest}`,
+    );
+  } catch (err) {
+    console.warn(`[wppRoute] airspace image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
+  }
+
+  const last = legs[legs.length - 1];
+  const names = [...new Set((corridors || []).map((c) => c?.name).filter(Boolean))];
+  const summary = [
+    `*${origin} → ${dest}*`,
+    last?.cumulativeDistanceNm != null ? `Distância: *${last.cumulativeDistanceNm.toFixed(0)} NM*` : null,
+    last?.cumulativeEteHours != null ? `ETE: *${rea.formatEteClock(last.cumulativeEteHours)}* · ${CRUISE_KT} kt` : null,
+    last?.cumulativeFuel != null ? `Consumo est.: *${last.cumulativeFuel.toFixed(0)} L*` : null,
+    names.length
+      ? `REAs: ${names.slice(0, 8).map((n) => `*${n}*`).join(", ")}`
+      : snap.ok
+        ? "Rota via REA."
+        : "Sem REA utilizável — rota em DCT.",
+    inTma ? "Partida em TMA — campo Rota começa em REA (sem DCT até a entrada)." : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  await deps.sendText(deps.settings, { to: incoming.from, body: summary });
+  if (routeText) await deps.sendText(deps.settings, { to: incoming.from, body: routeText });
+  if (rmkText) await deps.sendText(deps.settings, { to: incoming.from, body: rmkText });
+  return snap.ok ? "route_sent" : "route_sent_dct";
+}
+
+module.exports = {
+  parseWppRouteCommand,
+  formatWppRouteHelpMessage,
+  handleWppRouteCommand,
+};

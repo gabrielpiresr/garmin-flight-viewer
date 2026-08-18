@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 import {
   MapContainer,
   Marker,
+  Polygon,
   Polyline,
   Popup,
   TileLayer,
@@ -32,6 +33,8 @@ import { fetchAiswebMetBatch } from "../lib/aiswebDb";
 import { parseMetar } from "../lib/aiswebMetar";
 import { isValidMetar, metarFlightRule, metarFlightRuleColor, type MetarFlightRule } from "../lib/route3dWeather";
 import type { AiswebAirportBundle, AiswebMetarTaf } from "../types/aisweb";
+import type { RouteNotamHit } from "../lib/routeNotams";
+import { RouteNotamInfoPanel, RouteNotamsOverlay } from "./RouteNotamsOverlay";
 
 type MapStyle = "satellite" | "roads" | "terrain" | "windy" | "wac";
 type BaseMapStyle = Exclude<MapStyle, "windy" | "wac">;
@@ -177,6 +180,8 @@ import {
   type ChartTilesManifest,
 } from "../lib/chartTiles";
 import { AirspaceInfoPanel } from "./AirspaceInfoPanel";
+import { parseCoordAreaText, coordAreaError } from "../lib/coordArea";
+import type { SavedRouteArea } from "../lib/savedFlightRoutes";
 import { AirspaceLayersOverlay } from "./AirspaceLayersOverlay";
 import { FcaAdOverlay } from "./FcaAdOverlay";
 import { AfisAdOverlay } from "./AfisAdOverlay";
@@ -195,7 +200,11 @@ type PlanLayerId =
   | "rea_points"
   | "city_labels";
 
-const FEATURE_LAYER_TOGGLES: Array<{ id: Extract<PlanLayerId, "airports" | "rea_points" | "city_labels">; label: string; defaultOn: boolean }> = [
+const FEATURE_LAYER_TOGGLES: Array<{
+  id: Extract<PlanLayerId, "airports" | "rea_points" | "city_labels">;
+  label: string;
+  defaultOn: boolean;
+}> = [
   { id: "airports", label: "Aeroportos", defaultOn: true },
   { id: "rea_points", label: "Pontos REA", defaultOn: true },
   { id: "city_labels", label: "Cidades", defaultOn: true },
@@ -1011,6 +1020,65 @@ function MapClickHandler({
   return null;
 }
 
+const PLAN_POPUP = {
+  autoPan: false,
+  keepInView: false,
+  autoClose: true,
+  closeOnClick: true,
+  closeOnEscapeKey: true,
+} as const;
+
+function AerodromePlanningPopup({
+  icao,
+  fallbackName,
+  lat,
+  lng,
+  city,
+  uf,
+  altitude,
+  operation,
+  onPick,
+  onOpenDetails,
+}: {
+  icao: string;
+  fallbackName?: string;
+  lat: number;
+  lng: number;
+  city?: string;
+  uf?: string;
+  altitude?: string;
+  operation?: string;
+  onPick?: (candidate: MapPickCandidate) => void;
+  onOpenDetails?: (bundle: AiswebAirportBundle) => void;
+}) {
+  return (
+    <Popup maxWidth={320} minWidth={280} {...PLAN_POPUP}>
+      <AerodromeMapPopupContent
+        icao={icao}
+        fallbackName={fallbackName}
+        onOpenDetails={onOpenDetails}
+        onAddToRoute={
+          onPick
+            ? () =>
+                onPick({
+                  lat,
+                  lng,
+                  label: icao,
+                  kind: "airport",
+                  name: fallbackName,
+                  city,
+                  uf,
+                  icao,
+                  altitude,
+                  operation,
+                })
+            : undefined
+        }
+      />
+    </Popup>
+  );
+}
+
 function PendingPickPopup({
   pick,
   onConfirm,
@@ -1023,6 +1091,7 @@ function PendingPickPopup({
   return (
     <Popup
       position={[pick.lat, pick.lng]}
+      {...PLAN_POPUP}
       eventHandlers={{
         remove: () => onClose(),
       }}
@@ -1303,32 +1372,20 @@ function VisibleAerodromes({
             }}
           >
             {/^[A-Z0-9]{4}$/.test(code) ? (
-              <Popup maxWidth={320} minWidth={280} autoPan autoClose closeOnClick closeOnEscapeKey>
-                <AerodromeMapPopupContent
-                  icao={code}
-                  fallbackName={ad.name}
-                  onOpenDetails={onOpenDetails}
-                  onAddToRoute={
-                    onPick
-                      ? () =>
-                          onPick({
-                            lat,
-                            lng,
-                            label: code,
-                            kind: "airport",
-                            name: ad.name,
-                            city: ad.municipality,
-                            uf: ad.uf,
-                            icao: code,
-                            altitude: ad.altitudeText || undefined,
-                            operation: ad.operation || undefined,
-                          })
-                      : undefined
-                  }
-                />
-              </Popup>
+              <AerodromePlanningPopup
+                icao={code}
+                fallbackName={ad.name}
+                lat={lat}
+                lng={lng}
+                city={ad.municipality}
+                uf={ad.uf}
+                altitude={ad.altitudeText || undefined}
+                operation={ad.operation || undefined}
+                onPick={onPick}
+                onOpenDetails={onOpenDetails}
+              />
             ) : (
-              <Popup>
+              <Popup {...PLAN_POPUP}>
                 <div className="text-xs text-slate-800">
                   <p className="font-semibold">{ad.name || code}</p>
                   <p className="font-mono text-[11px]">{code}</p>
@@ -1349,6 +1406,9 @@ function VisibleMetarAerodromes({
   priorityIcaos,
   onVisibleMetarIcaosChange,
   onLoadingChange,
+  onPick,
+  onOpenDetails,
+  onSuppressMapPick,
 }: {
   aerodromes: Aerodrome[];
   show: boolean;
@@ -1356,6 +1416,9 @@ function VisibleMetarAerodromes({
   priorityIcaos?: Set<string>;
   onVisibleMetarIcaosChange?: (icaos: Set<string>) => void;
   onLoadingChange?: (loading: boolean) => void;
+  onPick?: (candidate: MapPickCandidate) => void;
+  onOpenDetails?: (bundle: AiswebAirportBundle) => void;
+  onSuppressMapPick?: () => void;
 }) {
   const map = useMap();
   const [bounds, setBounds] = useState(() => map.getBounds());
@@ -1520,6 +1583,13 @@ function VisibleMetarAerodromes({
             eventHandlers={{
               click: (e) => {
                 L.DomEvent.stopPropagation(e);
+                e.target.closeTooltip();
+              },
+              popupopen: (e) => {
+                e.target.closeTooltip();
+              },
+              popupclose: () => {
+                onSuppressMapPick?.();
               },
             }}
           >
@@ -1527,10 +1597,24 @@ function VisibleMetarAerodromes({
               direction="top"
               offset={[0, -10]}
               opacity={1}
+              sticky={false}
+              interactive={false}
               className="metar-hover-tooltip"
             >
               <MetarHoverCard icao={code} met={entry.met} rule={entry.rule} />
             </Tooltip>
+            <AerodromePlanningPopup
+              icao={code}
+              fallbackName={ad.name}
+              lat={lat}
+              lng={lng}
+              city={ad.municipality}
+              uf={ad.uf}
+              altitude={ad.altitudeText || undefined}
+              operation={ad.operation || undefined}
+              onPick={onPick}
+              onOpenDetails={onOpenDetails}
+            />
           </Marker>
         );
       })}
@@ -1616,7 +1700,7 @@ function VisibleReaFixes({
               },
             }}
           >
-            <Popup>
+            <Popup {...PLAN_POPUP}>
               <div className="min-w-[160px] space-y-2 text-slate-900">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-amber-700">REA / REH</p>
@@ -1686,9 +1770,18 @@ type FlightPlanMapProps = {
   onMeasureModeChange?: (on: boolean) => void;
   onWaypointRemove?: (index: number) => void;
   onAerodromeDetails?: (bundle: AiswebAirportBundle) => void;
+  customAreas?: SavedRouteArea[];
+  onCustomAreasChange?: (areas: SavedRouteArea[]) => void;
+  routeNotams?: RouteNotamHit[];
+  showRouteNotamsOnMap?: boolean;
+  onShowRouteNotamsOnMapChange?: (on: boolean) => void;
+  filterNotamsByVerticalProfile?: boolean;
+  onFilterNotamsByVerticalProfileChange?: (on: boolean) => void;
+  onSnapToVisualCorridors?: () => void;
+  corridorSnapEnabled?: boolean;
 };
 
-type MapToolPanel = "filters" | "basemap" | "windy" | "layers" | null;
+type MapToolPanel = "filters" | "basemap" | "windy" | "layers" | "areas" | "notams" | null;
 
 /**
  * Arrasta um trecho da rota até um AD/REA: ao soltar perto de um ponto,
@@ -1946,6 +2039,108 @@ function MapToolIconAirspace({ className = "h-5 w-5" }: { className?: string }) 
   );
 }
 
+function MapToolIconArea({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M3 5v14h18V5H3zm16 12H5V7h14v10z" />
+      <path d="M7 9h4v2H7zm6 4h4v2h-4z" />
+    </svg>
+  );
+}
+
+function MapToolIconNotam({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M12 3.2 19.2 12 12 20.8 4.8 12 12 3.2zm0 4.4L8.2 12 12 16.4 15.8 12 12 7.6z" />
+    </svg>
+  );
+}
+
+function MapToolIconCorridor({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M4 5h3v14H4V5zm13 0h3v14h-3V5zM9.8 7.1 11.2 5.7 19 13.5l-1.4 1.4-6.4-6.4-1.4 1.4-1.4-1.4 1.4-1.4zm0 6.5 1.4-1.4 5.4 5.4-1.4 1.4-4-4-2.2 2.2-1.4-1.4 2.2-2.2z" />
+    </svg>
+  );
+}
+
+const AREA_COLORS = ["#f472b6", "#f59e0b", "#34d399", "#818cf8", "#fb7185", "#22d3ee"];
+
+function areaColor(index: number): string {
+  return AREA_COLORS[index % AREA_COLORS.length]!;
+}
+
+function FitLatLngs({
+  points,
+  fitKey,
+}: {
+  points: Array<{ lat: number; lng: number }>;
+  fitKey: string | null;
+}) {
+  const map = useMap();
+  const lastKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!fitKey || fitKey === lastKey.current || points.length < 2) return;
+    lastKey.current = fitKey;
+    map.fitBounds(
+      L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])),
+      { padding: [48, 48], animate: false, maxZoom: 11 },
+    );
+  }, [fitKey, map, points]);
+  return null;
+}
+
+function CustomAreaPolygons({
+  areas,
+  preview,
+  onRemove,
+}: {
+  areas: SavedRouteArea[];
+  preview: Array<{ lat: number; lng: number }> | null;
+  onRemove?: (id: string) => void;
+}) {
+  return (
+    <>
+      {areas.map((area, idx) => {
+        const color = areaColor(idx);
+        const positions = area.points.map((p) => [p.lat, p.lng] as [number, number]);
+        return (
+          <Polygon
+            key={area.id}
+            positions={positions}
+            pathOptions={{ color, weight: 2, fillColor: color, fillOpacity: 0.18 }}
+          >
+            <Popup {...PLAN_POPUP}>
+              <div className="min-w-[140px] space-y-1.5 text-slate-900">
+                <p className="text-sm font-semibold">{area.name}</p>
+                <p className="text-[10px] text-slate-500">{area.points.length} vértices</p>
+                {onRemove ? (
+                  <button
+                    type="button"
+                    className="w-full rounded-md bg-rose-600 px-2 py-1 text-left text-[11px] font-semibold text-white hover:bg-rose-500"
+                    onClick={() => onRemove(area.id)}
+                  >
+                    Remover área
+                  </button>
+                ) : null}
+              </div>
+            </Popup>
+            <Tooltip direction="center" permanent={false}>
+              {area.name}
+            </Tooltip>
+          </Polygon>
+        );
+      })}
+      {preview && preview.length >= 3 ? (
+        <Polygon
+          positions={preview.map((p) => [p.lat, p.lng] as [number, number])}
+          pathOptions={{ color: "#e879f9", weight: 2, dashArray: "6 4", fillColor: "#e879f9", fillOpacity: 0.12 }}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function FlightPlanMap({
   waypoints,
   originLabel,
@@ -1972,6 +2167,15 @@ export function FlightPlanMap({
   onMeasureModeChange: _onMeasureModeChange,
   onWaypointRemove,
   onAerodromeDetails,
+  customAreas = [],
+  onCustomAreasChange,
+  routeNotams = [],
+  showRouteNotamsOnMap = true,
+  onShowRouteNotamsOnMapChange,
+  filterNotamsByVerticalProfile = true,
+  onFilterNotamsByVerticalProfileChange,
+  onSnapToVisualCorridors,
+  corridorSnapEnabled = false,
 }: FlightPlanMapProps) {
   const handlePick = onPickPoint || onPickAerodrome;
   const [pendingPick, setPendingPick] = useState<MapPickCandidate | null>(null);
@@ -1991,7 +2195,24 @@ export function FlightPlanMap({
     info: AirspaceInfo;
     key: string;
   } | null>(null);
+  const [selectedRouteNotams, setSelectedRouteNotams] = useState<{
+    hits: RouteNotamHit[];
+    activeId: string;
+  } | null>(null);
   const [toolPanel, setToolPanel] = useState<MapToolPanel>(null);
+
+  useEffect(() => {
+    setSelectedRouteNotams((prev) => {
+      if (!prev) return prev;
+      const ids = new Set(routeNotams.map((hit) => hit.id));
+      const hits = prev.hits.filter((hit) => ids.has(hit.id));
+      if (!hits.length) return null;
+      const activeId = ids.has(prev.activeId) ? prev.activeId : hits[0]!.id;
+      if (hits.length === prev.hits.length && activeId === prev.activeId) return prev;
+      return { hits, activeId };
+    });
+  }, [routeNotams]);
+
   const suppressMapPickUntil = useRef(0);
   const mapShellRef = useRef<HTMLDivElement>(null);
   const [mapZoom, setMapZoom] = useState(5);
@@ -1999,6 +2220,11 @@ export function FlightPlanMap({
   const [visibleMetarIcaos, setVisibleMetarIcaos] = useState<Set<string>>(() => new Set());
   const [aerodromeLoading, setAerodromeLoading] = useState(false);
   const [metarLoading, setMetarLoading] = useState(false);
+  const [areaDraftText, setAreaDraftText] = useState("");
+  const [areaDraftName, setAreaDraftName] = useState("");
+  const [areaPreview, setAreaPreview] = useState<Array<{ lat: number; lng: number }> | null>(null);
+  const [areaFitKey, setAreaFitKey] = useState<string | null>(null);
+  const [areaError, setAreaError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2239,6 +2465,42 @@ export function FlightPlanMap({
     setPendingPick({ lat, lng, label, kind: "fix" });
   }
 
+  function traceAreaDraft() {
+    const points = parseCoordAreaText(areaDraftText);
+    const error = coordAreaError(points);
+    if (error) {
+      setAreaPreview(null);
+      setAreaError(error);
+      return;
+    }
+    setAreaError(null);
+    setAreaPreview(points);
+    setAreaFitKey(`area-${Date.now()}`);
+  }
+
+  function saveAreaDraft() {
+    const points = areaPreview || parseCoordAreaText(areaDraftText);
+    const error = coordAreaError(points);
+    if (error) {
+      setAreaError(error);
+      return;
+    }
+    const name = areaDraftName.trim() || `Área ${customAreas.length + 1}`;
+    onCustomAreasChange?.([
+      ...customAreas,
+      {
+        id: `area_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        sourceText: areaDraftText.trim(),
+        points,
+      },
+    ]);
+    setAreaDraftName("");
+    setAreaDraftText("");
+    setAreaPreview(null);
+    setAreaError(null);
+  }
+
   return (
     <div
       className={`flex flex-col overflow-hidden rounded-xl border border-slate-700/70 ${className} ${
@@ -2252,7 +2514,7 @@ export function FlightPlanMap({
         {mapOverlay && !toolPanel ? (
           <div className="pointer-events-none absolute inset-0 z-[500]">
             <div
-              className={`pointer-events-auto absolute left-2 top-2 max-h-[calc(100%-1rem)] ${mapOverlayMaxWidthClass}`}
+              className={`pointer-events-auto absolute left-2 top-2 flex max-h-[calc(100%-1rem)] flex-col overflow-hidden ${mapOverlayMaxWidthClass}`}
             >
               {mapOverlay}
             </div>
@@ -2277,7 +2539,11 @@ export function FlightPlanMap({
                       ? "Tipo de mapa"
                       : toolPanel === "windy"
                         ? "Camada Windy"
-                        : "Espaços aéreos"}
+                        : toolPanel === "areas"
+                          ? "Áreas"
+                          : toolPanel === "notams"
+                            ? "NOTAMs"
+                            : "Espaços aéreos"}
                 </p>
                 <button
                   type="button"
@@ -2531,6 +2797,119 @@ export function FlightPlanMap({
                     </div>
                   </div>
                 ) : null}
+
+                {toolPanel === "notams" ? (
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-slate-400">
+                      {routeNotams.length
+                        ? `${routeNotams.length} NOTAM${routeNotams.length === 1 ? "" : "s"} na rota ou até 10 NM`
+                        : "Nenhum NOTAM na rota ou até 10 NM"}
+                    </p>
+                    {(
+                      [
+                        ["onMap", "Exibir NOTAMs na rota", showRouteNotamsOnMap],
+                        ["onProfile", "Filtrar pelo perfil vertical", filterNotamsByVerticalProfile],
+                      ] as const
+                    ).map(([key, label, on]) => (
+                      <div key={key} className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-slate-300">{label}</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          onClick={() => {
+                            if (key === "onMap") {
+                              const nextOn = !showRouteNotamsOnMap;
+                              if (!nextOn) setSelectedRouteNotams(null);
+                              onShowRouteNotamsOnMapChange?.(nextOn);
+                              return;
+                            }
+                            onFilterNotamsByVerticalProfileChange?.(!filterNotamsByVerticalProfile);
+                          }}
+                          className={`inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                            on ? "bg-red-600" : "bg-slate-700"
+                          }`}
+                        >
+                          <span
+                            className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                              on ? "translate-x-6" : "translate-x-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    ))}
+                    <p className="text-[10px] leading-snug text-slate-500">
+                      As áreas ficam só no contorno até o clique. O filtro vertical vale no mapa 2D: some NOTAM fora da altitude planejada.
+                    </p>
+                  </div>
+                ) : null}
+
+                {toolPanel === "areas" && onCustomAreasChange ? (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Área por coordenadas
+                    </p>
+                    <textarea
+                      className="h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600"
+                      placeholder="COORD 252823S0541627W - 244835S0542041W - ..."
+                      value={areaDraftText}
+                      onChange={(event) => {
+                        setAreaDraftText(event.target.value);
+                        setAreaError(null);
+                      }}
+                    />
+                    <input
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-600"
+                      placeholder="Nome da área"
+                      value={areaDraftName}
+                      onChange={(event) => setAreaDraftName(event.target.value)}
+                    />
+                    {areaError ? <p className="text-[11px] text-amber-200">{areaError}</p> : null}
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-800"
+                        onClick={traceAreaDraft}
+                      >
+                        Traçar
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg bg-emerald-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                        onClick={saveAreaDraft}
+                      >
+                        Salvar na rota
+                      </button>
+                    </div>
+                    {customAreas.length ? (
+                      <div className="space-y-1">
+                        {customAreas.map((area, idx) => (
+                          <div
+                            key={area.id}
+                            className="flex items-center justify-between gap-2 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5"
+                          >
+                            <span className="truncate text-[11px] font-semibold text-slate-200">
+                              <span
+                                className="mr-1.5 inline-block h-2 w-2 rounded-full"
+                                style={{ backgroundColor: areaColor(idx) }}
+                              />
+                              {area.name}
+                            </span>
+                            <button
+                              type="button"
+                              className="text-[11px] text-rose-300 hover:text-rose-200"
+                              onClick={() => onCustomAreasChange(customAreas.filter((item) => item.id !== area.id))}
+                            >
+                              Excluir
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-slate-500">Cole um polígono COORD, trace e salve com um nome.</p>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -2549,9 +2928,26 @@ export function FlightPlanMap({
                   ? [{ id: "windy" as const, title: "Camada Windy", icon: <MapToolIconCloud />, badge: null }]
                   : []),
                 { id: "layers" as const, title: "Espaços aéreos", icon: <MapToolIconAirspace />, badge: null },
+                {
+                  id: "notams" as const,
+                  title: "NOTAMs",
+                  icon: <MapToolIconNotam />,
+                  badge: routeNotams.length > 0 ? routeNotams.length : null,
+                },
+                ...(onCustomAreasChange
+                  ? [
+                      {
+                        id: "areas" as const,
+                        title: "Áreas por coordenadas",
+                        icon: <MapToolIconArea />,
+                        badge: customAreas.length > 0 ? customAreas.length : null,
+                      },
+                    ]
+                  : []),
               ] as const
             ).map((btn) => {
               const on = toolPanel === btn.id;
+              const notamsLive = btn.id === "notams" && showRouteNotamsOnMap;
               return (
                 <button
                   key={btn.id}
@@ -2561,7 +2957,9 @@ export function FlightPlanMap({
                   className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition ${
                     on
                       ? "bg-cyan-500/30 text-cyan-100 ring-1 ring-cyan-400/50"
-                      : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                      : notamsLive
+                        ? "text-red-200 hover:bg-slate-800 hover:text-red-100"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
                   }`}
                 >
                   {btn.icon}
@@ -2573,10 +2971,40 @@ export function FlightPlanMap({
                 </button>
               );
             })}
+            {onSnapToVisualCorridors ? (
+              <button
+                type="button"
+                title={
+                  corridorSnapEnabled
+                    ? "Ajustar rota nos corredores visuais"
+                    : "Coloque origem e destino para ajustar nos corredores"
+                }
+                disabled={!corridorSnapEnabled}
+                onClick={() => onSnapToVisualCorridors()}
+                className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition ${
+                  corridorSnapEnabled
+                    ? "text-amber-100 ring-1 ring-amber-400/40 hover:bg-amber-500/20 hover:text-amber-50"
+                    : "cursor-not-allowed text-slate-600"
+                }`}
+              >
+                <MapToolIconCorridor />
+              </button>
+            ) : null}
           </div>
         </div>
 
-        {selectedAirspace ? (
+        {selectedRouteNotams && showRouteNotamsOnMap ? (
+          <div className="absolute bottom-14 right-14 top-2 z-[526] flex w-[min(18rem,calc(100%-4.5rem))] flex-col overflow-hidden">
+            <RouteNotamInfoPanel
+              hits={selectedRouteNotams.hits}
+              activeId={selectedRouteNotams.activeId}
+              onActiveIdChange={(id) =>
+                setSelectedRouteNotams((prev) => (prev ? { ...prev, activeId: id } : prev))
+              }
+              onClose={() => setSelectedRouteNotams(null)}
+            />
+          </div>
+        ) : selectedAirspace ? (
           <div className="absolute right-14 top-2 z-[525] w-[min(15rem,calc(100%-1rem))]">
             <AirspaceInfoPanel
               info={selectedAirspace.info}
@@ -2660,6 +3088,7 @@ export function FlightPlanMap({
           {!isWac ? <SoftScrollZoom /> : null}
           {isWac ? <MapZoomValue onZoom={setMapZoom} /> : null}
           <FitRoute positions={positions} fitKey={fitKey} />
+          {areaPreview ? <FitLatLngs points={areaPreview} fitKey={areaFitKey} /> : null}
           <MapClickHandler
             enabled={Boolean(interactive && pickMode && !measureMode)}
             onMapClick={resolveBlankMapClick}
@@ -2861,6 +3290,11 @@ export function FlightPlanMap({
             priorityIcaos={routeIcaos}
             onVisibleMetarIcaosChange={updateVisibleMetarIcaos}
             onLoadingChange={setMetarLoading}
+            onPick={handlePick}
+            onOpenDetails={onAerodromeDetails}
+            onSuppressMapPick={() => {
+              suppressMapPickUntil.current = Date.now() + 400;
+            }}
           />
           <VisibleReaFixes
             fixes={reaFixes}
@@ -2873,6 +3307,25 @@ export function FlightPlanMap({
             onPick={handlePick}
           />
 
+          <RouteNotamsOverlay
+            hits={routeNotams}
+            show={showRouteNotamsOnMap}
+            selectedId={selectedRouteNotams?.activeId ?? null}
+            onSelect={(hits, activeId) => {
+              setSelectedAirspace(null);
+              setSelectedRouteNotams({ hits, activeId });
+            }}
+          />
+
+          <CustomAreaPolygons
+            areas={customAreas}
+            preview={areaPreview}
+            onRemove={
+              onCustomAreasChange
+                ? (id) => onCustomAreasChange(customAreas.filter((area) => area.id !== id))
+                : undefined
+            }
+          />
           {positions.length >= 2 ? (
             <>
               <Polyline
@@ -2910,7 +3363,7 @@ export function FlightPlanMap({
             return (
               <Marker key={`wp-${idx}-${pos[0]}-${pos[1]}`} position={pos} icon={pointIcon(label, color)}>
                 {interactive && onWaypointRemove ? (
-                  <Popup>
+                  <Popup {...PLAN_POPUP}>
                     <div className="min-w-[120px] space-y-1.5 text-slate-900">
                       <p className="text-[11px] font-semibold">{label}</p>
                       <p className="font-mono text-[10px] text-slate-500">

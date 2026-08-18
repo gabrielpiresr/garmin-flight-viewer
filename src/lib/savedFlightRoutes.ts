@@ -18,12 +18,20 @@ const LOCAL_STORAGE_KEY = "gfv_saved_flight_routes_v1";
 const MIGRATED_FLAG_KEY = "gfv_saved_flight_routes_migrated_v1";
 const MAX_ROUTES = 40;
 
+export type SavedRouteArea = {
+  id: string;
+  name: string;
+  sourceText: string;
+  points: Array<{ lat: number; lng: number }>;
+};
+
 export type SavedFlightRoute = {
   id: string;
   name: string;
   waypoints: FlightPlanWaypoint[];
   /** ICAOs de aeródromos alternativos do briefing. */
   alternates: string[];
+  customAreas: SavedRouteArea[];
   cruiseSpeedKt: number | null;
   fuelBurnPerHour: number | null;
   fuelUnit: string;
@@ -61,39 +69,69 @@ function normalizeAlternates(raw: unknown): string[] {
   return out;
 }
 
-/** Aceita array legado de waypoints ou `{ waypoints, alternates }`. */
+function normalizeCustomAreas(raw: unknown): SavedRouteArea[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SavedRouteArea[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Partial<SavedRouteArea>;
+    const points = Array.isArray(row.points)
+      ? row.points.filter(
+          (p): p is { lat: number; lng: number } =>
+            p != null &&
+            typeof p === "object" &&
+            Number.isFinite(Number((p as { lat?: unknown }).lat)) &&
+            Number.isFinite(Number((p as { lng?: unknown }).lng)),
+        ).map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+      : [];
+    if (points.length < 3) continue;
+    out.push({
+      id: String(row.id || `area_${out.length + 1}`),
+      name: String(row.name || "Área").trim() || "Área",
+      sourceText: String(row.sourceText || ""),
+      points,
+    });
+  }
+  return out;
+}
+
+/** Aceita array legado de waypoints ou `{ waypoints, alternates, customAreas }`. */
 function parseRoutePayload(raw: unknown): {
   waypoints: FlightPlanWaypoint[];
   alternates: string[];
+  customAreas: SavedRouteArea[];
 } {
   let parsed: unknown = raw;
   if (typeof raw === "string") {
     try {
       parsed = JSON.parse(raw) as unknown;
     } catch {
-      return { waypoints: [], alternates: [] };
+      return { waypoints: [], alternates: [], customAreas: [] };
     }
   }
   if (Array.isArray(parsed)) {
-    return { waypoints: parsed as FlightPlanWaypoint[], alternates: [] };
+    return { waypoints: parsed as FlightPlanWaypoint[], alternates: [], customAreas: [] };
   }
   if (parsed && typeof parsed === "object") {
-    const obj = parsed as { waypoints?: unknown; alternates?: unknown };
+    const obj = parsed as { waypoints?: unknown; alternates?: unknown; customAreas?: unknown; areas?: unknown };
     return {
       waypoints: Array.isArray(obj.waypoints) ? (obj.waypoints as FlightPlanWaypoint[]) : [],
       alternates: normalizeAlternates(obj.alternates),
+      customAreas: normalizeCustomAreas(obj.customAreas ?? obj.areas),
     };
   }
-  return { waypoints: [], alternates: [] };
+  return { waypoints: [], alternates: [], customAreas: [] };
 }
 
 function encodeRoutePayload(
   waypoints: FlightPlanWaypoint[],
   alternates: string[] | undefined,
+  customAreas?: SavedRouteArea[],
 ): string {
   return JSON.stringify({
     waypoints: waypoints.map((w) => ({ ...w })),
     alternates: normalizeAlternates(alternates),
+    customAreas: normalizeCustomAreas(customAreas),
   });
 }
 
@@ -104,6 +142,7 @@ function docToRoute(doc: Record<string, unknown>): SavedFlightRoute {
     name: String(doc.name || "Rota sem nome"),
     waypoints: payload.waypoints,
     alternates: payload.alternates,
+    customAreas: payload.customAreas,
     cruiseSpeedKt:
       doc.cruise_speed_kt != null && Number.isFinite(Number(doc.cruise_speed_kt))
         ? Number(doc.cruise_speed_kt)
@@ -136,6 +175,7 @@ function readLocalRoutes(): SavedFlightRoute[] {
       .map((item) => ({
         ...item,
         alternates: normalizeAlternates((item as SavedFlightRoute).alternates),
+        customAreas: normalizeCustomAreas((item as SavedFlightRoute).customAreas),
       }));
   } catch {
     return [];
@@ -187,6 +227,7 @@ export async function saveFlightRoute(input: {
   name: string;
   waypoints: FlightPlanWaypoint[];
   alternates?: string[];
+  customAreas?: SavedRouteArea[];
   cruiseSpeedKt?: number | null;
   fuelBurnPerHour?: number | null;
   fuelUnit?: string;
@@ -200,7 +241,7 @@ export async function saveFlightRoute(input: {
   const payload = {
     user_id: userId,
     name,
-    waypoints_json: encodeRoutePayload(input.waypoints, input.alternates),
+    waypoints_json: encodeRoutePayload(input.waypoints, input.alternates, input.customAreas),
     cruise_speed_kt: input.cruiseSpeedKt ?? null,
     fuel_burn_per_hour: input.fuelBurnPerHour ?? null,
     fuel_unit: input.fuelUnit || "L",
@@ -270,6 +311,7 @@ export async function migrateLocalSavedFlightRoutesIfNeeded(): Promise<number> {
         name: route.name,
         waypoints: route.waypoints,
         alternates: route.alternates,
+        customAreas: route.customAreas,
         cruiseSpeedKt: route.cruiseSpeedKt,
         fuelBurnPerHour: route.fuelBurnPerHour,
         fuelUnit: route.fuelUnit,

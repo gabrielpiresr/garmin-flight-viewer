@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { FlightEvent, TrafficPatternAnalysis } from "../types/flight";
 import {
   TELEMETRY_PANELS,
@@ -50,6 +50,27 @@ type Props = BaseProps & {
 };
 
 type Domain = [number, number] | null;
+
+/** Safari/iOS often reports 2–3x DPR; cap backing-store size to avoid GPU thrash. */
+function chartDpr(): number {
+  return Math.min(window.devicePixelRatio || 1, 2);
+}
+
+const MAX_CHART_CSS_PX = 1_600;
+
+function readChartBox(el: HTMLElement): { width: number; height: number } {
+  const rect = el.getBoundingClientRect();
+  return {
+    width: Math.min(MAX_CHART_CSS_PX, Math.max(0, Math.floor(rect.width))),
+    height: Math.min(MAX_CHART_CSS_PX, Math.max(0, Math.floor(rect.height))),
+  };
+}
+
+type HoverSync = {
+  x: MutableRefObject<number | null>;
+  subscribe: (listener: () => void) => () => void;
+  set: (x: number | null) => void;
+};
 
 function withinDomain(x: number, domain: Domain): boolean {
   if (!domain) return true;
@@ -105,18 +126,31 @@ export const FlightCharts = memo(function FlightCharts({
     () => TELEMETRY_PANELS.filter((p) => panelHasData(p, chartData, resolvedMap)),
     [chartData, resolvedMap],
   );
-  const [chartCount, setChartCount] = useState<1 | 2 | 3>(compact ? 2 : 2);
+  const [chartCount, setChartCount] = useState<1 | 2 | 3>(() => (
+    compact ? 2 : (typeof window !== "undefined" && window.innerWidth < 640 ? 1 : 2)
+  ));
   const [slotPanels, setSlotPanels] = useState<[string, string, string]>([
     "spd",
     "alt",
     TELEMETRY_PANELS[2]?.id ?? TELEMETRY_PANELS[0]?.id ?? "vs",
   ]);
-  const [activeHoverX, setActiveHoverX] = useState<number | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
-  const handlePanelHoverX = (x: number | null) => {
-    setActiveHoverX(x);
-    onHoverX?.(x);
-  };
+  const hoverXRef = useRef<number | null>(null);
+  const hoverListenersRef = useRef(new Set<() => void>());
+  const onHoverXRef = useRef(onHoverX);
+  onHoverXRef.current = onHoverX;
+  const hoverSync = useMemo<HoverSync>(() => ({
+    x: hoverXRef,
+    subscribe: (listener) => {
+      hoverListenersRef.current.add(listener);
+      return () => { hoverListenersRef.current.delete(listener); };
+    },
+    set: (x) => {
+      hoverXRef.current = x;
+      hoverListenersRef.current.forEach((listener) => listener());
+      onHoverXRef.current?.(x);
+    },
+  }), []);
 
   if (chartData.length === 0) {
     return <p className="rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">Sem linhas de dados para graficos.</p>;
@@ -131,7 +165,7 @@ export const FlightCharts = memo(function FlightCharts({
   });
 
   return (
-    <div className={`flex h-full min-h-0 flex-col gap-2 rounded-xl border border-slate-700 bg-slate-950/40 ${compact ? "p-1.5" : "p-2.5"}`}>
+    <div className={`flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-950/40 ${compact ? "p-1.5" : "p-2.5"}`}>
       {!compact ? (
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
@@ -157,7 +191,7 @@ export const FlightCharts = memo(function FlightCharts({
         </div>
       ) : null}
 
-      <div className={`grid min-h-0 flex-1 gap-2.5 ${chartCount === 1 ? "grid-cols-1" : chartCount === 2 ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1 lg:grid-cols-3"}`}>
+      <div className={`grid min-h-0 min-w-0 flex-1 auto-rows-fr gap-2.5 ${chartCount === 1 ? "grid-cols-1" : chartCount === 2 ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1 lg:grid-cols-3"}`}>
         {visibleSlots.map((panelId, slotIdx) => {
           const panel = panels.find((p) => p.id === panelId) ?? panels[slotIdx] ?? panels[0]!;
           return (
@@ -170,8 +204,7 @@ export const FlightCharts = memo(function FlightCharts({
               resolvedMap={resolvedMap}
               hasTime={hasTime}
               chartTimeBaseMs={chartTimeBaseMs}
-              activeHoverX={activeHoverX}
-              onHoverX={handlePanelHoverX}
+              hoverSync={hoverSync}
               onXDomainChange={onXDomainChange}
               xDomain={xDomain}
               fullXDomain={fullXDomain}
@@ -202,8 +235,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   resolvedMap,
   hasTime,
   chartTimeBaseMs,
-  activeHoverX,
-  onHoverX,
+  hoverSync,
   onXDomainChange,
   xDomain,
   fullXDomain,
@@ -222,8 +254,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   resolvedMap: Map<string, string>;
   hasTime: boolean;
   chartTimeBaseMs: number | null;
-  activeHoverX: number | null;
-  onHoverX?: (x: number | null) => void;
+  hoverSync: HoverSync;
   onXDomainChange?: (domain: [number, number] | null) => void;
   xDomain?: [number, number] | null;
   fullXDomain?: [number, number] | null;
@@ -239,28 +270,50 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const activeHoverXRef = useRef<number | null>(activeHoverX);
   const xDomainRef = useRef(xDomain);
   const fullXDomainRef = useRef(fullXDomain);
   const onXDomainChangeRef = useRef(onXDomainChange);
-  const onHoverXRef = useRef(onHoverX);
+  const hoverSyncRef = useRef(hoverSync);
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelClientXRef = useRef<number | null>(null);
   const dragStartXRef = useRef<number | null>(null);
   const dragPointerIdRef = useRef<number | null>(null);
-  const [dragRange, setDragRange] = useState<[number, number] | null>(null);
+  const dragRangeRef = useRef<[number, number] | null>(null);
+  const lastHoverRowXRef = useRef<number | null>(null);
+  const scheduleDrawRef = useRef<() => void>(() => {});
+  const drawStateRef = useRef({
+    displayData,
+    yDomain: [0, 1] as [number, number],
+    visibleKeys: [] as string[],
+    xDomain: xDomain ?? null,
+    focusDomain: focusDomain ?? null,
+    events: events ?? [],
+    compact,
+    hasTime,
+    chartTimeBaseMs,
+  });
 
   const keys = useMemo(() => panel.seriesKeys.filter((k) => resolvedMap.has(k)), [panel.seriesKeys, resolvedMap]);
   useEffect(() => setHiddenKeys(defaultHiddenForPanel(panel.id, keys)), [panel.id, keys]);
   useEffect(() => { xDomainRef.current = xDomain; }, [xDomain]);
   useEffect(() => { fullXDomainRef.current = fullXDomain; }, [fullXDomain]);
   useEffect(() => { onXDomainChangeRef.current = onXDomainChange; }, [onXDomainChange]);
-  useEffect(() => { onHoverXRef.current = onHoverX; }, [onHoverX]);
-  useEffect(() => { activeHoverXRef.current = activeHoverX; }, [activeHoverX]);
+  useEffect(() => { hoverSyncRef.current = hoverSync; }, [hoverSync]);
 
-  const visibleKeys = keys.filter((k) => !hiddenKeys.has(k));
+  const visibleKeys = useMemo(() => keys.filter((k) => !hiddenKeys.has(k)), [hiddenKeys, keys]);
   const yDomain = useMemo(() => calcYDomain(displayData, visibleKeys, focusDomain ?? xDomain ?? null), [displayData, visibleKeys, focusDomain, xDomain]);
+  drawStateRef.current = {
+    displayData,
+    yDomain,
+    visibleKeys,
+    xDomain: xDomain ?? null,
+    focusDomain: focusDomain ?? null,
+    events: events ?? [],
+    compact,
+    hasTime,
+    chartTimeBaseMs,
+  };
 
   useEffect(() => {
     const el = shellRef.current;
@@ -321,32 +374,41 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const shell = shellRef.current;
     if (!canvas || !shell) return undefined;
     let frame = 0;
+    let lastCssW = -1;
+    let lastCssH = -1;
+    let lastDpr = -1;
 
     const draw = () => {
       frame = 0;
-      const rect = shell.getBoundingClientRect();
-      const width = Math.max(1, Math.floor(rect.width));
-      const height = Math.max(1, Math.floor(rect.height));
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
+      const { width, height } = readChartBox(shell);
+      if (width < 2 || height < 2) return;
+      const dpr = chartDpr();
+      const sizeChanged = width !== lastCssW || height !== lastCssH || dpr !== lastDpr;
+      if (sizeChanged) {
+        lastCssW = width;
+        lastCssH = height;
+        lastDpr = dpr;
+        const backingW = Math.floor(width * dpr);
+        const backingH = Math.floor(height * dpr);
+        if (canvas.width !== backingW) canvas.width = backingW;
+        if (canvas.height !== backingH) canvas.height = backingH;
+      }
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
 
-      const left = compact ? 36 : 44;
+      const state = drawStateRef.current;
+      const left = state.compact ? 36 : 44;
       const right = 10;
       const top = 8;
-      const bottom = compact ? 16 : 22;
+      const bottom = state.compact ? 16 : 22;
       const plotW = Math.max(1, width - left - right);
       const plotH = Math.max(1, height - top - bottom);
-      const xMin = xDomain?.[0] ?? displayData[0]?.x ?? 0;
-      const xMax = xDomain?.[1] ?? displayData[displayData.length - 1]?.x ?? 1;
-      const yMin = yDomain[0];
-      const yMax = yDomain[1];
+      const xMin = state.xDomain?.[0] ?? state.displayData[0]?.x ?? 0;
+      const xMax = state.xDomain?.[1] ?? state.displayData[state.displayData.length - 1]?.x ?? 1;
+      const yMin = state.yDomain[0];
+      const yMax = state.yDomain[1];
       const xSpan = xMax - xMin || 1;
       const ySpan = yMax - yMin || 1;
       const toX = (x: number) => left + ((x - xMin) / xSpan) * plotW;
@@ -355,7 +417,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
       ctx.strokeStyle = "#1e293b";
       ctx.fillStyle = "#64748b";
       ctx.lineWidth = 1;
-      ctx.font = `${compact ? 9 : 10}px system-ui, sans-serif`;
+      ctx.font = `${state.compact ? 9 : 10}px system-ui, sans-serif`;
       ctx.textBaseline = "middle";
       for (let i = 0; i <= 4; i += 1) {
         const y = top + (plotH * i) / 4;
@@ -372,18 +434,19 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.moveTo(x, top);
         ctx.lineTo(x, top + plotH);
         ctx.stroke();
-        if (!compact || i % 2 === 0) {
-          ctx.fillText(formatX(xMin + (xSpan * i) / 4, hasTime, chartTimeBaseMs), Math.min(width - right - 42, Math.max(left, x - 20)), top + plotH + 4);
+        if (!state.compact || i % 2 === 0) {
+          ctx.fillText(formatX(xMin + (xSpan * i) / 4, state.hasTime, state.chartTimeBaseMs), Math.min(width - right - 42, Math.max(left, x - 20)), top + plotH + 4);
         }
       }
 
-      if (focusDomain) {
+      if (state.focusDomain) {
         ctx.fillStyle = "rgba(34, 211, 238, 0.08)";
-        const fx1 = toX(focusDomain[0]);
-        const fx2 = toX(focusDomain[1]);
+        const fx1 = toX(state.focusDomain[0]);
+        const fx2 = toX(state.focusDomain[1]);
         ctx.fillRect(Math.min(fx1, fx2), top, Math.abs(fx2 - fx1), plotH);
       }
 
+      const dragRange = dragRangeRef.current;
       if (dragRange) {
         const dx1 = toX(dragRange[0]);
         const dx2 = toX(dragRange[1]);
@@ -394,7 +457,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.strokeRect(Math.min(dx1, dx2), top, Math.abs(dx2 - dx1), plotH);
       }
 
-      if (visibleKeys.includes("terrainFt")) {
+      if (state.visibleKeys.includes("terrainFt")) {
         const gradient = ctx.createLinearGradient(0, top, 0, top + plotH);
         gradient.addColorStop(0, "rgba(196, 165, 116, 0.70)");
         gradient.addColorStop(1, "rgba(139, 105, 20, 0.95)");
@@ -404,7 +467,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.beginPath();
         let active = false;
         let lastX = 0;
-        for (const row of displayData) {
+        for (const row of state.displayData) {
           if (row.x < xMin || row.x > xMax) continue;
           const value = row.terrainFt;
           if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -437,7 +500,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         }
       }
 
-      for (const ev of events ?? []) {
+      for (const ev of state.events) {
         if (ev.xMs < xMin || ev.xMs > xMax) continue;
         const x = toX(ev.xMs);
         ctx.save();
@@ -448,22 +511,21 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.moveTo(x, top);
         ctx.lineTo(x, top + plotH);
         ctx.stroke();
-        // Label da linha de evento
         ctx.setLineDash([]);
         ctx.fillStyle = ev.color;
-        ctx.font = `${compact ? 8 : 9}px system-ui, sans-serif`;
+        ctx.font = `${state.compact ? 8 : 9}px system-ui, sans-serif`;
         ctx.textBaseline = "top";
         ctx.textAlign = "center";
         ctx.fillText(ev.label, x, top + 2);
         ctx.restore();
       }
 
-      for (const key of visibleKeys) {
+      for (const key of state.visibleKeys) {
         ctx.strokeStyle = colorForKey(key);
         ctx.lineWidth = 1.8;
         ctx.beginPath();
         let active = false;
-        for (const row of displayData) {
+        for (const row of state.displayData) {
           if (row.x < xMin || row.x > xMax) continue;
           const value = row[key];
           if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -482,8 +544,10 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.stroke();
       }
 
+      const activeHoverX = hoverSyncRef.current.x.current;
+      const tooltip = tooltipRef.current;
       if (activeHoverX !== null && activeHoverX >= xMin && activeHoverX <= xMax) {
-        const hoverRow = nearestRow(displayData, activeHoverX);
+        const hoverRow = nearestRow(state.displayData, activeHoverX);
         const hoverX = toX(activeHoverX);
         ctx.save();
         ctx.strokeStyle = "rgba(226, 232, 240, 0.85)";
@@ -495,7 +559,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ctx.stroke();
         ctx.setLineDash([]);
         if (hoverRow) {
-          for (const key of visibleKeys) {
+          for (const key of state.visibleKeys) {
             const value = hoverRow[key];
             if (typeof value !== "number" || !Number.isFinite(value)) continue;
             ctx.fillStyle = colorForKey(key);
@@ -508,20 +572,42 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
           }
         }
         ctx.restore();
+        if (tooltip && hoverRow) {
+          showTooltip(tooltip, hoverRow, state.visibleKeys, state.hasTime, state.chartTimeBaseMs, hoverX + 10, 10, width);
+        }
+      } else if (tooltip) {
+        tooltip.style.display = "none";
       }
     };
 
-    const ro = new ResizeObserver(() => {
-      if (frame) window.cancelAnimationFrame(frame);
+    const scheduleDraw = () => {
+      if (frame) return;
       frame = window.requestAnimationFrame(draw);
+    };
+    scheduleDrawRef.current = scheduleDraw;
+
+    const ro = new ResizeObserver(() => {
+      const { width, height } = readChartBox(shell);
+      const nextDpr = chartDpr();
+      if (width === lastCssW && height === lastCssH && nextDpr === lastDpr) return;
+      scheduleDraw();
     });
     ro.observe(shell);
-    draw();
+    const unsubHover = hoverSync.subscribe(scheduleDraw);
+    scheduleDraw();
+    const delayed = window.setTimeout(scheduleDraw, 120);
     return () => {
+      unsubHover();
       ro.disconnect();
+      window.clearTimeout(delayed);
       if (frame) window.cancelAnimationFrame(frame);
+      scheduleDrawRef.current = () => {};
     };
-  }, [activeHoverX, chartTimeBaseMs, compact, displayData, dragRange, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
+  }, [hoverSync]);
+
+  useEffect(() => {
+    scheduleDrawRef.current();
+  }, [chartTimeBaseMs, compact, displayData, events, focusDomain, hasTime, visibleKeys, xDomain, yDomain]);
 
   const toggleKey = (key: string) => {
     setHiddenKeys((prev) => {
@@ -552,7 +638,8 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     if (xValue === null) return;
     dragStartXRef.current = xValue;
     dragPointerIdRef.current = event.pointerId;
-    setDragRange([xValue, xValue]);
+    dragRangeRef.current = [xValue, xValue];
+    scheduleDrawRef.current();
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -569,11 +656,17 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - left) / plotW));
     const xValue = xMin + (xMax - xMin) * ratio;
     if (dragStartXRef.current !== null) {
-      setDragRange([dragStartXRef.current, xValue]);
+      dragRangeRef.current = [dragStartXRef.current, xValue];
+      scheduleDrawRef.current();
     }
     const row = nearestRow(displayData, xValue);
     if (!row) return;
-    onHoverXRef.current?.(row.x);
+    if (row.x === lastHoverRowXRef.current && dragStartXRef.current === null) {
+      showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, event.clientX - rect.left + 10, event.clientY - rect.top - 16, rect.width);
+      return;
+    }
+    lastHoverRowXRef.current = row.x;
+    hoverSync.set(row.x);
     showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, event.clientX - rect.left + 10, event.clientY - rect.top - 16, rect.width);
   };
 
@@ -583,7 +676,8 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
     const end = xValueFromClientX(event.clientX);
     dragStartXRef.current = null;
     dragPointerIdRef.current = null;
-    setDragRange(null);
+    dragRangeRef.current = null;
+    scheduleDrawRef.current();
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
@@ -600,36 +694,13 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
   };
 
   const handlePointerLeave = () => {
-    if (dragStartXRef.current === null) onHoverXRef.current?.(null);
+    lastHoverRowXRef.current = null;
+    if (dragStartXRef.current === null) hoverSync.set(null);
     if (tooltipRef.current) tooltipRef.current.style.display = "none";
   };
 
-  useEffect(() => {
-    const shell = shellRef.current;
-    const tooltip = tooltipRef.current;
-    if (!shell || !tooltip) return;
-    if (activeHoverX === null) {
-      tooltip.style.display = "none";
-      return;
-    }
-    const xMin = xDomain?.[0] ?? displayData[0]?.x ?? 0;
-    const xMax = xDomain?.[1] ?? displayData[displayData.length - 1]?.x ?? 1;
-    if (activeHoverX < xMin || activeHoverX > xMax) {
-      tooltip.style.display = "none";
-      return;
-    }
-    const row = nearestRow(displayData, activeHoverX);
-    if (!row) return;
-    const rect = shell.getBoundingClientRect();
-    const left = compact ? 36 : 44;
-    const right = 10;
-    const plotW = Math.max(1, rect.width - left - right);
-    const x = left + ((activeHoverX - xMin) / (xMax - xMin || 1)) * plotW + 10;
-    showTooltip(tooltip, row, visibleKeys, hasTime, chartTimeBaseMs, x, 10, rect.width);
-  }, [activeHoverX, chartTimeBaseMs, compact, displayData, hasTime, visibleKeys, xDomain]);
-
   return (
-    <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-700 bg-slate-950/40 p-2">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950/40 p-2">
       {!compact ? (
         <div className="mb-1 flex items-center justify-between gap-2">
           <span className="text-[11px] text-slate-500">Grafico {slotIndex + 1}</span>
@@ -653,7 +724,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
           ))}
         </div>
       ) : null}
-      <div ref={shellRef} className="relative min-h-0 flex-1 overscroll-contain">
+      <div ref={shellRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden overscroll-contain">
         {selectionMode ? (
           <div className="pointer-events-none absolute left-2 top-2 z-10 rounded-md border border-cyan-500/40 bg-slate-950/85 px-2 py-1 text-[11px] font-medium text-cyan-100 shadow-lg">
             Arraste para selecionar
@@ -661,7 +732,7 @@ const CanvasPanelChart = memo(function CanvasPanelChart({
         ) : null}
         <canvas
           ref={canvasRef}
-          className="block h-full w-full touch-none"
+          className="absolute inset-0 block h-full w-full max-h-full max-w-full touch-none"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishDragSelection}

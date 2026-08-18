@@ -20,6 +20,7 @@ import type {
 } from "../types/aisweb";
 import { Tabs } from "./ui/Tabs";
 import { AiswebSatelliteTab } from "./AiswebSatelliteTab";
+import { aiswebAerodromeUrl } from "../lib/aiswebLinks";
 
 type AirportMapStyle = "satellite" | "roads" | "terrain";
 type AirspaceLayerId = "tma" | "ctr" | "atz" | "fir";
@@ -1292,7 +1293,19 @@ export function AiswebAirportDetailTabs({
 
   return (
     <div className="space-y-3">
-      <Tabs items={items} value={subTab} onChange={setSubTab} ariaLabel="Subabas AISWEB" accent="cyan" />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs items={items} value={subTab} onChange={setSubTab} ariaLabel="Subabas AISWEB" accent="cyan" />
+        {aiswebAerodromeUrl(airport.icao) ? (
+          <a
+            href={aiswebAerodromeUrl(airport.icao)!}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20"
+          >
+            Abrir AISWEB
+          </a>
+        ) : null}
+      </div>
       {subTab === "meteorologia" ? meteorology : null}
       {subTab === "satelite" ? (
         <AiswebSatelliteTab

@@ -3,7 +3,10 @@ import { ADMIN_USERS_FUNCTION_ID, BUCKET_ID, databases, functions, ID, NOTICES_B
 import { getEmailBrandSettings } from "./notificationsDb";
 import {
   DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
+  DEFAULT_LP_SECTIONS,
   DEFAULT_SCHOOL_RULES,
+  ensureLpBenefitCoverage,
+  ensureLpScreenshotCoverage,
   normalizeFlightReviewClubTrainingCourses,
   normalizeSchoolRules,
   type FlightReviewClubRules,
@@ -250,17 +253,17 @@ function mergeScreenshotItems(
   overlay: FlightReviewClubRules["lpScreenshotItems"] | undefined,
   preferOverlay = false,
 ): FlightReviewClubRules["lpScreenshotItems"] {
-  if (!Array.isArray(overlay)) return base ?? [];
-  if (preferOverlay) return overlay;
+  if (!Array.isArray(overlay)) return ensureLpScreenshotCoverage(base ?? []);
+  if (preferOverlay) return ensureLpScreenshotCoverage(overlay);
   const baseItems = base ?? [];
   const overlayHasImages = overlay.some((item) => item.imageUrl);
   const baseHasImages = baseItems.some((item) => item.imageUrl);
-  if (!overlayHasImages && baseHasImages) return baseItems;
+  if (!overlayHasImages && baseHasImages) return ensureLpScreenshotCoverage(baseItems);
   const baseById = new Map(baseItems.map((item) => [item.id, item]));
-  return overlay.map((item) => ({
+  return ensureLpScreenshotCoverage(overlay.map((item) => ({
     ...item,
     imageUrl: item.imageUrl || baseById.get(item.id)?.imageUrl || "",
-  }));
+  })));
 }
 
 function mergeBenefitItems(
@@ -268,22 +271,35 @@ function mergeBenefitItems(
   overlay: FlightReviewClubRules["lpBenefitItems"] | undefined,
   preferOverlay = false,
 ): FlightReviewClubRules["lpBenefitItems"] {
-  if (!Array.isArray(overlay)) return base ?? [];
-  if (preferOverlay) return overlay;
+  if (!Array.isArray(overlay)) return ensureLpBenefitCoverage(base ?? []);
+  if (preferOverlay) return ensureLpBenefitCoverage(overlay);
   const baseItems = base ?? [];
   const overlayHasImages = overlay.some((item) => item.imageUrl);
   const baseHasImages = baseItems.some((item) => item.imageUrl);
   if (!overlayHasImages && baseHasImages && overlay.length === baseItems.length) {
-    return baseItems.map((item, index) => ({
+    return ensureLpBenefitCoverage(baseItems.map((item, index) => ({
       ...overlay[index],
       ...item,
       text: overlay[index]?.text || item.text,
       imageUrl: overlay[index]?.imageUrl || item.imageUrl,
-    }));
+    })));
   }
-  return overlay.map((item, index) => ({
+  return ensureLpBenefitCoverage(overlay.map((item, index) => ({
     ...item,
     imageUrl: item.imageUrl || baseItems[index]?.imageUrl || "",
+  })));
+}
+
+function mergeLpSections(
+  base: FlightReviewClubRules["lpSections"] | undefined,
+  overlay: FlightReviewClubRules["lpSections"] | undefined,
+): FlightReviewClubRules["lpSections"] {
+  const overlayList = Array.isArray(overlay) && overlay.length > 0 ? overlay : [];
+  const baseList = Array.isArray(base) ? base : [];
+  const overlayById = new Map(overlayList.map((section) => [section.id, section]));
+  const baseById = new Map(baseList.map((section) => [section.id, section]));
+  return DEFAULT_LP_SECTIONS.map((section) => ({
+    ...(overlayById.get(section.id) || baseById.get(section.id) || section),
   }));
 }
 
@@ -311,7 +327,7 @@ function overlayFrcLpContent(
     lpValueProps: Array.isArray(overlay.lpValueProps) ? overlay.lpValueProps : base.lpValueProps,
     lpBenefitItems: mergeBenefitItems(base.lpBenefitItems, overlay.lpBenefitItems, preferOverlay),
     lpScreenshotItems: mergeScreenshotItems(base.lpScreenshotItems, overlay.lpScreenshotItems, preferOverlay),
-    lpSections: Array.isArray(overlay.lpSections) && overlay.lpSections.length > 0 ? overlay.lpSections : base.lpSections,
+    lpSections: mergeLpSections(base.lpSections, overlay.lpSections),
     exclusiveStudentTabs: preferOverlay && Array.isArray(overlay.exclusiveStudentTabs)
       ? overlay.exclusiveStudentTabs
       : base.exclusiveStudentTabs,

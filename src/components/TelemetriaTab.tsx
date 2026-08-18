@@ -60,6 +60,20 @@ type Props = {
 const MAX_MAP_POINTS = 1_800;
 const MAX_CHART_DRAW_ROWS = 1_200;
 
+function isConstrainedTelemetryClient(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const ios = /iPad|iPhone|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const safari = /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|Android/i.test(ua);
+  return ios || safari || window.innerWidth < 768;
+}
+
+function telemetryDrawLimits(): { map: number; chart: number } {
+  return isConstrainedTelemetryClient()
+    ? { map: 1_000, chart: 700 }
+    : { map: MAX_MAP_POINTS, chart: MAX_CHART_DRAW_ROWS };
+}
+
 function downsampleList<T>(items: T[], max: number): T[] {
   if (items.length <= max) return items;
   const step = Math.ceil(items.length / max);
@@ -238,28 +252,45 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     const base = chartTimeBaseMsRef.current;
     if (base === null || pts.length === 0) { setChartDomain(null); return; }
 
-    const visibleTs: number[] = [];
-    for (const p of pts) {
-      if (p.t !== null && bounds.contains([p.lat, p.lon])) visibleTs.push(p.t);
+    let visMin = Infinity;
+    let visMax = -Infinity;
+    let visCount = 0;
+    let totalMin = Infinity;
+    let totalMax = -Infinity;
+    const step = pts.length > 2_500 ? Math.ceil(pts.length / 1_800) : 1;
+    for (let i = 0; i < pts.length; i += step) {
+      const p = pts[i]!;
+      if (p.t === null) continue;
+      if (p.t < totalMin) totalMin = p.t;
+      if (p.t > totalMax) totalMax = p.t;
+      if (bounds.contains([p.lat, p.lon])) {
+        visCount += 1;
+        if (p.t < visMin) visMin = p.t;
+        if (p.t > visMax) visMax = p.t;
+      }
     }
 
-    if (visibleTs.length < 2) { setChartDomain(null); return; }
-
-    const allTs = pts.map((p) => p.t).filter((t): t is number => t !== null);
-    const totalMin = Math.min(...allTs);
-    const totalMax = Math.max(...allTs);
-    const visMin = Math.min(...visibleTs);
-    const visMax = Math.max(...visibleTs);
+    if (visCount < 2 || !Number.isFinite(visMin) || !Number.isFinite(totalMin)) {
+      setChartDomain((current) => (current === null ? current : null));
+      return;
+    }
 
     const coverage = (visMax - visMin) / (totalMax - totalMin || 1);
     if (coverage > 0.75 && selectedSegmentIdRef.current) {
       setSelectedSegmentId(null);
-      setChartDomain(null);
+      setChartDomain((current) => (current === null ? current : null));
       return;
     }
-    if (coverage > 0.97) { setChartDomain(null); return; }
+    if (coverage > 0.97) {
+      setChartDomain((current) => (current === null ? current : null));
+      return;
+    }
 
-    setChartDomain([visMin - base, visMax - base]);
+    const next: [number, number] = [visMin - base, visMax - base];
+    setChartDomain((current) => {
+      if (current && Math.abs(current[0] - next[0]) < 1 && Math.abs(current[1] - next[1]) < 1) return current;
+      return next;
+    });
   }, []);
 
   // Wire the bounds callback ref so FlightMap can call it without re-rendering
@@ -363,7 +394,11 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
           loadedGaps = [];
         }
       }
-      setTelemetrySources(loadedSources);
+      setTelemetrySources(
+        !user || user.role === "instrutor" || user.role === "admin"
+          ? loadedSources
+          : loadedSources.map((source) => ({ name: source.name, text: "" })),
+      );
       setTelemetrySegmentCandidates([]);
       setSelectedTelemetrySegmentIds([]);
       setTelemetryFileMetas(loadedFileMetas);
@@ -390,7 +425,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
       };
       worker.postMessage(telemetryText);
     });
-  }, [flightId, applyResult, resetTelemetryView]);
+  }, [flightId, applyResult, resetTelemetryView, user?.role]);
 
   const handleTelemetryFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -672,16 +707,18 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   };
 
   const [segments, setSegments] = useState<FlightSegment[]>([]);
+  const drawLimits = useMemo(() => telemetryDrawLimits(), [points.length, chartData.length]);
   const mapPoints = useMemo(
-    () => downsampleList(points.filter(isPlottablePoint), MAX_MAP_POINTS),
-    [points],
+    () => downsampleList(points.filter(isPlottablePoint), drawLimits.map),
+    [drawLimits.map, points],
   );
   const chartDrawData = useMemo(
-    () => downsampleList(chartData, MAX_CHART_DRAW_ROWS),
-    [chartData],
+    () => downsampleList(chartData, drawLimits.chart),
+    [chartData, drawLimits.chart],
   );
 
   useEffect(() => {
+    if (!active) return;
     if (mapPoints.length < 2) {
       setTerrainGrid(null);
       return;
@@ -691,7 +728,13 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     const timer = window.setTimeout(() => {
       void fetchTerrainGrid(
         mapPoints.map((p) => ({ lat: p.lat, lng: p.lon })),
-        { signal: controller.signal, padDeg: 0.18, maxTiles: 24, maxZoom: 11, targetCells: 140 },
+        {
+          signal: controller.signal,
+          padDeg: 0.18,
+          maxTiles: isConstrainedTelemetryClient() ? 12 : 24,
+          maxZoom: 11,
+          targetCells: isConstrainedTelemetryClient() ? 80 : 140,
+        },
       )
         .then((grid) => {
           if (!cancelled) setTerrainGrid(grid);
@@ -699,13 +742,13 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
         .catch(() => {
           if (!cancelled && !controller.signal.aborted) setTerrainGrid(null);
         });
-    }, 350);
+    }, isConstrainedTelemetryClient() ? 1_100 : 700);
     return () => {
       cancelled = true;
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [mapPoints]);
+  }, [active, mapPoints]);
 
   const chartDrawDataWithTerrain = useMemo(() => {
     if (!terrainGrid || chartDrawData.length === 0 || mapPoints.length === 0) return chartDrawData;
@@ -723,24 +766,35 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   }, [telemetryColumns, terrainGrid]);
 
   useEffect(() => {
-    if (!(chartData.length > 0 && hasChartTime)) {
+    if (!active || !(chartData.length > 0 && hasChartTime)) {
+      if (!active) return;
       setSegments([]);
       return;
     }
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+    let idleHandle = 0;
+    let timer = 0;
+    const run = () => {
       if (cancelled) return;
       setSegments(
         detectFlightSegments(chartData, chartTimeBaseMs, points, {
           aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
         }),
       );
-    }, 80);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      idleHandle = window.requestIdleCallback(run, { timeout: 2_500 });
+    } else {
+      timer = window.setTimeout(run, 700);
+    }
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      if (idleHandle && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleHandle);
+      }
+      if (timer) window.clearTimeout(timer);
     };
-  }, [chartData, chartTimeBaseMs, flightMeta?.header.aircraft, hasChartTime, parsedResult?.aircraftIdent, points]);
+  }, [active, chartData, chartTimeBaseMs, flightMeta?.header.aircraft, hasChartTime, parsedResult?.aircraftIdent, points]);
 
   const selectedSegment = useMemo(
     () => segments.find((s) => s.id === selectedSegmentId) ?? null,
@@ -1145,7 +1199,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
                 </p>
               )}
 
-              <div className={mapExpanded ? "min-h-0 min-w-0" : "h-[680px] min-h-[560px] min-w-0 sm:h-[760px] xl:h-auto xl:min-h-0"}>
+              <div className={mapExpanded ? "min-h-0 min-w-0 overflow-hidden" : "h-[680px] min-h-[560px] min-w-0 overflow-hidden sm:h-[760px] xl:h-auto xl:min-h-0"}>
                 <FlightCharts
                   chartData={chartDrawDataWithTerrain}
                   hasTime={hasChartTime}

@@ -16,6 +16,7 @@ import {
   SchoolKitMockup,
   StickersMockup,
   TelemetryMockup,
+  TrainingMockup,
 } from "../components/frc/FlightReviewClubLpMockups";
 import { EditableImage, EditableText, LpEditBar, uploadLpAsset } from "../components/frc/LpInlineEdit";
 import { getEmailBrandSettings } from "../lib/notificationsDb";
@@ -27,6 +28,8 @@ import {
   DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   DEFAULT_LP_SECTIONS,
   LP_FEATURE_SECTION_IDS,
+  ensureLpBenefitCoverage,
+  ensureLpScreenshotCoverage,
   type FlightReviewClubBenefitItem,
   type FlightReviewClubFeatureSectionId,
   type FlightReviewClubLpSection,
@@ -42,6 +45,7 @@ const BENEFIT_SEED: Record<FlightReviewClubFeatureSectionId, string> = {
   agenda: "Novo benefício da agenda",
   premium: "Novo benefício premium",
   parceiros: "Novo benefício de parceiros",
+  treinamento: "Novo benefício do treinamento",
   marketplace: "Novo benefício do marketplace",
   kit: "Novo benefício do kit",
 };
@@ -70,6 +74,8 @@ function renderMockup(id: LpMockupId | ""): ReactNode {
       return <div className="bg-slate-950 p-3"><CourseWebinarMockup /></div>;
     case "partners":
       return <div className="bg-slate-950 p-3"><PartnersMockup /></div>;
+    case "training":
+      return <div className="bg-slate-950 p-3"><TrainingMockup /></div>;
     case "kit":
       return <div className="bg-slate-950 p-3"><SchoolKitMockup /></div>;
     default:
@@ -86,9 +92,12 @@ function cloneClub(club: FlightReviewClubRules): FlightReviewClubRules {
     ...club,
     lpValueProps: [...club.lpValueProps],
     lpHeroChips: [...(club.lpHeroChips ?? [])],
-    lpBenefitItems: club.lpBenefitItems.map((item) => ({ ...item })),
-    lpScreenshotItems: club.lpScreenshotItems.map((item) => ({ ...item })),
-    lpSections: (club.lpSections ?? DEFAULT_LP_SECTIONS).map((item) => ({ ...item })),
+    lpBenefitItems: ensureLpBenefitCoverage(club.lpBenefitItems.map((item) => ({ ...item }))),
+    lpScreenshotItems: ensureLpScreenshotCoverage(club.lpScreenshotItems.map((item) => ({ ...item }))),
+    lpSections: DEFAULT_LP_SECTIONS.map((section) => {
+      const saved = club.lpSections?.find((item) => item.id === section.id);
+      return { ...(saved ?? section) };
+    }),
     benefits: [...club.benefits],
     subscriptionPlans: club.subscriptionPlans.map((item) => ({ ...item })),
   };
