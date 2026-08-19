@@ -173,3 +173,37 @@ test("export FPL SDRK → SBJD começa em DCT até a entrada da REA", () => {
   assert.equal(route.endsWith("REA"), true, route);
   assert.doesNotMatch(route, /^REA\b/);
 });
+
+test("export FPL SBJD → SBGW é só REA (começa e termina no corredor)", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SBJD = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "origin",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const SBGW = {
+    lat: -22.7917,
+    lng: -45.2044,
+    label: "SBGW",
+    raw: "SBGW",
+    kind: "destination",
+    fieldElevFt: 1765,
+    altitudeFt: 1765,
+  };
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SBGW], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90);
+  assert.equal(route, "REA", route);
+});

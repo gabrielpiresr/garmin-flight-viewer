@@ -2,7 +2,9 @@ import type { FlightPlanWaypoint } from "../types/flightPlanning";
 import { formatCompactAviationCoord, haversineM } from "./flightPlanningRoute";
 import type { LegCorridorInfo } from "./legCorridor";
 
-const TRIVIAL_TERMINAL_DCT_M = 1852 * 1.5;
+const NM_IN_M = 1852;
+/** Junção local AD ↔ REA (mesmo critério do snapper: GATE_ENTRY_NM). */
+const LOCAL_REA_JOIN_M = NM_IN_M * 15;
 
 function isAirportLike(wp: FlightPlanWaypoint): boolean {
   return wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination";
@@ -64,18 +66,18 @@ export function originIsInsideTma(
   return false;
 }
 
-function isTrivialTerminalDct(from: FlightPlanWaypoint, dest: FlightPlanWaypoint): boolean {
-  if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(dest.lat, dest.lng)) {
+function isLocalReaJoin(from: { lat: number; lng: number }, to: { lat: number; lng: number }): boolean {
+  if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(to.lat, to.lng)) {
     return true;
   }
-  return haversineM(from, dest) < TRIVIAL_TERMINAL_DCT_M;
+  return haversineM(from, to) < LOCAL_REA_JOIN_M;
 }
 
 /**
  * Campo 15 — Rota.
- * Começa em REA só se o primeiro trecho já está no corredor.
- * Se a partida está fora da REA, o campo começa em DCT até o ponto de entrada.
- * DCT residual até o destino (mesmo ponto / < 1,5 NM) não entra no campo.
+ * Começa em REA se a partida já está no corredor (ou a junção AD→REA é local).
+ * Se origem e destino estão na REA e não há DCT no meio, o campo é só REA.
+ * Fora da REA: DCT até o ponto de entrada, depois REA.
  */
 export function buildFplRouteText(
   waypoints: FlightPlanWaypoint[],
@@ -85,15 +87,45 @@ export function buildFplRouteText(
 ): string {
   if (waypoints.length < 2) return "";
   const isCorridorLeg = (idx: number) => Boolean(legCorridors[idx]);
-  const legIndexes = waypoints.slice(1).map((_, idx) => idx + 1);
-  const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
-  if (allCorridor) return "REA";
-
+  const origin = waypoints[0]!;
   const dest = waypoints[waypoints.length - 1]!;
-  const tokens: string[] = [];
-  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
+  const firstCorr = waypoints.findIndex((_, idx) => idx > 0 && isCorridorLeg(idx));
+  const lastCorr = (() => {
+    for (let idx = waypoints.length - 1; idx >= 1; idx--) {
+      if (isCorridorLeg(idx)) return idx;
+    }
+    return -1;
+  })();
 
-  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
+  if (firstCorr < 0) {
+    const tokens: string[] = [];
+    pushFplToken(tokens, "DCT");
+    for (let legIdx = 1; legIdx < waypoints.length - 1; legIdx++) {
+      const to = waypoints[legIdx]!;
+      pushFplToken(tokens, formatCompactAviationCoord(to.lat, to.lng));
+      pushFplToken(tokens, "DCT");
+    }
+    return tokens.join(" ");
+  }
+
+  const entryWp = waypoints[firstCorr - 1]!;
+  const exitWp = waypoints[lastCorr]!;
+  const startsInside = firstCorr === 1 || isLocalReaJoin(origin, entryWp);
+  const endsInside = lastCorr === waypoints.length - 1 || isLocalReaJoin(exitWp, dest);
+  let continuousRea = true;
+  for (let idx = firstCorr; idx <= lastCorr; idx++) {
+    if (!isCorridorLeg(idx)) {
+      continuousRea = false;
+      break;
+    }
+  }
+  if (startsInside && endsInside && continuousRea) return "REA";
+
+  const tokens: string[] = [];
+  pushFplToken(tokens, startsInside ? "REA" : "DCT");
+  const startLeg = startsInside ? firstCorr : 1;
+
+  for (let legIdx = startLeg; legIdx < waypoints.length; legIdx++) {
     const to = waypoints[legIdx]!;
     const inside = isCorridorLeg(legIdx);
     const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
@@ -102,7 +134,7 @@ export function buildFplRouteText(
     if (inside) {
       if (nextInside === false) {
         const next = waypoints[legIdx + 1];
-        if (next && next === dest && isTrivialTerminalDct(to, dest)) continue;
+        if (next && next === dest && endsInside) continue;
         pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
         pushFplToken(tokens, "DCT");
       }

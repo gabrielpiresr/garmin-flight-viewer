@@ -930,27 +930,56 @@ function pushFplToken(tokens, token) {
   tokens.push(clean);
 }
 
-const TRIVIAL_TERMINAL_DCT_M = 1852 * 1.5;
+const LOCAL_REA_JOIN_M = NM_IN_M * 15;
 
-function isTrivialTerminalDct(from, dest) {
+function isLocalReaJoin(from, dest) {
   if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(dest.lat, dest.lng)) {
     return true;
   }
-  return haversineM(from, dest) < TRIVIAL_TERMINAL_DCT_M;
+  return haversineM(from, dest) < LOCAL_REA_JOIN_M;
 }
 
 function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
   if (waypoints.length < 2) return "";
   const isCorridorLeg = (idx) => Boolean(legCorridors[idx]);
-  const legIndexes = waypoints.slice(1).map((_, idx) => idx + 1);
-  const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
-  if (allCorridor) return "REA";
-
+  const origin = waypoints[0];
   const dest = waypoints[waypoints.length - 1];
-  const tokens = [];
-  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
+  let firstCorr = -1;
+  let lastCorr = -1;
+  for (let idx = 1; idx < waypoints.length; idx++) {
+    if (!isCorridorLeg(idx)) continue;
+    if (firstCorr < 0) firstCorr = idx;
+    lastCorr = idx;
+  }
 
-  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
+  if (firstCorr < 0) {
+    const tokens = [];
+    pushFplToken(tokens, "DCT");
+    for (let legIdx = 1; legIdx < waypoints.length - 1; legIdx++) {
+      pushFplToken(tokens, formatCompactAviationCoord(waypoints[legIdx].lat, waypoints[legIdx].lng));
+      pushFplToken(tokens, "DCT");
+    }
+    return tokens.join(" ");
+  }
+
+  const entryWp = waypoints[firstCorr - 1];
+  const exitWp = waypoints[lastCorr];
+  const startsInside = firstCorr === 1 || isLocalReaJoin(origin, entryWp);
+  const endsInside = lastCorr === waypoints.length - 1 || isLocalReaJoin(exitWp, dest);
+  let continuousRea = true;
+  for (let idx = firstCorr; idx <= lastCorr; idx++) {
+    if (!isCorridorLeg(idx)) {
+      continuousRea = false;
+      break;
+    }
+  }
+  if (startsInside && endsInside && continuousRea) return "REA";
+
+  const tokens = [];
+  pushFplToken(tokens, startsInside ? "REA" : "DCT");
+  const startLeg = startsInside ? firstCorr : 1;
+
+  for (let legIdx = startLeg; legIdx < waypoints.length; legIdx++) {
     const to = waypoints[legIdx];
     const inside = isCorridorLeg(legIdx);
     const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
@@ -958,7 +987,7 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
     if (inside) {
       if (nextInside === false) {
         const next = waypoints[legIdx + 1];
-        if (next && next === dest && isTrivialTerminalDct(to, dest)) continue;
+        if (next && next === dest && endsInside) continue;
         pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
         pushFplToken(tokens, "DCT");
       }
