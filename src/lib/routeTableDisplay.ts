@@ -59,8 +59,9 @@ function interpolateFuel(
     : null;
   if (hours == null || !Number.isFinite(hours)) {
     const cruise = performance?.eteHours;
-    if (cruise == null || !(performance?.totalDistanceNm > 0)) return null;
-    return (xNm / performance.totalDistanceNm) * cruise * burnPerHour;
+    const totalDistanceNm = performance?.totalDistanceNm;
+    if (cruise == null || totalDistanceNm == null || !(totalDistanceNm > 0)) return null;
+    return (xNm / totalDistanceNm) * cruise * burnPerHour;
   }
   return hours * burnPerHour;
 }
