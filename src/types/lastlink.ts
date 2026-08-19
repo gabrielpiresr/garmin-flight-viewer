@@ -7,6 +7,7 @@ export type LastLinkSettings = {
   sessionExpiresAt: string | null;
   productSlug: string;
   communityId: string;
+  baseOfferId: string;
   webhookUrl: string;
   updatedAt: string | null;
 };

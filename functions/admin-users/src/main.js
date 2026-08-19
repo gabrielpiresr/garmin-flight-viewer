@@ -23737,6 +23737,7 @@ function publicLastLinkSettings(settings, updatedAt = null) {
     sessionExpiresAt: lastlink.sessionExpiresAt(settings.token),
     productSlug: cleanString(settings.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
     communityId: cleanString(settings.communityId),
+    baseOfferId: cleanString(settings.baseOfferId),
     webhookUrl: cleanString(settings.webhookUrl),
     updatedAt,
   };
@@ -23785,6 +23786,7 @@ async function loadLastLinkSettings() {
     email: cleanString(publicData.email),
     productSlug: cleanString(publicData.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
     communityId: cleanString(publicData.communityId),
+    baseOfferId: cleanString(publicData.baseOfferId),
     webhookUrl: cleanString(publicData.webhookUrl),
     password: cleanString(secretData.password),
     token: cleanString(secretData.token),
@@ -23802,6 +23804,7 @@ async function persistLastLinkSettings(next, currentDoc = null) {
       email: next.email,
       productSlug: cleanString(next.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
       communityId: cleanString(next.communityId),
+      baseOfferId: cleanString(next.baseOfferId),
       webhookUrl: cleanString(next.webhookUrl),
     }),
     secret_json: JSON.stringify({ password: next.password, token: next.token }),
@@ -23827,6 +23830,7 @@ async function saveLastLinkSettings(input) {
     token: current.settings.token,
     productSlug: cleanString(input?.productSlug) || current.settings.productSlug || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
     communityId: current.settings.communityId,
+    baseOfferId: current.settings.baseOfferId,
     webhookUrl: current.settings.webhookUrl,
   };
   if (!next.email || !next.password) {
@@ -23865,11 +23869,22 @@ async function withLastLinkToken(fn) {
 
 async function testLastLinkConnection() {
   const current = await loadLastLinkSettings();
-  const community = await withLastLinkToken((token) => lastlink.ensureCreditCommunity(token, {
-    communityId: current.settings.communityId,
-    productSlug: current.settings.productSlug,
-  }));
-  await persistLastLinkSettings({ ...current.settings, communityId: cleanString(community?.id) }, current.doc);
+  const found = await withLastLinkToken(async (token) => {
+    const community = await lastlink.ensureCreditCommunity(token, {
+      communityId: current.settings.communityId,
+      productSlug: current.settings.productSlug,
+    });
+    const base = await lastlink.ensureBaseOffer(token, {
+      communityId: community.id,
+      baseOfferId: current.settings.baseOfferId,
+    });
+    return { community, base };
+  });
+  await persistLastLinkSettings({
+    ...current.settings,
+    communityId: cleanString(found.community?.id),
+    baseOfferId: cleanString(found.base?.offerId || found.base?.info?.offerId),
+  }, current.doc);
   const { publicSettings } = await loadLastLinkSettings();
   return publicSettings;
 }
@@ -23923,11 +23938,21 @@ async function createLastLinkOfferForProposal(doc) {
     amount,
     communityId: current.settings.communityId,
     productSlug: current.settings.productSlug,
+    baseOfferId: current.settings.baseOfferId,
     proposalId: doc.$id,
     buyer,
   }));
-  if (cleanString(created.communityId) && created.communityId !== current.settings.communityId) {
-    await persistLastLinkSettings({ ...current.settings, communityId: created.communityId }, current.doc).catch(() => null);
+  const nextCommunityId = cleanString(created.communityId);
+  const nextBaseOfferId = cleanString(created.baseOfferId);
+  if (
+    (nextCommunityId && nextCommunityId !== current.settings.communityId)
+    || (nextBaseOfferId && nextBaseOfferId !== current.settings.baseOfferId)
+  ) {
+    await persistLastLinkSettings({
+      ...current.settings,
+      communityId: nextCommunityId || current.settings.communityId,
+      baseOfferId: nextBaseOfferId || current.settings.baseOfferId,
+    }, current.doc).catch(() => null);
   }
   return {
     offerId: created.offerId,

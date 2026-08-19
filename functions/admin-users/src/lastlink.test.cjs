@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  LASTLINK_BASE_OFFER_NAME,
   LASTLINK_CREDIT_PRODUCT_SLUG,
   LASTLINK_MIN_AMOUNT,
   absoluteCheckoutUrl,
@@ -8,7 +9,9 @@ const {
   appendCheckoutQuery,
   buildCreditTitles,
   communityMatchesProduct,
+  findBaseOffer,
   formatHoursLabel,
+  isBaseOfferName,
   parseJwtExp,
   sessionExpiresAt,
   tokenLooksValid,
@@ -79,4 +82,24 @@ test("appends student checkout fields and proposal id to the LastLink URL", () =
   assert.equal(parsed.searchParams.get("document"), "12345678900");
   assert.equal(parsed.searchParams.get("phone"), "5531999998888");
   assert.equal(parsed.searchParams.get("cep"), "30123000");
+});
+
+test("matches only the exact base offer name, not copies", () => {
+  assert.equal(LASTLINK_BASE_OFFER_NAME, "oferta base para duplicação");
+  assert.equal(isBaseOfferName("oferta base para duplicação"), true);
+  assert.equal(isBaseOfferName("Oferta Base Para Duplicação"), true);
+  assert.equal(isBaseOfferName("oferta base para duplicacao"), true);
+  assert.equal(isBaseOfferName("oferta base para duplicação (cópia)"), false);
+  assert.equal(isBaseOfferName("1h - GABRIEL PIRES RAMOS (cópia)"), false);
+});
+
+test("finds the cached base offer by id or exact name", () => {
+  const offers = [
+    { offerId: "copy-1", name: "oferta base para duplicação (cópia)", info: { name: "oferta base para duplicação (cópia)" } },
+    { offerId: "base-1", name: "oferta base para duplicação", info: { offerId: "base-1", name: "oferta base para duplicação" } },
+    { offerId: "other", name: "55h - Maria Silva" },
+  ];
+  assert.equal(findBaseOffer(offers)?.offerId, "base-1");
+  assert.equal(findBaseOffer(offers, { baseOfferId: "copy-1" })?.offerId, "copy-1");
+  assert.equal(findBaseOffer(offers, { baseOfferId: "missing" })?.offerId, "base-1");
 });

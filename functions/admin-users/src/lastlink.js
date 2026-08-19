@@ -5,6 +5,7 @@ const LASTLINK_PRODUCT_TYPE_ID = 7;
 const LASTLINK_TOKEN_SKEW_MS = 5 * 60 * 1000;
 const LASTLINK_MIN_AMOUNT = 5;
 const LASTLINK_CREDIT_PRODUCT_SLUG = "creditosdehoradevoo";
+const LASTLINK_BASE_OFFER_NAME = "oferta base para duplicação";
 
 function clean(value) {
   return String(value ?? "").trim();
@@ -99,6 +100,19 @@ function communityMatchesProduct(community, slug) {
     const key = normalizeProductKey(item);
     return Boolean(key) && (key === wanted || key.includes(wanted));
   });
+}
+
+function isBaseOfferName(value) {
+  return normalizeProductKey(value) === normalizeProductKey(LASTLINK_BASE_OFFER_NAME);
+}
+
+function offerDisplayName(offer) {
+  return clean(offer?.info?.name || offer?.name || offer?.subtitle);
+}
+
+function checkoutCodeFromUrl(url) {
+  const match = clean(url).match(/\/p\/([^/?#]+)/i);
+  return clean(match?.[1]);
 }
 
 function findCreditCommunity(communities, { communityId, productSlug } = {}) {
@@ -259,7 +273,69 @@ async function waitForNewCommunity(token, previousIds, title) {
   throw httpError("Produto criado na LastLink, mas o ID nao apareceu na listagem.", 502);
 }
 
-async function createOfferAndPlans(token, { communityId, name, amount }) {
+async function listActiveOffers(token, communityId, { page = 1, size = 50 } = {}) {
+  const query = new URLSearchParams({
+    communityId: clean(communityId),
+    page: String(Math.max(1, Number(page) || 1)),
+    size: String(Math.max(1, Number(size) || 50)),
+    status: "active",
+  });
+  const body = await lastlinkFetch(token, `/api/community/admin/offer/list?${query.toString()}`);
+  return {
+    items: Array.isArray(body?.items) ? body.items : [],
+    total: Number(body?.total) || 0,
+  };
+}
+
+async function listAllActiveOffers(token, communityId) {
+  const items = [];
+  for (let page = 1; page <= 20; page += 1) {
+    const listed = await listActiveOffers(token, communityId, { page, size: 50 });
+    items.push(...listed.items);
+    if (!listed.items.length || items.length >= listed.total) break;
+  }
+  return items;
+}
+
+function findBaseOffer(offers, { baseOfferId } = {}) {
+  const list = Array.isArray(offers) ? offers : [];
+  const wantedId = clean(baseOfferId);
+  if (wantedId) {
+    const byId = list.find((item) => clean(item?.offerId || item?.info?.offerId) === wantedId);
+    if (byId) return byId;
+  }
+  return list.find((item) => isBaseOfferName(offerDisplayName(item))) || null;
+}
+
+async function ensureBaseOffer(token, { communityId, baseOfferId } = {}) {
+  const offers = await listAllActiveOffers(token, communityId);
+  const match = findBaseOffer(offers, { baseOfferId });
+  if (clean(match?.offerId || match?.info?.offerId)) return match;
+  throw httpError(
+    `Nao encontrei a oferta "${LASTLINK_BASE_OFFER_NAME}" no produto de creditos da LastLink.`,
+    400,
+  );
+}
+
+async function duplicateOffer(token, offerId) {
+  const wanted = clean(offerId);
+  if (!wanted) throw httpError("Oferta base da LastLink nao informada.", 400);
+  const body = await lastlinkFetch(token, `/api/community/admin/offer/${wanted}/duplicate`, { method: "POST" });
+  const duplicatedId = clean(body?.offerId || body?.id);
+  const checkoutUrl = absoluteCheckoutUrl(body?.checkoutUrl);
+  if (!duplicatedId || !checkoutUrl) {
+    throw httpError("LastLink duplicou a oferta, mas nao devolveu o link de pagamento.", 502, body);
+  }
+  return {
+    offerId: duplicatedId,
+    name: clean(body?.name),
+    checkoutUrl,
+    paymentUrl: checkoutUrl,
+    code: checkoutCodeFromUrl(checkoutUrl),
+  };
+}
+
+function safeOfferAmount(amount) {
   const safeAmount = Math.round(Number(amount) * 100) / 100;
   if (!Number.isFinite(safeAmount) || safeAmount <= 0) {
     throw httpError("Valor da oferta LastLink invalido.", 400);
@@ -267,91 +343,68 @@ async function createOfferAndPlans(token, { communityId, name, amount }) {
   if (safeAmount < LASTLINK_MIN_AMOUNT) {
     throw httpError(`Valor minimo na LastLink e R$ ${LASTLINK_MIN_AMOUNT.toFixed(2)}.`, 400);
   }
-  const body = await lastlinkFetch(token, "/api/community/admin/offer/create-offer-and-plans", {
-    method: "POST",
-    body: {
-      allowNewSubscriptions: true,
-      billingType: 2,
-      isTermAccepted: true,
-      isBankslipEnabled: true,
-      enableManualCouponInput: false,
-      enableTermsOfUse: false,
-      termsOfUse: null,
-      isPixEnabled: true,
-      name: clean(name),
-      oneTime: {
-        amount: safeAmount,
-        allowSmartInstallment: false,
-        passOnInstallmentInterestRate: true,
-        maxInstallment: 6,
-        membershipFee: 0,
-        interestRatePayerId: 2,
-        joinMembershipFeePlanValueEnabled: false,
-      },
-      oneTimeAccess: { startDate: null, expirationDate: null },
-      communityId: clean(communityId),
-      bundleCommunityIds: [],
-      allowSmartInstallment: false,
-      maxSmartInstallments: null,
+  return safeAmount;
+}
+
+function offerUpdatePayload(info, { name, amount, communityId } = {}) {
+  const oneTime = info?.oneTime && typeof info.oneTime === "object" ? info.oneTime : {};
+  return {
+    allowNewSubscriptions: info?.allowNewSubscriptions !== false,
+    billingType: Number(info?.billingType) || 2,
+    isTermAccepted: info?.isTermAccepted !== false,
+    isBankslipEnabled: Boolean(info?.isBankslipEnabled),
+    enableManualCouponInput: Boolean(info?.enableManualCouponInput),
+    enableTermsOfUse: Boolean(info?.enableTermsOfUse),
+    isPixEnabled: info?.isPixEnabled !== false,
+    name: clean(name),
+    oneTime: {
+      amount: safeOfferAmount(amount),
+      allowSmartInstallment: Boolean(oneTime.allowSmartInstallment),
+      passOnInstallmentInterestRate: oneTime.passOnInstallmentInterestRate !== false,
+      maxInstallment: Math.max(1, Number(oneTime.maxInstallment) || 1),
+      membershipFee: Number(oneTime.membershipFee) || 0,
+      interestRatePayerId: Number(oneTime.interestRatePayerId) || 2,
+      joinMembershipFeePlanValueEnabled: false,
     },
-  });
-  const offerId = clean(typeof body === "string" ? body : body?.offerId || body?.id);
-  if (!offerId || body?.hasErrors) {
-    throw httpError("LastLink recusou a criacao da oferta.", 400, body);
-  }
-  return offerId;
+    oneTimeAccess: info?.oneTimeAccess && typeof info.oneTimeAccess === "object"
+      ? info.oneTimeAccess
+      : { startDate: null, expirationDate: null, type: 1 },
+    communityId: clean(communityId || info?.communityId),
+  };
 }
 
-async function listActiveOffers(token, communityId) {
-  const query = new URLSearchParams({
-    communityId: clean(communityId),
-    page: "1",
-    size: "20",
-    status: "active",
-  });
-  const body = await lastlinkFetch(token, `/api/community/admin/offer/list?${query.toString()}`);
-  return Array.isArray(body?.items) ? body.items : [];
-}
-
-async function waitForOffer(token, communityId, offerId) {
+async function updateOfferInfo(token, offerId, payload) {
   const wanted = clean(offerId);
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (attempt > 0) await sleep(300);
-    const items = await listActiveOffers(token, communityId);
-    const match = items.find((item) => clean(item?.offerId || item?.info?.offerId) === wanted);
-    const checkoutUrl = absoluteCheckoutUrl(match?.checkoutUrl);
-    if (checkoutUrl) {
-      return {
-        offerId: clean(match?.offerId || wanted),
-        communityId: clean(match?.info?.communityId || communityId),
-        code: clean(match?.info?.code),
-        checkoutUrl,
-        paymentUrl: checkoutUrl,
-      };
-    }
-  }
-  throw httpError("Oferta criada na LastLink, mas o link de pagamento nao apareceu.", 502);
+  if (!wanted) throw httpError("Oferta LastLink nao informada para atualizacao.", 400);
+  return lastlinkFetch(token, `/api/community/admin/offer/${wanted}/set-multi-offer-info`, {
+    method: "POST",
+    body: payload,
+  });
 }
 
-async function createPaymentLink(token, { offerName, amount, communityId, productSlug, proposalId, buyer } = {}) {
+async function createPaymentLink(token, { offerName, amount, communityId, productSlug, baseOfferId, proposalId, buyer } = {}) {
   const community = await ensureCreditCommunity(token, { communityId, productSlug });
-  const offerId = await createOfferAndPlans(token, {
-    communityId: community.id,
+  const base = await ensureBaseOffer(token, { communityId: community.id, baseOfferId });
+  const duplicated = await duplicateOffer(token, base.offerId || base.info?.offerId);
+  await updateOfferInfo(token, duplicated.offerId, offerUpdatePayload(base.info, {
     name: offerName,
     amount,
-  });
-  const created = await waitForOffer(token, community.id, offerId);
+    communityId: community.id,
+  }));
   return {
-    ...created,
-    paymentUrl: appendCheckoutQuery(created.paymentUrl, {
+    ...duplicated,
+    communityId: clean(community.id),
+    paymentUrl: appendCheckoutQuery(duplicated.paymentUrl, {
       proposalId,
       ...(buyer && typeof buyer === "object" ? buyer : {}),
     }),
     productSlug: clean(productSlug) || LASTLINK_CREDIT_PRODUCT_SLUG,
+    baseOfferId: clean(base.offerId || base.info?.offerId),
   };
 }
 
 module.exports = {
+  LASTLINK_BASE_OFFER_NAME,
   LASTLINK_CREDIT_PRODUCT_SLUG,
   LASTLINK_MIN_AMOUNT,
   LASTLINK_ORIGIN,
@@ -362,13 +415,17 @@ module.exports = {
   buildCreditTitles,
   communityMatchesProduct,
   createPaymentLink,
+  ensureBaseOffer,
   ensureCreditCommunity,
+  findBaseOffer,
   findCreditCommunity,
   formatHoursLabel,
+  isBaseOfferName,
   lastlinkFetch,
   listCommunities,
   loginLastLink,
   normalizeProductKey,
+  offerDisplayName,
   parseJwtExp,
   sessionExpiresAt,
   tokenLooksValid,

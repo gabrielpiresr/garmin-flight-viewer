@@ -99,7 +99,7 @@ export function LastLinkSettingsPanel() {
           className={`rounded-lg border px-3 py-3 text-left text-xs transition ${provider === "lastlink" ? "border-emerald-500 bg-emerald-950/40 text-emerald-100" : "border-slate-700 text-slate-300 hover:bg-slate-800/60"}`}
         >
           <span className="block font-semibold">LastLink</span>
-          <span className="mt-1 block text-[11px] text-slate-400">Cria ofertas no produto creditosdehoradevoo e lança crédito pelo webhook.</span>
+          <span className="mt-1 block text-[11px] text-slate-400">Duplica a oferta base no produto creditosdehoradevoo e lança crédito pelo webhook.</span>
         </button>
       </div>
 
@@ -112,7 +112,7 @@ export function LastLinkSettingsPanel() {
       <div className="mt-5 border-t border-slate-800 pt-4">
         <h4 className="text-sm font-semibold text-slate-200">Integração LastLink</h4>
         <p className="mt-1 text-xs text-slate-500">
-          O login é feito uma vez e o token fica salvo (cerca de 7 dias). Novos links reutilizam a sessão.
+          O login é feito uma vez e o token fica salvo (cerca de 7 dias). Cada link duplica a oferta “oferta base para duplicação” e só ajusta nome e valor.
         </p>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <label className="text-xs text-slate-400">E-mail
@@ -125,6 +125,7 @@ export function LastLinkSettingsPanel() {
         <p className="mt-3 text-xs text-slate-500">
           Sessão: {settings?.sessionConfigured ? `válida até ${formatExpiry(settings.sessionExpiresAt)}` : "ainda não autenticada"}
           {settings?.communityId ? ` • produto ${settings.productSlug || "creditosdehoradevoo"}` : ""}
+          {settings?.baseOfferId ? " • oferta base encontrada" : ""}
         </p>
         <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/40 p-3">
           <p className="text-xs font-medium text-slate-300">URL para o webhook da LastLink</p>
