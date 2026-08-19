@@ -1,6 +1,8 @@
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
-import { formatCompactAviationCoord } from "./flightPlanningRoute";
+import { formatCompactAviationCoord, haversineM } from "./flightPlanningRoute";
 import type { LegCorridorInfo } from "./legCorridor";
+
+const TRIVIAL_TERMINAL_DCT_M = 1852 * 1.5;
 
 function isAirportLike(wp: FlightPlanWaypoint): boolean {
   return wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination";
@@ -62,16 +64,24 @@ export function originIsInsideTma(
   return false;
 }
 
+function isTrivialTerminalDct(from: FlightPlanWaypoint, dest: FlightPlanWaypoint): boolean {
+  if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(dest.lat, dest.lng)) {
+    return true;
+  }
+  return haversineM(from, dest) < TRIVIAL_TERMINAL_DCT_M;
+}
+
 /**
  * Campo 15 — Rota.
- * Se o AD de partida está em TMA e o primeiro trecho ATS é REA, omite o DCT
- * até o ponto de entrada da REA e começa direto em REA.
+ * Começa em REA só se o primeiro trecho já está no corredor.
+ * Se a partida está fora da REA, o campo começa em DCT até o ponto de entrada.
+ * DCT residual até o destino (mesmo ponto / < 1,5 NM) não entra no campo.
  */
 export function buildFplRouteText(
   waypoints: FlightPlanWaypoint[],
   legCorridors: Array<LegCorridorInfo | null>,
   speedKt: number | null,
-  options?: { originInsideTma?: boolean },
+  _options?: { originInsideTma?: boolean },
 ): string {
   if (waypoints.length < 2) return "";
   const isCorridorLeg = (idx: number) => Boolean(legCorridors[idx]);
@@ -79,15 +89,11 @@ export function buildFplRouteText(
   const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
   if (allCorridor) return "REA";
 
-  const firstCorridorIdx = legIndexes.find((idx) => isCorridorLeg(idx)) ?? null;
-  const skipDctToReaEntry = Boolean(options?.originInsideTma) && firstCorridorIdx != null;
-
+  const dest = waypoints[waypoints.length - 1]!;
   const tokens: string[] = [];
-  const startInside = skipDctToReaEntry || isCorridorLeg(1);
-  pushFplToken(tokens, startInside ? "REA" : "DCT");
+  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
 
-  const startLeg = skipDctToReaEntry ? firstCorridorIdx! : 1;
-  for (let legIdx = startLeg; legIdx < waypoints.length; legIdx++) {
+  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
     const to = waypoints[legIdx]!;
     const inside = isCorridorLeg(legIdx);
     const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
@@ -95,6 +101,8 @@ export function buildFplRouteText(
 
     if (inside) {
       if (nextInside === false) {
+        const next = waypoints[legIdx + 1];
+        if (next && next === dest && isTrivialTerminalDct(to, dest)) continue;
         pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
         pushFplToken(tokens, "DCT");
       }

@@ -308,6 +308,11 @@ function featureInBounds(feature: ReaRouteFeature, bounds: L.LatLngBounds): bool
   );
 }
 
+/** Limites recomendados (CCV) usam traço; obrigatórios continuam contínuos. */
+function isRecommendedCorridor(tipo: string | null | undefined): boolean {
+  return /^recom/i.test(String(tipo || "").trim());
+}
+
 /**
  * Corredor largura constante — fill retangular (bordas vêm do contorno da união).
  */
@@ -531,11 +536,14 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true, sh
 
       const edgeWeight = zoom >= 12 ? 2.2 : zoom >= 10 ? 1.7 : zoom >= 8 ? 1.3 : 1;
       const edgeOpacity = zoom < 8 ? 0.65 : zoom < 10 ? 0.8 : 0.95;
+      const recomDash = zoom >= 10 ? "10 8" : "7 6";
 
-      const built: [number, number][][] = [];
+      const builtObrig: [number, number][][] = [];
+      const builtRecom: [number, number][][] = [];
 
       for (const feature of drawList) {
         const props = feature.properties || {};
+        const dashed = isRecommendedCorridor(props.tipo);
         const a = endpointA(props);
         const b = endpointB(props);
         if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) {
@@ -562,6 +570,7 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true, sh
               interactive: false,
               lineJoin: "round",
               lineCap: "butt",
+              dashArray: dashed ? recomDash : undefined,
               renderer: edgeRenderer,
             }).addTo(group);
           }
@@ -569,11 +578,11 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true, sh
         }
 
         const ring = getConstantWidthCorridor(feature);
-        if (ring) built.push(ring);
+        if (ring) (dashed ? builtRecom : builtObrig).push(ring);
       }
 
       // Fill: cada corredor separado (faixas distintas, pane 3%).
-      for (const ring of built) {
+      for (const ring of builtObrig.concat(builtRecom)) {
         L.polygon(ring, {
           pane: fillPaneName,
           stroke: false,
@@ -586,28 +595,36 @@ export function ReaRoutesOverlay({ kind, enabled, showEndpointMarkers = true, sh
       }
 
       // Stroke: só o contorno externo da união — sem X / pontas passando do limite.
-      let strokeRings = unionCacheRef.current.get(drawSignature);
-      if (!strokeRings) {
-        strokeRings = unionStrokeRings(built);
-        unionCacheRef.current.set(drawSignature, strokeRings);
-        if (unionCacheRef.current.size > 80) {
-          const oldest = unionCacheRef.current.keys().next().value;
-          if (oldest) unionCacheRef.current.delete(oldest);
+      // Obrigatórios contínuos; recomendados com limites traçejados.
+      const paintUnionStroke = (rings: [number, number][][], suffix: string, extra?: L.PolylineOptions) => {
+        if (!rings.length) return;
+        const key = `${drawSignature}:${suffix}`;
+        let strokeRings = unionCacheRef.current.get(key);
+        if (!strokeRings) {
+          strokeRings = unionStrokeRings(rings);
+          unionCacheRef.current.set(key, strokeRings);
+          if (unionCacheRef.current.size > 80) {
+            const oldest = unionCacheRef.current.keys().next().value;
+            if (oldest) unionCacheRef.current.delete(oldest);
+          }
         }
-      }
-      const edgeOpts: L.PolylineOptions = {
-        pane: edgePaneName,
-        color: stroke,
-        weight: edgeWeight,
-        opacity: edgeOpacity,
-        interactive: false,
-        lineJoin: "round",
-        lineCap: "round",
-        renderer: edgeRenderer,
+        const edgeOpts: L.PolylineOptions = {
+          pane: edgePaneName,
+          color: stroke,
+          weight: edgeWeight,
+          opacity: edgeOpacity,
+          interactive: false,
+          lineJoin: "round",
+          lineCap: extra?.dashArray ? "butt" : "round",
+          renderer: edgeRenderer,
+          ...extra,
+        };
+        for (const ring of strokeRings) {
+          if (ring.length >= 2) L.polyline(ring, edgeOpts).addTo(group);
+        }
       };
-      for (const ring of strokeRings) {
-        if (ring.length >= 2) L.polyline(ring, edgeOpts).addTo(group);
-      }
+      paintUnionStroke(builtObrig, "obrig");
+      paintUnionStroke(builtRecom, "recom", { dashArray: recomDash });
 
       if (!labelsOn && !showPoints && !showHdg) return;
 

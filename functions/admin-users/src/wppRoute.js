@@ -960,7 +960,7 @@ async function handleWppRouteCommand(deps, command) {
       : snap.ok
         ? "Rota via REA."
         : "Sem REA utilizável — rota em DCT.",
-    inTma ? "Partida em TMA — campo Rota começa em REA (sem DCT até a entrada)." : null,
+    /^DCT\b/.test(routeText) ? "Partida fora da REA — campo Rota começa em DCT até a entrada." : null,
   ]
     .filter(Boolean)
     .join("\n");

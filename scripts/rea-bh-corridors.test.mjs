@@ -59,7 +59,8 @@ test("rota automática SBBH → SBCF encaixa nos corredores da TMA BH", () => {
   assert.ok(result.corridorNames.length > 0, result.corridorNames.join(","));
   const corridors = rea.matchLegCorridors(result.waypoints, bh.features);
   const route = rea.buildFplRouteText(result.waypoints, corridors, 90, { originInsideTma: true });
-  assert.match(route, /^REA\b/);
+  assert.match(route, /^DCT\b/);
+  assert.match(route, /\bREA\b/);
   const rmk = rea.buildFplRmkText(result.waypoints, corridors);
   assert.match(rmk, /\bREA\b/);
 });
@@ -134,4 +135,41 @@ test("SDRK → SBJD usa REA e ignora REH (Anhanguera)", () => {
   assert.ok(labels.includes("CAPIVARI"), labels);
   assert.ok(/\bITU\b/.test(labels), labels);
   assert.ok(/CABRE[UÚ]VA/i.test(labels), labels);
+});
+
+test("export FPL SDRK → SBJD começa em DCT até a entrada da REA", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SDRK = {
+    lat: -22.3964,
+    lng: -47.5603,
+    label: "SDRK",
+    raw: "SDRK",
+    kind: "origin",
+    fieldElevFt: 1991,
+    altitudeFt: 1991,
+  };
+  const dest = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "destination",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const snapped = rea.snapRouteToVisualCorridors([SDRK, dest], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, { originInsideTma: true });
+  assert.match(route, /^DCT\b/, route);
+  assert.match(route, /2249S04734W\/N0090A045 REA/, route);
+  assert.equal(route.endsWith("REA"), true, route);
+  assert.doesNotMatch(route, /^REA\b/);
 });

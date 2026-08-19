@@ -930,27 +930,35 @@ function pushFplToken(tokens, token) {
   tokens.push(clean);
 }
 
-function buildFplRouteText(waypoints, legCorridors, speedKt, options = {}) {
+const TRIVIAL_TERMINAL_DCT_M = 1852 * 1.5;
+
+function isTrivialTerminalDct(from, dest) {
+  if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(dest.lat, dest.lng)) {
+    return true;
+  }
+  return haversineM(from, dest) < TRIVIAL_TERMINAL_DCT_M;
+}
+
+function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
   if (waypoints.length < 2) return "";
   const isCorridorLeg = (idx) => Boolean(legCorridors[idx]);
   const legIndexes = waypoints.slice(1).map((_, idx) => idx + 1);
   const allCorridor = legIndexes.length > 0 && legIndexes.every(isCorridorLeg);
   if (allCorridor) return "REA";
 
-  const firstCorridorIdx = legIndexes.find((idx) => isCorridorLeg(idx)) ?? null;
-  const skipDctToReaEntry = Boolean(options.originInsideTma) && firstCorridorIdx != null;
+  const dest = waypoints[waypoints.length - 1];
   const tokens = [];
-  const startInside = skipDctToReaEntry || isCorridorLeg(1);
-  pushFplToken(tokens, startInside ? "REA" : "DCT");
-  const startLeg = skipDctToReaEntry ? firstCorridorIdx : 1;
+  pushFplToken(tokens, isCorridorLeg(1) ? "REA" : "DCT");
 
-  for (let legIdx = startLeg; legIdx < waypoints.length; legIdx++) {
+  for (let legIdx = 1; legIdx < waypoints.length; legIdx++) {
     const to = waypoints[legIdx];
     const inside = isCorridorLeg(legIdx);
     const nextInside = legIdx + 1 < waypoints.length ? isCorridorLeg(legIdx + 1) : null;
     const isLastLeg = legIdx === waypoints.length - 1;
     if (inside) {
       if (nextInside === false) {
+        const next = waypoints[legIdx + 1];
+        if (next && next === dest && isTrivialTerminalDct(to, dest)) continue;
         pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
         pushFplToken(tokens, "DCT");
       }
