@@ -48,7 +48,13 @@ import { collectReaFixPoints, getCachedReaRoutes, loadReaRoutes, type ReaFixPoin
 import { snapRouteToVisualCorridors } from "../../lib/reaCorridorRoute";
 import { buildFlightPlanRouteTableRows, buildRouteTableViewRows } from "../../lib/routeTableDisplay";
 import { geometryContainsLatLng } from "../../lib/afisCoverage";
-import { buildFplRmkText, buildFplRouteText, originIsInsideTma } from "../../lib/fplRouteExport";
+import {
+  buildFplRmkText,
+  buildFplRouteText,
+  destReaTmaId,
+  hasTmaAirspaceData,
+  originReaTmaId,
+} from "../../lib/fplRouteExport";
 import { resolveAirportCoords } from "../../lib/resolveAirportCoords";
 import {
   deleteSavedFlightRoute,
@@ -185,10 +191,14 @@ function normalizeRouteWaypoints(waypoints: FlightPlanWaypoint[]): FlightPlanWay
   if (!waypoints.length) return [];
   return waypoints.map((wp, idx) => {
     if (wp.kind === "fix" || wp.kind === "rea") return wp;
-    if (waypoints.length === 1 || idx === 0) return { ...wp, kind: "origin" };
-    if (idx === waypoints.length - 1) return { ...wp, kind: "destination" };
-    if (wp.kind === "origin" || wp.kind === "destination") return { ...wp, kind: "airport" };
-    return wp;
+    let kind: FlightPlanWaypoint["kind"] = wp.kind;
+    if (waypoints.length === 1 || idx === 0) kind = "origin";
+    else if (idx === waypoints.length - 1) kind = "destination";
+    else if (wp.kind === "origin" || wp.kind === "destination") kind = "airport";
+    const isAd = kind === "airport" || kind === "destination";
+    const altitudeRef =
+      idx > 0 && isAd && (wp.altitudeRef == null || wp.altitudeRef === "bs") ? "be" : wp.altitudeRef;
+    return { ...wp, kind, ...(altitudeRef ? { altitudeRef } : {}) };
   });
 }
 
@@ -266,6 +276,18 @@ function IconMeasure() {
   );
 }
 
+function IconClearRoute() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
 function IconGear() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
@@ -317,6 +339,7 @@ export function PlanejamentoTab({
   const [cruiseSpeedKt, setCruiseSpeedKt] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt));
   const [fuelBurn, setFuelBurn] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour));
   const [confirmCorridorSnap, setConfirmCorridorSnap] = useState(false);
+  const [confirmClearRoute, setConfirmClearRoute] = useState(false);
   const [climbSpeedKt, setClimbSpeedKt] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbSpeedKt));
   const [climbRateFpm, setClimbRateFpm] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbRateFpm));
   const [climbBurn, setClimbBurn] = useState(String(DEFAULT_FLIGHT_PERFORMANCE.climbBurnPerHour));
@@ -363,6 +386,8 @@ export function PlanejamentoTab({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<AiswebAerodromeMatch[]>([]);
   const [searchingAdd, setSearchingAdd] = useState(false);
+  const [addingSearchLabel, setAddingSearchLabel] = useState<string | null>(null);
+  const addingSearchRef = useRef(false);
   const [fitKey, setFitKey] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -662,22 +687,39 @@ export function PlanejamentoTab({
     [waypoints, legs, legCorridors, performanceProfile, burnOpt],
   );
 
-  const originInsideTma = useMemo(
-    () =>
-      originIsInsideTma(waypoints[0], airspaces, airspaceVolumes, (geometry, lat, lng) =>
-        geometryContainsLatLng(geometry, lat, lng),
-      ),
+  const pointInTmaVolume = (geometry: { type: string; coordinates?: unknown }, lat: number, lng: number) =>
+    geometryContainsLatLng(geometry, lat, lng);
+
+  const originReaTma = useMemo(
+    () => originReaTmaId(waypoints[0], airspaces, airspaceVolumes, pointInTmaVolume),
     [waypoints, airspaces, airspaceVolumes],
   );
 
-  const fplExport = useMemo(
-    () => ({
-      route: buildFplRouteText(waypoints, legCorridors, cruiseOpt, { originInsideTma }),
+  const destReaTma = useMemo(
+    () =>
+      destReaTmaId(
+        waypoints.length > 1 ? waypoints[waypoints.length - 1] : null,
+        airspaces,
+        airspaceVolumes,
+        pointInTmaVolume,
+        summary.distanceNm,
+      ),
+    [waypoints, airspaces, airspaceVolumes, summary.distanceNm],
+  );
+
+  const fplExport = useMemo(() => {
+    const tmaKnown = hasTmaAirspaceData(airspaces, airspaceVolumes);
+    return {
+      route: buildFplRouteText(waypoints, legCorridors, cruiseOpt, {
+        originInsideTma: tmaKnown ? originReaTma != null : undefined,
+        destInsideTma: tmaKnown ? destReaTma != null : undefined,
+        originReaTmaId: tmaKnown ? originReaTma : undefined,
+        destReaTmaId: tmaKnown ? destReaTma : undefined,
+      }),
       rmk: buildFplRmkText(waypoints, legCorridors),
       eet: formatEteClock(summary.eteHours).replace(":", ""),
-    }),
-    [waypoints, legCorridors, cruiseOpt, summary.eteHours, originInsideTma],
-  );
+    };
+  }, [waypoints, legCorridors, cruiseOpt, summary.eteHours, originReaTma, destReaTma, airspaces, airspaceVolumes]);
 
   // Auto ALT = teto do corredor quando o trecho está em um corredor REA/REH.
   useEffect(() => {
@@ -1074,7 +1116,12 @@ export function PlanejamentoTab({
         insertIndex != null && insertIndex >= 0 && insertIndex <= next.length
           ? insertIndex
           : findRouteInsertHint(next, wp).insertIndex;
-      next.splice(idx, 0, { ...wp, altitudeRef: wp.altitudeRef ?? "bs" });
+      next.splice(idx, 0, {
+        ...wp,
+        altitudeRef:
+          wp.altitudeRef ??
+          (idx > 0 && (wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination") ? "be" : "bs"),
+      });
       return normalizeRouteWaypoints(next);
     });
     setGenerated(false);
@@ -1090,14 +1137,18 @@ export function PlanejamentoTab({
       setConfirmCorridorSnap(true);
       return;
     }
-    runSnapToVisualCorridors();
+    runSnapToVisualCorridors(false);
   }
 
-  function runSnapToVisualCorridors() {
+  function runSnapToVisualCorridors(keepIntermediates = false) {
     setConfirmCorridorSnap(false);
     const features = getCachedReaRoutes("rea")?.features || [];
     const run = (list: typeof features) => {
-      const result = snapRouteToVisualCorridors(waypoints, list);
+      const origin = waypoints[0];
+      const dest = waypoints[waypoints.length - 1];
+      if (!origin || !dest) return;
+      const input = keepIntermediates ? waypoints : [origin, dest];
+      const result = snapRouteToVisualCorridors(input, list);
       if (!result.ok) {
         showToast({ variant: "warning", title: "Corredores visuais", message: result.error });
         return;
@@ -1179,8 +1230,12 @@ export function PlanejamentoTab({
   }
 
   async function addSearchMatch(match: AiswebAerodromeMatch) {
+    if (addingSearchRef.current) return;
     const code = normalizeIcao(match.icao);
+    addingSearchRef.current = true;
     setSearchingAdd(true);
+    setAddingSearchLabel(code);
+    setSearchMatches([]);
     try {
       const fromDb = aerodromes.find((a) => a.icao === code);
       let elevFt = fieldElevFtFromAerodrome(fromDb);
@@ -1234,7 +1289,9 @@ export function PlanejamentoTab({
       setSearchMatches([]);
       showToast({ variant: "success", title: "Aeródromo adicionado", message: code });
     } finally {
+      addingSearchRef.current = false;
       setSearchingAdd(false);
+      setAddingSearchLabel(null);
     }
   }
 
@@ -2209,6 +2266,16 @@ export function PlanejamentoTab({
               <button
                 type="button"
                 className={btnIcon}
+                title="Limpar rota"
+                aria-label="Limpar rota"
+                onClick={() => setConfirmClearRoute(true)}
+                disabled={waypoints.length === 0}
+              >
+                <IconClearRoute />
+              </button>
+              <button
+                type="button"
+                className={btnIcon}
                 title="Configurações (cruzeiro e consumo)"
                 onClick={() => setShowConfigModal(true)}
               >
@@ -2218,20 +2285,27 @@ export function PlanejamentoTab({
 
             <div className="relative">
               <input
-                className={inputClass}
-                value={searchQuery}
+                className={`${inputClass} ${searchingAdd ? "pr-9" : ""}`}
+                value={searchingAdd && addingSearchLabel ? addingSearchLabel : searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Aeródromo, ICAO, cidade…"
                 autoComplete="off"
                 disabled={searchingAdd}
+                aria-busy={searchingAdd}
               />
-              {searchMatches.length > 0 ? (
+              {searchingAdd ? (
+                <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center" aria-hidden>
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-emerald-400/30 border-t-emerald-300" />
+                </span>
+              ) : null}
+              {searchMatches.length > 0 && !searchingAdd ? (
                 <ul className="absolute z-30 mt-1 max-h-52 w-full overflow-auto rounded-lg border border-slate-700 bg-slate-950 py-1 shadow-xl">
                   {searchMatches.map((m) => (
                     <li key={m.icao}>
                       <button
                         type="button"
-                        className="block w-full px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+                        className="block w-full px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+                        disabled={searchingAdd}
                         onClick={() => void addSearchMatch(m)}
                       >
                         <span className="font-semibold text-emerald-300">{m.icao}</span>
@@ -3593,9 +3667,41 @@ export function PlanejamentoTab({
         </PlanejamentoDialog>
       ) : null}
 
+      {confirmClearRoute ? (
+        <PlanejamentoDialog
+          title="Zerar rota"
+          onClose={() => setConfirmClearRoute(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => setConfirmClearRoute(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.danger}
+                onClick={() => {
+                  setConfirmClearRoute(false);
+                  newRoute();
+                }}
+              >
+                Zerar rota
+              </button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-300">
+            Isso remove origem, destino e todos os pontos. Confirma zerar a rota?
+          </p>
+        </PlanejamentoDialog>
+      ) : null}
+
       {confirmCorridorSnap ? (
         <PlanejamentoDialog
-          title="Redefinir rota nos corredores"
+          title="Pontos intermediários na rota"
           onClose={() => setConfirmCorridorSnap(false)}
           footer={
             <>
@@ -3608,18 +3714,26 @@ export function PlanejamentoTab({
               </button>
               <button
                 type="button"
-                className={planejamentoDialogButtons.primary}
-                onClick={() => runSnapToVisualCorridors()}
+                className={planejamentoDialogButtons.secondary}
+                onClick={() => runSnapToVisualCorridors(false)}
               >
-                Ajustar rota
+                Zerar rota
+              </button>
+              <button
+                type="button"
+                className={planejamentoDialogButtons.primary}
+                onClick={() => runSnapToVisualCorridors(true)}
+              >
+                Manter pontos
               </button>
             </>
           }
         >
           <p className="text-sm text-slate-300">
-            Já existem pontos intermediários nesta rota. Ajustar nos corredores visuais vai{" "}
-            <span className="font-semibold text-amber-200">redefinir a rota</span> entre origem e destino,
-            substituindo os pontos atuais pelos da REA.
+            Já existem pontos além da origem e do destino.{" "}
+            <span className="font-semibold text-amber-200">Zerar rota</span> traça só origem → destino via REA.{" "}
+            <span className="font-semibold text-emerald-200">Manter pontos</span> conserva a ordem atual e traça a
+            REA entre cada trecho.
           </p>
         </PlanejamentoDialog>
       ) : null}

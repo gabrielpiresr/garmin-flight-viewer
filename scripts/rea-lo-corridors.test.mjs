@@ -42,6 +42,37 @@ test("REA nacional inclui a carta XO-LONDRINA", () => {
   }
 });
 
+test("export FPL SBJD → SBLO termina em REA porque o destino está na TMA", () => {
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SBLO], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, { destInsideTma: true });
+  assert.match(route, /^REA\b/, route);
+  assert.match(route, /\bREA$/, route);
+  assert.doesNotMatch(route, /2312S05048W/, route);
+  assert.doesNotMatch(route, /REA .+\bDCT$/, route);
+});
+
+test("mantém pontos intermediários e traça REA entre cada trecho", () => {
+  const via = {
+    lat: -23.005,
+    lng: -47.135,
+    label: "ITU",
+    raw: "ITU",
+    kind: "airport",
+    fieldElevFt: 2000,
+    altitudeFt: 2000,
+  };
+  const result = rea.snapRouteToVisualCorridors([SBJD, via, SBLO], national.features || []);
+  assert.equal(result.ok, true, result.error);
+  const labels = names(result.waypoints);
+  assert.equal(labels[0], "SBJD");
+  assert.equal(labels[labels.length - 1], "SBLO");
+  const ituIdx = labels.findIndex((label) => label === "ITU" || /ITU/i.test(label));
+  assert.ok(ituIdx > 0 && ituIdx < labels.length - 1, labels.join(" > "));
+});
+
 test("SBJD → SBLO entra na REA de Londrina depois dos corredores de SP", () => {
   const result = rea.snapRouteToVisualCorridors([SBJD, SBLO], national.features || []);
   assert.equal(result.ok, true, result.error);
@@ -69,4 +100,29 @@ test("SBJD → SBLO entra na REA de Londrina depois dos corredores de SP", () =>
       ? labels.split("PORTO FELIZ").pop() || ""
       : labels;
   assert.ok(!/^[\s>]*SBLO$/.test(lastSp.trim()), `DCT into SBLO without Londrina REA: ${labels}`);
+});
+
+test("FPL SBJD–SBBU–SBJD: AD com nível do regresso e VFR na reentrada; RMK com TGL", () => {
+  const waypoints = [
+    { lat: -23.1806, lng: -46.9444, label: "SBJD", raw: "SBJD", kind: "origin", altitudeFt: 2080, fieldElevFt: 2080 },
+    { lat: -23.15, lng: -47.75, label: "SAIDA", raw: "SAIDA", kind: "rea", altitudeFt: 5500 },
+    { lat: -22.35, lng: -49.05, label: "SBBU", raw: "SBBU", kind: "airport", altitudeFt: 1942, fieldElevFt: 1942 },
+    { lat: -23.15, lng: -47.75, label: "RETORNO", raw: "RETORNO", kind: "rea", altitudeFt: 6500 },
+    { lat: -23.1806, lng: -46.9444, label: "SBJD", raw: "SBJD", kind: "destination", altitudeFt: 2080, fieldElevFt: 2080 },
+  ];
+  const corridors = [
+    null,
+    { name: "CHARLIE", altMax: 5500 },
+    null,
+    null,
+    { name: "CHARLIE", altMax: 6500 },
+  ];
+  const route = rea.buildFplRouteText(waypoints, corridors, 90, { destInsideTma: true });
+  assert.equal(
+    route,
+    "REA 2309S04745W/N0090A055 DCT 2221S04903W/N0090A065 DCT 2309S04745W/N0090VFR REA",
+    route,
+  );
+  const rmk = rea.buildFplRmkText(waypoints, corridors);
+  assert.match(rmk, /\bTGL SBBU\b/, rmk);
 });

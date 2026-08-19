@@ -46,14 +46,20 @@ function parseWppRouteCommand(text, responseId = "") {
     if (help === "wpp_open_route" || help === "ver na plataforma" || help === "abrir rota") {
       return { kind: "open" };
     }
-    const match = normalized.match(
-      /^rota\s+([A-Za-z0-9]{4})\s*(?:para|to|-|\/|->|→)?\s*([A-Za-z0-9]{4})\s*$/i,
-    );
-    if (!match) continue;
-    const origin = normalizeIcao(match[1]);
-    const destination = normalizeIcao(match[2]);
-    if (!ICAO_RE.test(origin) || !ICAO_RE.test(destination)) continue;
-    return { kind: "route", origin, destination };
+    if (!/^rota\b/i.test(normalized)) continue;
+    const rest = normalized.replace(/^rota\s+/i, "").trim();
+    if (!rest) continue;
+    const tokens = rest
+      .split(/\s*(?:para|to|-|\/|->|→|>)\s*|\s+/i)
+      .map((token) => normalizeIcao(token))
+      .filter((token) => ICAO_RE.test(token));
+    if (tokens.length < 2) continue;
+    return {
+      kind: "route",
+      origin: tokens[0],
+      destination: tokens[tokens.length - 1],
+      icaos: tokens,
+    };
   }
   return null;
 }
@@ -109,10 +115,11 @@ function formatWppRouteHelpMessage(nickname) {
   return [
     `${greet}para traçar uma rota via REAs, envie:`,
     "",
-    "*Rota {ICAO} {ICAO}*",
+    "*Rota {ICAO} {ICAO} …*",
     "",
-    "Exemplo:",
+    "Exemplos:",
     "• Rota SBJD SBLO",
+    "• Rota SBJD SDCO SDPW SBJD",
     "",
     "Eu confirmo o pedido, monto a rota automaticamente e te mando mapa, tabela, perfil, espaços aéreos, resumo e os campos Rota e RMK para copiar.",
   ].join("\n");
@@ -274,17 +281,6 @@ function airportWaypoint(icao, rotaer) {
     fieldElevFt: Number.isFinite(elev) ? Math.round(elev) : null,
     altitudeFt: Number.isFinite(elev) ? Math.round(elev) : null,
   };
-}
-
-function originInsideTma(origin, airspaces) {
-  if (!origin) return false;
-  return (airspaces || []).some(
-    (hit) =>
-      String(hit?.type || "").toUpperCase() === "TMA" &&
-      hit.entryDistanceNm != null &&
-      Number.isFinite(hit.entryDistanceNm) &&
-      hit.entryDistanceNm < 3,
-  );
 }
 
 function formatFreq(hit) {
@@ -780,7 +776,7 @@ async function handleOpenPendingRoute(deps) {
   try {
     created = await deps.createSavedFlightRoute({
       userId,
-      name: `${pending.origin} – ${pending.dest}`,
+      name: Array.isArray(pending.icaos) && pending.icaos.length ? pending.icaos.join(" – ") : `${pending.origin} – ${pending.dest}`,
       waypoints: pending.waypoints,
       cruiseSpeedKt: pending.cruiseSpeedKt,
       fuelBurnPerHour: pending.fuelBurnPerHour,
@@ -797,7 +793,7 @@ async function handleOpenPendingRoute(deps) {
   if (typeof deps.sendUrlButton === "function" && url) {
     await deps.sendUrlButton(deps.settings, {
       to: incoming.from,
-      body: `${greet}rota *${pending.origin} → ${pending.dest}* salva na sua conta.`,
+      body: `${greet}rota *${Array.isArray(pending.icaos) && pending.icaos.length ? pending.icaos.join(" → ") : `${pending.origin} → ${pending.dest}`}* salva na sua conta.`,
       url,
       displayText: "Abrir rota",
     });
@@ -824,9 +820,12 @@ async function handleWppRouteCommand(deps, command) {
     return "route_help";
   }
 
-  const origin = command.origin;
-  const dest = command.destination;
-  if (origin === dest) {
+  const icaos = Array.isArray(command.icaos) && command.icaos.length >= 2
+    ? command.icaos
+    : [command.origin, command.destination];
+  const origin = icaos[0];
+  const dest = icaos[icaos.length - 1];
+  if (icaos.length === 2 && origin === dest) {
     await deps.sendText(deps.settings, {
       to: incoming.from,
       body: `${greet}informe dois ICAOs diferentes. Ex.: Rota SBJD SBLO`,
@@ -834,33 +833,30 @@ async function handleWppRouteCommand(deps, command) {
     return "same_icao";
   }
 
+  const routeLabel = icaos.join(" ");
   await deps.sendText(deps.settings, {
     to: incoming.from,
-    body: `${greet}recebi *Rota ${origin} ${dest}*. Estou montando a rota via REAs…`,
+    body: `${greet}recebi *Rota ${routeLabel}*. Estou montando a rota via REAs…`,
   });
 
-  const [originRotaer, destRotaer] = await Promise.all([
-    deps.aisweb.fetchRotaer(origin),
-    deps.aisweb.fetchRotaer(dest),
-  ]);
-  const originWp = airportWaypoint(origin, originRotaer);
-  const destWp = airportWaypoint(dest, destRotaer);
-  if (!Number.isFinite(originWp.lat) || !Number.isFinite(originWp.lng)) {
-    await deps.sendText(deps.settings, { to: incoming.from, body: `Não encontrei coordenadas de *${origin}*.` });
-    return "origin_not_found";
+  const rotaers = await Promise.all(icaos.map((icao) => deps.aisweb.fetchRotaer(icao)));
+  const airportWps = icaos.map((icao, idx) => airportWaypoint(icao, rotaers[idx]));
+  for (let i = 0; i < airportWps.length; i++) {
+    const wp = airportWps[i];
+    if (!Number.isFinite(wp.lat) || !Number.isFinite(wp.lng)) {
+      await deps.sendText(deps.settings, { to: incoming.from, body: `Não encontrei coordenadas de *${icaos[i]}*.` });
+      return i === 0 ? "origin_not_found" : i === airportWps.length - 1 ? "dest_not_found" : "stop_not_found";
+    }
   }
-  if (!Number.isFinite(destWp.lat) || !Number.isFinite(destWp.lng)) {
-    await deps.sendText(deps.settings, { to: incoming.from, body: `Não encontrei coordenadas de *${dest}*.` });
-    return "dest_not_found";
-  }
+  airportWps[0].kind = "origin";
+  airportWps[airportWps.length - 1].kind = "destination";
+  for (let i = 1; i < airportWps.length - 1; i++) airportWps[i].kind = "airport";
 
-  originWp.kind = "origin";
-  destWp.kind = "destination";
   const [features, airports] = await Promise.all([
     fetchReaFeatures(deps.appUrl),
     typeof deps.listAerodromes === "function" ? deps.listAerodromes().catch(() => []) : Promise.resolve([]),
   ]);
-  let waypoints = [originWp, destWp];
+  let waypoints = airportWps;
   const snap = rea.snapRouteToVisualCorridors(waypoints, features);
   if (snap.ok) waypoints = snap.waypoints;
   let corridors = rea.matchLegCorridors(waypoints, features);
@@ -878,8 +874,16 @@ async function handleWppRouteCommand(deps, command) {
   } catch (err) {
     console.warn(`[wppRoute] airspace failed ${origin}-${dest} ${String(err?.message || err).slice(0, 180)}`);
   }
-  const inTma = originInsideTma(originWp, airspaces);
-  const routeText = rea.buildFplRouteText(waypoints, corridors, CRUISE_KT, { originInsideTma: inTma });
+  const totalNm = legs[legs.length - 1]?.cumulativeDistanceNm;
+  const tmaKnown = rea.hasTmaAirspaceData(airspaces);
+  const originTma = tmaKnown ? rea.originReaTmaId(airportWps[0], airspaces) : null;
+  const destTma = tmaKnown ? rea.destReaTmaId(airportWps[airportWps.length - 1], airspaces, totalNm) : null;
+  const routeText = rea.buildFplRouteText(waypoints, corridors, CRUISE_KT, {
+    originInsideTma: tmaKnown ? originTma != null : undefined,
+    destInsideTma: tmaKnown ? destTma != null : undefined,
+    originReaTmaId: tmaKnown ? originTma : undefined,
+    destReaTmaId: tmaKnown ? destTma : undefined,
+  });
   const rmkText = rea.buildFplRmkText(waypoints, corridors);
 
   let terrain = [];
@@ -892,7 +896,8 @@ async function handleWppRouteCommand(deps, command) {
     terrain = [];
   }
 
-  const stamp = `${origin}-${dest}`.toLowerCase();
+  const stamp = icaos.join("-").toLowerCase().slice(0, 48);
+  const routeTitle = icaos.join(" → ");
   try {
     const mapJpeg = await buildRouteMapJpeg(waypoints, deps.getSharp?.(), {
       reaFeatures: features,
@@ -900,7 +905,7 @@ async function handleWppRouteCommand(deps, command) {
     });
     if (mapJpeg) {
       const link = await deps.uploadPngBuffer(mapJpeg, `wpp-rota-map-${stamp}.jpg`);
-      await deps.sendImage(deps.settings, { to: incoming.from, link, caption: `🗺️ Rota ${origin} → ${dest}` });
+      await deps.sendImage(deps.settings, { to: incoming.from, link, caption: `🗺️ Rota ${routeTitle}` });
     }
   } catch (err) {
     console.warn(`[wppRoute] map image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
@@ -912,7 +917,7 @@ async function handleWppRouteCommand(deps, command) {
       incoming.from,
       buildRouteTableSvg(origin, dest, waypoints, legs, corridors, performance),
       `wpp-rota-table-${stamp}.png`,
-      `📋 Tabela · ${origin} → ${dest}`,
+      `📋 Tabela · ${routeTitle}`,
     );
   } catch (err) {
     console.warn(`[wppRoute] table image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
@@ -924,7 +929,7 @@ async function handleWppRouteCommand(deps, command) {
       incoming.from,
       buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain, performance),
       `wpp-rota-profile-${stamp}.png`,
-      `📈 Perfil vertical · ${origin} → ${dest}`,
+      `📈 Perfil vertical · ${routeTitle}`,
     );
   } catch (err) {
     console.warn(`[wppRoute] profile image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
@@ -936,7 +941,7 @@ async function handleWppRouteCommand(deps, command) {
       incoming.from,
       buildAirspacesSvg(origin, dest, airspaces),
       `wpp-rota-airspace-${stamp}.png`,
-      `✈️ Espaços aéreos · ${origin} → ${dest}`,
+      `✈️ Espaços aéreos · ${routeTitle}`,
     );
   } catch (err) {
     console.warn(`[wppRoute] airspace image failed ${stamp} ${String(err?.message || err).slice(0, 180)}`);
@@ -949,7 +954,7 @@ async function handleWppRouteCommand(deps, command) {
   const eteHours = performance?.eteHours ?? last?.cumulativeEteHours;
   const fuelEst = performance?.fuelEstimate ?? last?.cumulativeFuel;
   const summary = [
-    `*${origin} → ${dest}*`,
+    `*${routeTitle}*`,
     last?.cumulativeDistanceNm != null ? `Distância: *${last.cumulativeDistanceNm.toFixed(0)} NM*` : null,
     eteHours != null ? `ETE: *${rea.formatEteClock(eteHours)}*` : null,
     fuelEst != null ? `Consumo est.: *${fuelEst.toFixed(0)} L*` : null,
@@ -972,6 +977,7 @@ async function handleWppRouteCommand(deps, command) {
   await storePendingRoute(deps, incoming.lookupFrom || incoming.from, {
     origin,
     dest,
+    icaos,
     waypoints: waypoints.map(compactWaypoint).filter(Boolean),
     cruiseSpeedKt: CRUISE_KT,
     fuelBurnPerHour: BURN_LPH,

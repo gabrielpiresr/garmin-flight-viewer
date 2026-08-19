@@ -771,31 +771,9 @@ function appendRidePoints(next, dest, points, stats, lastAlt) {
   }
 }
 
-function snapRouteToVisualCorridors(waypoints, features) {
-  if (waypoints.length < 2) {
-    return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
-  }
-  const visual = airplaneVisualFeatures(features);
-  if (!visual.length) {
-    return { ok: false, error: "Corredores visuais ainda não carregaram." };
-  }
-
-  const origin = waypoints[0];
-  const dest = waypoints[waypoints.length - 1];
-  const { nodes, adj, segs } = buildGraph(visual);
-  if (!segs.length) {
-    return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
-  }
-
-  const byComponent = new Map();
-  for (const seg of segs) {
-    const list = byComponent.get(seg.componentId) || [];
-    list.push(seg);
-    byComponent.set(seg.componentId, list);
-  }
-
+function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent) {
   const used = new Set();
-  const next = [{ ...origin, kind: "origin" }];
+  const next = [{ ...origin }];
   const stats = { oneWayLegs: 0, corridorNames: [] };
   const lastAlt = { value: origin.altitudeFt ?? origin.fieldElevFt ?? null };
   let pos = origin;
@@ -810,7 +788,9 @@ function snapRouteToVisualCorridors(waypoints, features) {
     for (const [componentId, componentSegs] of byComponent) {
       if (used.has(componentId)) continue;
       const destTma = anchoredToLocalTma(dest, componentSegs);
-      const localTma = destTma || anchoredToLocalTma(pos, componentSegs);
+      const originTma = anchoredToLocalTma(pos, componentSegs);
+      const localTma = destTma || originTma;
+      if (!localTma) continue;
       const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
         skipProgress: destTma && rides > 0,
       });
@@ -848,7 +828,6 @@ function snapRouteToVisualCorridors(waypoints, features) {
   if (haversineM(pos, dest) > NEAR_WP_M) dctLegs += 1;
   next.push({
     ...dest,
-    kind: "destination",
     altitudeFt:
       dest.altitudeFt != null && Number.isFinite(dest.altitudeFt) ? dest.altitudeFt : dest.fieldElevFt ?? lastAlt.value,
   });
@@ -863,6 +842,85 @@ function snapRouteToVisualCorridors(waypoints, features) {
     distanceNm: distanceM / NM_IN_M,
     oneWayLegs: stats.oneWayLegs,
     dctLegs,
+    corridorNames: [...new Set(stats.corridorNames)],
+  };
+}
+
+function relabelSnappedRoute(waypoints) {
+  return waypoints.map((wp, idx, arr) => {
+    let kind = wp.kind;
+    if (idx === 0) kind = "origin";
+    else if (idx === arr.length - 1) kind = "destination";
+    else if (wp.kind === "origin" || wp.kind === "destination") kind = "airport";
+    const isAd = kind === "airport" || kind === "destination";
+    return {
+      ...wp,
+      kind,
+      ...(idx > 0 && isAd ? { altitudeRef: "be" } : {}),
+    };
+  });
+}
+
+function snapRouteToVisualCorridors(waypoints, features) {
+  if (waypoints.length < 2) {
+    return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
+  }
+  const visual = airplaneVisualFeatures(features);
+  if (!visual.length) {
+    return { ok: false, error: "Corredores visuais ainda não carregaram." };
+  }
+
+  const { nodes, adj, segs } = buildGraph(visual);
+  if (!segs.length) {
+    return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
+  }
+
+  const byComponent = new Map();
+  for (const seg of segs) {
+    const list = byComponent.get(seg.componentId) || [];
+    list.push(seg);
+    byComponent.set(seg.componentId, list);
+  }
+
+  const combined = [];
+  const stats = { oneWayLegs: 0, corridorNames: [], dctLegs: 0 };
+  let anyRide = false;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const from = waypoints[i];
+    const to = waypoints[i + 1];
+    const piece = snapCorridorPair(from, to, nodes, adj, segs, byComponent);
+    if (piece.ok) {
+      anyRide = true;
+      stats.oneWayLegs += piece.oneWayLegs;
+      stats.dctLegs += piece.dctLegs;
+      stats.corridorNames.push(...piece.corridorNames);
+      if (!combined.length) combined.push(...piece.waypoints);
+      else combined.push(...piece.waypoints.slice(1));
+      continue;
+    }
+    if (!combined.length) combined.push({ ...from });
+    if (haversineM(combined[combined.length - 1], to) > NEAR_WP_M) {
+      combined.push({ ...to });
+      stats.dctLegs += 1;
+    }
+  }
+
+  if (!anyRide) {
+    return { ok: false, error: "Não há corredor visual utilizável entre origem e destino." };
+  }
+
+  const next = relabelSnappedRoute(combined);
+  let distanceM = 0;
+  for (let i = 1; i < next.length; i++) distanceM += haversineM(next[i - 1], next[i]);
+
+  return {
+    ok: true,
+    waypoints: next,
+    inserted: Math.max(0, next.length - waypoints.length),
+    distanceNm: distanceM / NM_IN_M,
+    oneWayLegs: stats.oneWayLegs,
+    dctLegs: stats.dctLegs,
     corridorNames: [...new Set(stats.corridorNames)],
   };
 }
@@ -917,8 +975,27 @@ function formatFplLevel(altitudeFt) {
   return "VFR";
 }
 
-function formatFplPointSpeedLevel(wp, speedKt) {
-  return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(wp.altitudeFt)}`;
+function formatFplPointSpeedLevel(wp, speedKt, levelFt) {
+  const level = levelFt === undefined ? wp.altitudeFt : levelFt;
+  return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(level)}`;
+}
+
+function levelFlownFrom(waypoints, legIdx, nextInside) {
+  if (nextInside === true) return null;
+  const to = waypoints[legIdx];
+  const next = waypoints[legIdx + 1];
+  if (isAirportLike(to) && next && !isAirportLike(next) && next.altitudeFt != null && Number.isFinite(next.altitudeFt)) {
+    return next.altitudeFt;
+  }
+  return to.altitudeFt;
+}
+
+function waypointIcaoCode(wp) {
+  for (const value of [wp.label, wp.raw]) {
+    const code = normalizeFplText(value);
+    if (/^[A-Z0-9]{4}$/.test(code)) return code;
+  }
+  return null;
 }
 
 function pushFplToken(tokens, token) {
@@ -932,6 +1009,55 @@ function pushFplToken(tokens, token) {
 
 const LOCAL_REA_JOIN_M = NM_IN_M * 15;
 
+const REA_TMA_BY_CODE = {
+  PI: "PARINTINS",
+  WA: "TABATINGA",
+  WB: "BELEM",
+  WF: "RECIFE",
+  WG: "CAMPO GRANDE",
+  WJ: "RIO DE JANEIRO",
+  WK: "PORTO SEGURO",
+  WN: "MANAUS",
+  WP: "PORTO ALEGRE",
+  WR: "BRASILIA",
+  WS: "SAO LUIS",
+  WX: "SANTAREM",
+  WY: "CUIABA",
+  WZ: "FORTALEZA",
+  XF: "FLORIANOPOLIS",
+  XK: "MACAPA",
+  XN: "ANAPOLIS",
+  XO: "LONDRINA",
+  XP: "SAO PAULO",
+  XQ: "RIBEIRAO PRETO",
+  XR: "VITORIA",
+  XS: "SALVADOR",
+  XT: "NATAL",
+  WH: "BELO HORIZONTE",
+  WT: "CURITIBA",
+};
+
+function normalizeTmaText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/gi, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function reaTmaCodeFromIdentName(ident, name) {
+  const identNorm = normalizeTmaText(ident).replace(/\s+/g, "");
+  const identMatch = identNorm.match(/^SB([WX][A-Z])(?:_|$|[0-9])/);
+  if (identMatch && REA_TMA_BY_CODE[identMatch[1]]) return identMatch[1];
+  const nameNorm = normalizeTmaText(name);
+  if (!nameNorm) return null;
+  for (const [code, city] of Object.entries(REA_TMA_BY_CODE)) {
+    if (nameNorm === city || nameNorm.includes(city)) return code;
+  }
+  return null;
+}
+
 function isLocalReaJoin(from, dest) {
   if (formatCompactAviationCoord(from.lat, from.lng) === formatCompactAviationCoord(dest.lat, dest.lng)) {
     return true;
@@ -939,7 +1065,52 @@ function isLocalReaJoin(from, dest) {
   return haversineM(from, dest) < LOCAL_REA_JOIN_M;
 }
 
-function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
+function originReaTmaId(origin, airspaces) {
+  if (!origin) return null;
+  for (const hit of airspaces || []) {
+    if (String(hit?.type || "").toUpperCase() !== "TMA") continue;
+    const code = reaTmaCodeFromIdentName(hit.ident, hit.name);
+    if (!code) continue;
+    if (hit.entryDistanceNm != null && Number.isFinite(hit.entryDistanceNm) && hit.entryDistanceNm < 3) {
+      return code;
+    }
+  }
+  return null;
+}
+
+function destReaTmaId(dest, airspaces, totalNm) {
+  if (!dest) return null;
+  for (const hit of airspaces || []) {
+    if (String(hit?.type || "").toUpperCase() !== "TMA") continue;
+    const code = reaTmaCodeFromIdentName(hit.ident, hit.name);
+    if (!code) continue;
+    if (totalNm != null && Number.isFinite(totalNm)) {
+      if (hit.exitDistanceNm != null && Number.isFinite(hit.exitDistanceNm) && totalNm - hit.exitDistanceNm < 3) {
+        return code;
+      }
+      const occ = Array.isArray(hit.occupancyNm) ? hit.occupancyNm : [];
+      if (occ.some((seg) => seg && Number.isFinite(seg.toNm) && totalNm - seg.toNm < 3)) return code;
+    }
+  }
+  return null;
+}
+
+function originIsInsideTma(origin, airspaces) {
+  return originReaTmaId(origin, airspaces) != null;
+}
+
+function destIsInsideTma(dest, airspaces, totalNm) {
+  return destReaTmaId(dest, airspaces, totalNm) != null;
+}
+
+function hasTmaAirspaceData(airspaces) {
+  return (airspaces || []).some(
+    (hit) =>
+      String(hit?.type || "").toUpperCase() === "TMA" && Boolean(reaTmaCodeFromIdentName(hit.ident, hit.name)),
+  );
+}
+
+function buildFplRouteText(waypoints, legCorridors, speedKt, options = {}) {
   if (waypoints.length < 2) return "";
   const isCorridorLeg = (idx) => Boolean(legCorridors[idx]);
   const origin = waypoints[0];
@@ -956,16 +1127,25 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
     const tokens = [];
     pushFplToken(tokens, "DCT");
     for (let legIdx = 1; legIdx < waypoints.length - 1; legIdx++) {
-      pushFplToken(tokens, formatCompactAviationCoord(waypoints[legIdx].lat, waypoints[legIdx].lng));
+      pushFplToken(
+        tokens,
+        formatFplPointSpeedLevel(waypoints[legIdx], speedKt, levelFlownFrom(waypoints, legIdx, false)),
+      );
       pushFplToken(tokens, "DCT");
     }
     return tokens.join(" ");
   }
 
   const entryWp = waypoints[firstCorr - 1];
-  const exitWp = waypoints[lastCorr];
-  const startsInside = firstCorr === 1 || isLocalReaJoin(origin, entryWp);
-  const endsInside = lastCorr === waypoints.length - 1 || isLocalReaJoin(exitWp, dest);
+  const originInside = options.originInsideTma;
+  const destInside = options.destInsideTma;
+  const originTmaId = options.originReaTmaId ?? null;
+  const destTmaId = options.destReaTmaId ?? null;
+  const destOnRea = lastCorr === waypoints.length - 1;
+  const trailingDctNm = destOnRea ? 0 : haversineM(waypoints[lastCorr], dest) / NM_IN_M;
+  const tinyTrailingSnap = !destOnRea && trailingDctNm < 3;
+  const localJoin = firstCorr === 1 || isLocalReaJoin(origin, entryWp);
+  const startsInside = originInside === false ? firstCorr === 1 : localJoin;
   let continuousRea = true;
   for (let idx = firstCorr; idx <= lastCorr; idx++) {
     if (!isCorridorLeg(idx)) {
@@ -973,7 +1153,14 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
       break;
     }
   }
-  if (startsInside && endsInside && continuousRea) return "REA";
+  const endsInside =
+    destInside === false
+      ? false
+      : destOnRea || tinyTrailingSnap
+        ? destInside !== false
+        : destInside === true && !continuousRea;
+  const sameReaTma = originTmaId && destTmaId ? originTmaId === destTmaId : true;
+  if (startsInside && endsInside && continuousRea && sameReaTma && (destOnRea || tinyTrailingSnap)) return "REA";
 
   const tokens = [];
   pushFplToken(tokens, startsInside ? "REA" : "DCT");
@@ -988,18 +1175,24 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, _options = {}) {
       if (nextInside === false) {
         const next = waypoints[legIdx + 1];
         if (next && next === dest && endsInside) continue;
-        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
+        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
         pushFplToken(tokens, "DCT");
+      } else if (isLastLeg && !endsInside) {
+        const from = waypoints[legIdx - 1];
+        if (from && from !== origin) {
+          pushFplToken(tokens, formatFplPointSpeedLevel(from, speedKt, levelFlownFrom(waypoints, legIdx - 1, false)));
+          pushFplToken(tokens, "DCT");
+        }
       }
       continue;
     }
     if (nextInside === true) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, true)));
       pushFplToken(tokens, "REA");
       continue;
     }
     if (!isLastLeg) {
-      pushFplToken(tokens, formatCompactAviationCoord(to.lat, to.lng));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
       pushFplToken(tokens, "DCT");
     }
   }
@@ -1015,11 +1208,16 @@ function buildFplRmkText(waypoints, legCorridors) {
     seenCorridors.add(clean);
     corridorNames.push(clean);
   }
-  const tglAerodromes = waypoints
-    .slice(1, Math.max(1, waypoints.length - 1))
-    .filter(isAirportLike)
-    .map((wp) => normalizeFplText(wp.label || wp.raw))
-    .filter((code) => /^[A-Z0-9]{4}$/.test(code));
+  const tglAerodromes = [];
+  const seenTgl = new Set();
+  for (const wp of waypoints.slice(1, Math.max(1, waypoints.length - 1))) {
+    const code = waypointIcaoCode(wp);
+    if (!code || seenTgl.has(code)) continue;
+    const looksLikeAd = isAirportLike(wp) || (wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt));
+    if (!looksLikeAd) continue;
+    seenTgl.add(code);
+    tglAerodromes.push(code);
+  }
   const tokens = [];
   if (corridorNames.length > 0) tokens.push("REA", ...corridorNames);
   for (const icao of tglAerodromes) tokens.push("TGL", icao);
@@ -1040,6 +1238,12 @@ module.exports = {
   snapRouteToVisualCorridors,
   buildFplRouteText,
   buildFplRmkText,
+  originIsInsideTma,
+  destIsInsideTma,
+  originReaTmaId,
+  destReaTmaId,
+  reaTmaCodeFromIdentName,
+  hasTmaAirspaceData,
   geometryContainsLatLng,
   endpointA,
   endpointB,

@@ -58,9 +58,14 @@ test("rota automática SBBH → SBCF encaixa nos corredores da TMA BH", () => {
   assert.equal(result.ok, true, result.error);
   assert.ok(result.corridorNames.length > 0, result.corridorNames.join(","));
   const corridors = rea.matchLegCorridors(result.waypoints, bh.features);
-  const route = rea.buildFplRouteText(result.waypoints, corridors, 90, { originInsideTma: true });
-  assert.match(route, /^DCT\b/);
-  assert.match(route, /\bREA\b/);
+  const route = rea.buildFplRouteText(result.waypoints, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: true,
+    originReaTmaId: "WH",
+    destReaTmaId: "WH",
+  });
+  assert.match(route, /\bREA\b/, route);
+  assert.notEqual(route, "REA", route);
   const rmk = rea.buildFplRmkText(result.waypoints, corridors);
   assert.match(rmk, /\bREA\b/);
 });
@@ -167,10 +172,64 @@ test("export FPL SDRK → SBJD começa em DCT até a entrada da REA", () => {
   assert.equal(snapped.ok, true, snapped.error);
   const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
   const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
-  const route = rea.buildFplRouteText(withAlt, corridors, 90, { originInsideTma: true });
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: true,
+    originReaTmaId: "XP",
+    destReaTmaId: "XP",
+  });
   assert.match(route, /^DCT\b/, route);
-  assert.match(route, /2249S04734W\/N0090A045 REA/, route);
+  assert.match(route, /2249S04734W\/N0090VFR REA/, route);
   assert.equal(route.endsWith("REA"), true, route);
+  assert.doesNotMatch(route, /^REA\b/);
+  assert.notEqual(route, "REA", route);
+});
+
+test("export FPL SDRK → SBJD usa DCT de entrada quando a origem não está na TMA com REA", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SDRK = {
+    lat: -22.3964,
+    lng: -47.5603,
+    label: "SDRK",
+    raw: "SDRK",
+    kind: "origin",
+    fieldElevFt: 1991,
+    altitudeFt: 1991,
+  };
+  const dest = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "destination",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const campinas = { type: "TMA", ident: "SBKP", name: "CAMPINAS", entryDistanceNm: 0, exitDistanceNm: 25 };
+  const tmaSp = { type: "TMA", ident: "SBXP", name: "SAO PAULO", entryDistanceNm: 25, occupancyNm: [{ fromNm: 25, toNm: 80 }] };
+  assert.equal(rea.originIsInsideTma(SDRK, [campinas, tmaSp]), false);
+  assert.equal(rea.destReaTmaId(dest, [campinas, tmaSp], 80), "XP");
+  const snapped = rea.snapRouteToVisualCorridors([SDRK, dest], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const originInside = rea.originIsInsideTma(SDRK, [campinas, tmaSp]);
+  const destInside = rea.destIsInsideTma(dest, [campinas, tmaSp], 80);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: originInside,
+    destInsideTma: destInside,
+    originReaTmaId: rea.originReaTmaId(SDRK, [campinas, tmaSp]),
+    destReaTmaId: rea.destReaTmaId(dest, [campinas, tmaSp], 80),
+  });
+  assert.notEqual(route, "REA", route);
+  assert.match(route, /^DCT\b/, route);
+  assert.match(route, /2249S04734W\/N0090VFR REA/, route);
   assert.doesNotMatch(route, /^REA\b/);
 });
 
@@ -206,4 +265,111 @@ test("export FPL SBJD → SBGW é só REA (começa e termina no corredor)", () =
   const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
   const route = rea.buildFplRouteText(withAlt, corridors, 90);
   assert.equal(route, "REA", route);
+});
+
+test("export FPL SBJD → SDPW sai da TMA com ponto de saída + DCT", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SBJD = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "origin",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const SDPW = {
+    lat: -22.71056,
+    lng: -47.61944,
+    label: "SDPW",
+    raw: "SDPW",
+    kind: "destination",
+    fieldElevFt: 1917,
+    altitudeFt: 1917,
+  };
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SDPW], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, { destInsideTma: false });
+  assert.match(route, /^REA\b/, route);
+  assert.match(route, /\bDCT$/, route);
+  assert.notEqual(route, "REA", route);
+  assert.match(route, /2249S04734W\/N0090A0\d{2} DCT/, route);
+  const collapsed = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: true,
+    originReaTmaId: "XP",
+    destReaTmaId: "XP",
+  });
+  assert.notEqual(collapsed, "REA", collapsed);
+  assert.match(collapsed, /2249S04734W\/N0090A0\d{2} DCT/, collapsed);
+});
+
+test("export FPL SBJD → SDRK sai da TMA com ponto de saída + DCT", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SBJD = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "origin",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const SDRK = {
+    lat: -22.3964,
+    lng: -47.5603,
+    label: "SDRK",
+    raw: "SDRK",
+    kind: "destination",
+    fieldElevFt: 1991,
+    altitudeFt: 1991,
+  };
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SDRK], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, { originInsideTma: true, destInsideTma: false });
+  assert.notEqual(route, "REA", route);
+  assert.match(route, /^REA\b/, route);
+  assert.match(route, /\bDCT$/, route);
+  assert.match(route, /2236S04719W\/N0090A0\d{2} DCT/, route);
+  const collapsed = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: true,
+    originReaTmaId: "XP",
+    destReaTmaId: "XP",
+  });
+  assert.notEqual(collapsed, "REA", collapsed);
+  assert.match(collapsed, /2236S04719W\/N0090A0\d{2} DCT/, collapsed);
+});
+
+test("TMA sem REA não conta como origem/destino dentro da TMA", () => {
+  const origin = { lat: -22.3964, lng: -47.5603 };
+  const dest = { lat: -23.1806, lng: -46.9444 };
+  const campinas = { type: "TMA", ident: "SBKP", name: "CAMPINAS", entryDistanceNm: 0, exitDistanceNm: 10 };
+  const tmaSp = { type: "TMA", ident: "SBXP", name: "SAO PAULO", entryDistanceNm: 20, exitDistanceNm: 80 };
+  assert.equal(rea.originIsInsideTma(origin, [campinas, tmaSp]), false);
+  assert.equal(rea.originReaTmaId(origin, [campinas, tmaSp]), null);
+  assert.equal(rea.originReaTmaId(origin, [{ ...tmaSp, entryDistanceNm: 0 }]), "XP");
+  assert.equal(rea.destIsInsideTma(dest, [campinas], 10), false);
+  assert.equal(rea.destReaTmaId(dest, [tmaSp], 80), "XP");
+  assert.equal(rea.hasTmaAirspaceData([campinas]), false);
+  assert.equal(rea.hasTmaAirspaceData([tmaSp]), true);
+  assert.equal(rea.reaTmaCodeFromIdentName("SBXP_02", "TMA SAO PAULO"), "XP");
+  assert.equal(rea.reaTmaCodeFromIdentName("SBWH", "BELO HORIZONTE"), "WH");
+  assert.equal(rea.reaTmaCodeFromIdentName("SBKP", "CAMPINAS"), null);
 });

@@ -637,41 +637,15 @@ function appendRidePoints(
   }
 }
 
-/**
- * Encaixa origem/destino nos corredores visuais pela rota mais curta: usa a
- * rede perto da origem (TMA de partida), segue até o ponto em que continuar
- * alonga o voo, e DCT até o destino. Depois da rede nacional, ainda entra na
- * TMA visual do destino (Londrina, BH, Curitiba, …) em vez de DCT direto.
- * Não desvia para uma TMA intermediária. Ignora REH (helicóptero) quando há REA.
- */
-export function snapRouteToVisualCorridors(
-  waypoints: FlightPlanWaypoint[],
-  features: ReaRouteFeature[],
+function snapCorridorPair(
+  origin: FlightPlanWaypoint,
+  dest: FlightPlanWaypoint,
+  nodes: Map<string, GraphNode>,
+  adj: Map<string, GraphEdge[]>,
+  byComponent: Map<string, Seg[]>,
 ): ReaCorridorSnapResult {
-  if (waypoints.length < 2) {
-    return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
-  }
-  const visual = airplaneVisualFeatures(features);
-  if (!visual.length) {
-    return { ok: false, error: "Corredores visuais ainda não carregaram." };
-  }
-
-  const origin = waypoints[0]!;
-  const dest = waypoints[waypoints.length - 1]!;
-  const { nodes, adj, segs } = buildGraph(visual);
-  if (!segs.length) {
-    return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
-  }
-
-  const byComponent = new Map<string, Seg[]>();
-  for (const seg of segs) {
-    const list = byComponent.get(seg.componentId) || [];
-    list.push(seg);
-    byComponent.set(seg.componentId, list);
-  }
-
   const used = new Set<string>();
-  const next: FlightPlanWaypoint[] = [{ ...origin, kind: "origin" }];
+  const next: FlightPlanWaypoint[] = [{ ...origin }];
   const stats = { oneWayLegs: 0, corridorNames: [] as string[] };
   const lastAlt = { value: origin.altitudeFt ?? origin.fieldElevFt ?? null };
   let pos: LatLng = origin;
@@ -687,9 +661,11 @@ export function snapRouteToVisualCorridors(
     for (const [componentId, componentSegs] of byComponent) {
       if (used.has(componentId)) continue;
       const destTma = anchoredToLocalTma(dest, componentSegs);
-      const localTma = destTma || anchoredToLocalTma(pos, componentSegs);
+      const originTma = anchoredToLocalTma(pos, componentSegs);
+      const localTma = destTma || originTma;
+      if (!localTma) continue;
       const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
-        skipProgress: destTma && rides > 0,
+        skipProgress: Boolean(destTma && rides > 0),
       });
       if (!ride) continue;
       if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
@@ -720,16 +696,12 @@ export function snapRouteToVisualCorridors(
   }
 
   if (rides === 0) {
-    return {
-      ok: false,
-      error: "Não há corredor visual utilizável entre origem e destino.",
-    };
+    return { ok: false, error: "Não há corredor visual utilizável entre origem e destino." };
   }
 
   if (haversineM(pos, dest) > NEAR_WP_M) dctLegs += 1;
   next.push({
     ...dest,
-    kind: "destination",
     altitudeFt:
       dest.altitudeFt != null && Number.isFinite(dest.altitudeFt)
         ? dest.altitudeFt
@@ -746,6 +718,97 @@ export function snapRouteToVisualCorridors(
     distanceNm: distanceM / NM_IN_M,
     oneWayLegs: stats.oneWayLegs,
     dctLegs,
+    corridorNames: [...new Set(stats.corridorNames)],
+  };
+}
+
+function relabelSnappedRoute(waypoints: FlightPlanWaypoint[]): FlightPlanWaypoint[] {
+  return waypoints.map((wp, idx, arr) => {
+    let kind = wp.kind;
+    if (idx === 0) kind = "origin";
+    else if (idx === arr.length - 1) kind = "destination";
+    else if (wp.kind === "origin" || wp.kind === "destination") kind = "airport";
+    const isAd = kind === "airport" || kind === "destination";
+    return {
+      ...wp,
+      kind,
+      ...(idx > 0 && isAd ? { altitudeRef: "be" as const } : {}),
+    };
+  });
+}
+
+/**
+ * Encaixa origem/destino nos corredores visuais pela rota mais curta: usa a
+ * rede perto da origem (TMA de partida), segue até o ponto em que continuar
+ * alonga o voo, e DCT até o destino. Depois da rede nacional, ainda entra na
+ * TMA visual do destino (Londrina, BH, Curitiba, …) em vez de DCT direto.
+ * Com 3+ pontos, traça REA entre cada par consecutivo, na ordem da rota.
+ * Não desvia para uma TMA intermediária. Ignora REH (helicóptero) quando há REA.
+ */
+export function snapRouteToVisualCorridors(
+  waypoints: FlightPlanWaypoint[],
+  features: ReaRouteFeature[],
+): ReaCorridorSnapResult {
+  if (waypoints.length < 2) {
+    return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
+  }
+  const visual = airplaneVisualFeatures(features);
+  if (!visual.length) {
+    return { ok: false, error: "Corredores visuais ainda não carregaram." };
+  }
+
+  const { nodes, adj, segs } = buildGraph(visual);
+  if (!segs.length) {
+    return { ok: false, error: "Não há corredores visuais carregados para ajustar a rota." };
+  }
+
+  const byComponent = new Map<string, Seg[]>();
+  for (const seg of segs) {
+    const list = byComponent.get(seg.componentId) || [];
+    list.push(seg);
+    byComponent.set(seg.componentId, list);
+  }
+
+  const combined: FlightPlanWaypoint[] = [];
+  const stats = { oneWayLegs: 0, corridorNames: [] as string[], dctLegs: 0 };
+  let anyRide = false;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const from = waypoints[i]!;
+    const to = waypoints[i + 1]!;
+    const piece = snapCorridorPair(from, to, nodes, adj, byComponent);
+    if (piece.ok) {
+      anyRide = true;
+      stats.oneWayLegs += piece.oneWayLegs;
+      stats.dctLegs += piece.dctLegs;
+      stats.corridorNames.push(...piece.corridorNames);
+      if (!combined.length) combined.push(...piece.waypoints);
+      else combined.push(...piece.waypoints.slice(1));
+      continue;
+    }
+    if (!combined.length) combined.push({ ...from });
+    const last = combined[combined.length - 1]!;
+    if (haversineM(last, to) > NEAR_WP_M) {
+      combined.push({ ...to });
+      stats.dctLegs += 1;
+    }
+  }
+
+  if (!anyRide) {
+    return { ok: false, error: "Não há corredor visual utilizável entre origem e destino." };
+  }
+
+  const next = relabelSnappedRoute(combined);
+  let distanceM = 0;
+  for (let i = 1; i < next.length; i++) distanceM += haversineM(next[i - 1]!, next[i]!);
+
+  return {
+    ok: true,
+    waypoints: next,
+    inserted: Math.max(0, next.length - waypoints.length),
+    distanceNm: distanceM / NM_IN_M,
+    oneWayLegs: stats.oneWayLegs,
+    dctLegs: stats.dctLegs,
     corridorNames: [...new Set(stats.corridorNames)],
   };
 }
