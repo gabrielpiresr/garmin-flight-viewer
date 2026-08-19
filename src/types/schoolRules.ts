@@ -323,7 +323,7 @@ export const EMAIL_NOTIFICATION_EVENT_OPTIONS: Array<{ id: NotificationEventType
   { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },
-  { id: "cakto.sale_approved", label: "Venda Cakto aprovada (admins)" },
+  { id: "cakto.sale_approved", label: "Venda LastLink aprovada (admins)" },
   { id: "marketplace.order_paid", label: "Compra marketplace confirmada (comprador)" },
 ];
 

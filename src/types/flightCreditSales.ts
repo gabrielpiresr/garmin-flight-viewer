@@ -31,6 +31,7 @@ export type FlightCreditSalesConfigInput = Omit<FlightCreditSalesConfig, "update
 export type FlightCreditCheckout = {
   proposalId: string;
   paymentUrl: string;
+  provider?: "cakto" | "lastlink";
 };
 
 export type FlightCreditCheckoutExtraProduct = {

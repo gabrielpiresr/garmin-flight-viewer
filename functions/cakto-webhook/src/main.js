@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const sdk = require("node-appwrite");
 const memberkit = require("./memberkit");
+const lastlinkPayload = require("./lastlinkPayload");
 
 const client = new sdk.Client()
   .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || "")
@@ -29,7 +30,7 @@ const FLIGHT_REVIEW_CLUB_TASKS_COLLECTION_ID =
   process.env.APPWRITE_FLIGHT_REVIEW_CLUB_TASKS_COL_ID ||
   "flight_review_club_tasks";
 const PLATFORM_SETTINGS_COLLECTION_ID = process.env.APPWRITE_PLATFORM_SETTINGS_COLLECTION_ID || "";
-const WEBHOOK_TOKEN = process.env.CAKTO_WEBHOOK_TOKEN || "";
+const WEBHOOK_TOKEN = process.env.LASTLINK_WEBHOOK_TOKEN || process.env.CAKTO_WEBHOOK_TOKEN || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || "escola_principal";
 const SAGA_BASE_URL = process.env.SAGA_BASE_URL || "https://epeac.saga.aero";
 const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
@@ -131,6 +132,27 @@ async function findProposal(offerId) {
     sdk.Query.limit(1),
   ]);
   return result.documents?.[0] || null;
+}
+
+async function findProposalByPaymentUrlCode(code) {
+  const safe = clean(code);
+  if (!safe || safe.length < 4) return null;
+  const result = await databases.listDocuments(DATABASE_ID, PROPOSALS_COLLECTION_ID, [
+    sdk.Query.contains("payment_url", safe),
+    sdk.Query.limit(5),
+  ]).catch(() => ({ documents: [] }));
+  return (result.documents || []).find((doc) => String(doc.payment_url || "").includes(safe)) || null;
+}
+
+async function resolveProposal(normalized) {
+  let proposal = await findProposal(normalized.offerId);
+  if (!proposal && normalized.proposalIdFromUrl) {
+    proposal = await findProposalById(normalized.proposalIdFromUrl);
+  }
+  if (!proposal && normalized.checkoutCode) {
+    proposal = await findProposalByPaymentUrlCode(normalized.checkoutCode);
+  }
+  return proposal;
 }
 
 async function findProposalById(proposalId) {
@@ -430,10 +452,10 @@ async function sagaAircraftIcaoForModel(modelId) {
     SAGA_CREDIT_AIRCRAFT_ICAO;
 }
 
-async function createSagaCredit({ studentUserId, creditId, purchaseDate, expiresAt, aircraftModelId, hours, amountPaid }) {
+async function createSagaCredit({ studentUserId, creditId, purchaseDate, expiresAt, aircraftModelId, hours, amountPaid, provider }) {
   const sagaStudentId = await sagaStudentIdForUser(studentUserId);
   const session = await loadSagaSession();
-  const marker = `GFV-CAKTO:${creditId}`;
+  const marker = `${provider === "lastlink" ? "GFV-LASTLINK" : "GFV-CAKTO"}:${creditId}`;
   let page = await sagaCreditPage(session, sagaStudentId);
   if (page.html.includes(marker)) return { status: "already_exists", marker, sagaStudentId };
 
@@ -577,7 +599,7 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
         hours,
         expires_at: addDaysIso(purchaseDate, validityDays),
         notes: [
-          `Compra online Cakto. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
+          `Compra online ${normalized.provider === "lastlink" ? "LastLink" : "Cakto"}. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
           snapshot.weekdayOnly === true ? "Modalidade: somente dias de semana." : "",
         ].filter(Boolean).join(" "),
         is_night: false,
@@ -600,7 +622,7 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
     creditId,
     sagaStatus: "pending",
     sagaError: "",
-    sagaMarker: `GFV-CAKTO:${creditId}`,
+    sagaMarker: `${normalized.provider === "lastlink" ? "GFV-LASTLINK" : "GFV-CAKTO"}:${creditId}`,
   });
   try {
     const saga = await createSagaCredit({
@@ -611,6 +633,7 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
       aircraftModelId: clean(snapshot.aircraftModelId),
       hours,
       amountPaid,
+      provider: normalized.provider,
     });
     await updateFulfillment(receiptId, proposal.$id, {
       status: "completed",
@@ -628,7 +651,7 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
       creditId,
       sagaStatus: "failed",
       sagaError: err?.message || String(err),
-      sagaMarker: `GFV-CAKTO:${creditId}`,
+      sagaMarker: `${normalized.provider === "lastlink" ? "GFV-LASTLINK" : "GFV-CAKTO"}:${creditId}`,
     }).catch(() => undefined);
     throw err;
   }
@@ -929,7 +952,7 @@ async function notifyAdminsOfSale(receiptId, normalized, proposal) {
   let productLabel = Number.isFinite(hours) && hours > 0 && clean(snapshot.aircraftModelName)
     ? `${hours}h — ${clean(snapshot.aircraftModelName)}`
     : "";
-  let studentUserId = clean(metadata?.studentUserId);
+  let studentUserId = clean(metadata?.studentUserId) || clean(proposal?.lead_id);
   if (!productLabel && MARKETPLACE_ORDERS_COLLECTION_ID && clean(normalized.offerId)) {
     try {
       const page = await databases.listDocuments(DATABASE_ID, MARKETPLACE_ORDERS_COLLECTION_ID, [
@@ -973,6 +996,8 @@ async function notifyAdminsOfSale(receiptId, normalized, proposal) {
         paymentMethod: normalized.paymentMethod,
         paymentInstallments: normalized.paymentInstallments,
         orderId: normalized.orderId,
+        provider: clean(normalized.provider) || "cakto",
+        kind: clean(metadata?.kind),
         productLabel: [productLabel, ...extraProductLabels].filter(Boolean).join(" + "),
         eventAt: normalized.eventAt || normalized.receivedAt,
       },
@@ -1209,15 +1234,20 @@ module.exports = async ({ req, res, log, error }) => {
     }
     const payload = parseBody(req);
     const receivedAt = new Date().toISOString();
-    const normalized = normalize(payload, receivedAt);
+    const normalized = lastlinkPayload.isLastLinkPayload(payload)
+      ? lastlinkPayload.lastlinkNormalize(payload, receivedAt)
+      : normalize(payload, receivedAt);
     if (!ALLOWED_EVENTS.has(normalized.eventType)) {
       return res.json({ ok: true, ignored: true }, 200);
+    }
+    if (normalized.isTest) {
+      return res.json({ ok: true, test: true, ignored: true }, 200);
     }
     const raw = JSON.stringify(payload);
     const dedupeSource = `${normalized.eventType}:${normalized.eventId || `${normalized.orderId}:${normalized.offerId}:${raw}`}`;
     const dedupeKey = crypto.createHash("sha256").update(dedupeSource).digest("hex");
     const documentId = `cw_${dedupeKey.slice(0, 32)}`;
-    let proposal = await findProposal(normalized.offerId);
+    let proposal = await resolveProposal(normalized);
     if (!proposal && normalized.subscriptionId) {
       const membership = await findFlightReviewClubMembershipBySubscription(normalized.subscriptionId);
       proposal = await findProposalById(membership?.proposal_id);

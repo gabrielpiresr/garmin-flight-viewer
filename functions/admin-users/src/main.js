@@ -25,6 +25,7 @@ const { assertCanImpersonateTargetRole, validateRootAccessPayload } = require(".
 const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
 const { PROVA_ACTIONS, createProvaService } = require("./provas");
 const memberkit = require("./memberkit");
+const lastlink = require("./lastlink");
 
 let sharpModule = undefined;
 
@@ -14657,6 +14658,8 @@ const ONBOARDING_SETTINGS_KEY = "onboarding";
 const REFER_AND_EARN_SETTINGS_KEY = "referAndEarn";
 const GOOGLE_CALENDAR_SETTINGS_KEY = "googleCalendar";
 const CAKTO_SETTINGS_KEY = "cakto";
+const LASTLINK_SETTINGS_KEY = "lastlink";
+const CREDIT_PAYMENT_PROVIDER_KEY = "creditPaymentProvider";
 const WPP_SETTINGS_KEY = "wpp";
 const WPP_METAR_TRIAL_PREFIX = "wppMetarTrial:";
 const WPP_METAR_TRIAL_LIMIT = 10;
@@ -22196,6 +22199,12 @@ function formatDurationHours(durationHours) {
   return `${m}min`;
 }
 
+function salePaymentMethodLabel(data = {}) {
+  const raw = cleanString(data.paymentMethod);
+  if (!raw || /^cakto$/i.test(raw)) return "LastLink";
+  return raw;
+}
+
 function formatFlightDateLabel(isoDate) {
   const [y, mo, d] = (isoDate || "").split("-");
   if (!y || !mo || !d) return isoDate || "";
@@ -22401,7 +22410,7 @@ function buildNotificationMessage(event, flight) {
     const name = cleanString(data.customerName) || "Cliente";
     const email = cleanString(data.customerEmail);
     const amountLabel = formatMoneyLabel(data.amount, data.currency);
-    const paymentMethod = cleanString(data.paymentMethod);
+    const paymentMethod = salePaymentMethodLabel(data);
     const installments = Number(data.paymentInstallments) || 0;
     const paymentLabel = paymentMethod
       ? `${paymentMethod}${installments > 1 ? ` (${installments}x)` : ""}`
@@ -22409,9 +22418,9 @@ function buildNotificationMessage(event, flight) {
     const productLabel = cleanString(data.productLabel);
     const orderId = cleanString(data.orderId);
     return {
-      eyebrow: "Vendas — Cakto",
+      eyebrow: "Vendas — LastLink",
       title: "Nova venda aprovada",
-      intro: "Uma nova venda foi aprovada na Cakto.",
+      intro: "Uma nova venda foi aprovada na LastLink.",
       body: `${name}${email ? ` (${email})` : ""} realizou uma compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""}${paymentLabel ? ` via ${paymentLabel}` : ""}.`,
       details: [
         ["Cliente", name],
@@ -22753,7 +22762,15 @@ async function notifyCrmLeadEventToAdmins(eventType, leadData) {
 async function loadCaktoWebhookToken() {
   // O settings doc "cakto" é a fonte da verdade (setup-cakto.mjs mantém o token
   // do webhook sincronizado nele); a env pode ficar obsoleta após rotação.
-  const doc = await getSettingDoc("cakto");
+  return loadWebhookTokenFromSettings("cakto", process.env.CAKTO_WEBHOOK_TOKEN);
+}
+
+async function loadLastLinkWebhookToken() {
+  return loadWebhookTokenFromSettings("lastlink", process.env.LASTLINK_WEBHOOK_TOKEN);
+}
+
+async function loadWebhookTokenFromSettings(settingsKey, fallbackEnv) {
+  const doc = await getSettingDoc(settingsKey);
   const settings = parseJsonObject(doc?.settings_json, {});
   try {
     const fromSettings = cleanString(new URL(cleanString(settings.webhookUrl)).searchParams.get("token"));
@@ -22761,13 +22778,21 @@ async function loadCaktoWebhookToken() {
   } catch {
     // Sem webhookUrl válida — tenta a env abaixo.
   }
-  return cleanString(process.env.CAKTO_WEBHOOK_TOKEN);
+  return cleanString(fallbackEnv);
 }
 
 function timingSafeEqualString(left, right) {
   const a = Buffer.from(cleanString(left));
   const b = Buffer.from(cleanString(right));
   return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+}
+
+async function paymentWebhookTokenMatches(payloadToken) {
+  const expected = [
+    await loadCaktoWebhookToken(),
+    await loadLastLinkWebhookToken(),
+  ].filter(Boolean);
+  return expected.some((token) => timingSafeEqualString(payloadToken, token));
 }
 
 async function notifyCaktoSaleToAdmins(sale) {
@@ -22802,21 +22827,11 @@ async function notifyCaktoSaleEmailToStudent(sale) {
   ]);
   const email = cleanString(user?.email) || cleanString(safeSale.customerEmail);
   const name = cleanString(profile?.full_name) || cleanString(user?.name) || cleanString(safeSale.customerName) || "Aluno";
-  const productLabel = cleanString(safeSale.productLabel) || "Flight Review Club";
+  const kind = saleNotificationKind(safeSale);
+  const productLabel = cleanString(safeSale.productLabel)
+    || (kind === "flight_review_club_subscription" ? "Flight Review Club" : "créditos de hora de voo");
   const amountLabel = formatMoneyLabel(safeSale.amount, safeSale.currency);
-  const message = {
-    eyebrow: "Compra confirmada",
-    title: "Flight Review Club ativo",
-    intro: "Seu pagamento foi confirmado.",
-    body: `${name}, sua compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""} foi aprovada e seu acesso ao Flight Review Club esta ativo.`,
-    details: [
-      ["Produto", productLabel],
-      ...(amountLabel ? [["Valor", amountLabel]] : []),
-      ...(cleanString(safeSale.orderId) ? [["Pedido", cleanString(safeSale.orderId)]] : []),
-    ],
-    ctaLabel: "Abrir Flight Review Club",
-    url: "/flight-review-club",
-  };
+  const message = studentSaleEmailMessage({ name, productLabel, amountLabel, kind, orderId: cleanString(safeSale.orderId) });
   try {
     const result = await sendEmailToUser(settings, brand, { email, name }, message);
     await logDelivery("cakto.sale_approved", dedupeKey, "email", studentUserId, result.status, result.providerMessageId, result.reason);
@@ -22826,6 +22841,45 @@ async function notifyCaktoSaleEmailToStudent(sale) {
     await logDelivery("cakto.sale_approved", dedupeKey, "email", studentUserId, "failed", null, messageError);
     return { status: "failed", studentUserId, reason: messageError };
   }
+}
+
+function saleNotificationKind(sale = {}) {
+  const kind = cleanString(sale.kind);
+  if (kind) return kind;
+  const label = cleanString(sale.productLabel).toLowerCase();
+  if (label.includes("flight review club") || /\bfrc\b/.test(label)) return "flight_review_club_subscription";
+  if (/\d+(?:[.,]\d+)?h\b/.test(label) || label.includes("crédito") || label.includes("credito")) {
+    return "student_credit_package";
+  }
+  return "student_credit_package";
+}
+
+function studentSaleEmailMessage({ name, productLabel, amountLabel, kind, orderId }) {
+  const details = [
+    ["Produto", productLabel],
+    ...(amountLabel ? [["Valor", amountLabel]] : []),
+    ...(orderId ? [["Pedido", orderId]] : []),
+  ];
+  if (kind === "flight_review_club_subscription") {
+    return {
+      eyebrow: "Compra confirmada",
+      title: "Flight Review Club ativo",
+      intro: "Seu pagamento foi confirmado.",
+      body: `${name}, sua compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""} foi aprovada e seu acesso ao Flight Review Club esta ativo.`,
+      details,
+      ctaLabel: "Abrir Flight Review Club",
+      url: "/flight-review-club",
+    };
+  }
+  return {
+    eyebrow: "Compra confirmada",
+    title: "Créditos de voo liberados",
+    intro: "Seu pagamento foi confirmado.",
+    body: `${name}, sua compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""} foi aprovada e os créditos já estão disponíveis na sua conta.`,
+    details,
+    ctaLabel: "Agendar voo",
+    url: "/aluno/agendamento",
+  };
 }
 
 async function notifyMarketplaceOrderPaid(sale) {
@@ -22906,9 +22960,10 @@ async function notifyCaktoSaleToStudent(sale) {
   }
   const context = {
     student_name: cleanString(profile?.full_name) || cleanString(user?.name) || cleanString(safeSale.customerName) || "Aluno",
-    product: cleanString(safeSale.productLabel) || "Compra de horas de voo",
+    product: cleanString(safeSale.productLabel)
+      || (saleNotificationKind(safeSale) === "flight_review_club_subscription" ? "Flight Review Club" : "Compra de horas de voo"),
     amount: formatMoneyLabel(safeSale.amount, safeSale.currency),
-    payment_method: cleanString(safeSale.paymentMethod) || "Cakto",
+    payment_method: salePaymentMethodLabel(safeSale),
     installments: Number(safeSale.paymentInstallments) > 1 ? `${Number(safeSale.paymentInstallments)}x` : "a vista",
     order_id: cleanString(safeSale.orderId) || receiptId,
     paid_at: formatWppDateTimeLabel(safeSale.eventAt),
@@ -23672,6 +23727,224 @@ function publicCaktoSettings(settings, updatedAt = null) {
     webhookUrl: cleanString(settings.webhookUrl),
     updatedAt,
   };
+}
+
+function publicLastLinkSettings(settings, updatedAt = null) {
+  return {
+    email: cleanString(settings.email),
+    passwordConfigured: Boolean(cleanString(settings.password)),
+    sessionConfigured: lastlink.tokenLooksValid(settings.token),
+    sessionExpiresAt: lastlink.sessionExpiresAt(settings.token),
+    productSlug: cleanString(settings.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
+    communityId: cleanString(settings.communityId),
+    webhookUrl: cleanString(settings.webhookUrl),
+    updatedAt,
+  };
+}
+
+function normalizeCreditPaymentProvider(value) {
+  return cleanString(value).toLowerCase() === "lastlink" ? "lastlink" : "cakto";
+}
+
+async function loadCreditPaymentProvider() {
+  const doc = await getSettingDoc(CREDIT_PAYMENT_PROVIDER_KEY);
+  const parsed = parseJsonObject(doc?.settings_json, {});
+  return normalizeCreditPaymentProvider(parsed.provider);
+}
+
+async function saveCreditPaymentProvider(input) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Coleção de configurações da plataforma não configurada."), { status: 500 });
+  }
+  const provider = normalizeCreditPaymentProvider(input);
+  if (provider === "lastlink") {
+    const { settings } = await loadLastLinkSettings();
+    if (!settings.email || !settings.password) {
+      throw Object.assign(new Error("Configure o e-mail e a senha da LastLink antes de ativá-la."), { status: 400 });
+    }
+  }
+  const data = {
+    key: CREDIT_PAYMENT_PROVIDER_KEY,
+    settings_json: JSON.stringify({ provider }),
+    updated_at: new Date().toISOString(),
+  };
+  const current = await getSettingDoc(CREDIT_PAYMENT_PROVIDER_KEY);
+  if (current) {
+    await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, current.$id, data);
+  } else {
+    await databases.createDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, sdk.ID.unique(), data, ADMIN_DOC_PERMS);
+  }
+  return provider;
+}
+
+async function loadLastLinkSettings() {
+  const doc = await getSettingDoc(LASTLINK_SETTINGS_KEY);
+  const publicData = parseJsonObject(doc?.settings_json, {});
+  const secretData = parseJsonObject(doc?.secret_json, {});
+  const settings = {
+    email: cleanString(publicData.email),
+    productSlug: cleanString(publicData.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
+    communityId: cleanString(publicData.communityId),
+    webhookUrl: cleanString(publicData.webhookUrl),
+    password: cleanString(secretData.password),
+    token: cleanString(secretData.token),
+  };
+  return { settings, publicSettings: publicLastLinkSettings(settings, doc?.$updatedAt || null), doc };
+}
+
+async function persistLastLinkSettings(next, currentDoc = null) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    throw Object.assign(new Error("Coleção de configurações da plataforma não configurada."), { status: 500 });
+  }
+  const data = {
+    key: LASTLINK_SETTINGS_KEY,
+    settings_json: JSON.stringify({
+      email: next.email,
+      productSlug: cleanString(next.productSlug) || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
+      communityId: cleanString(next.communityId),
+      webhookUrl: cleanString(next.webhookUrl),
+    }),
+    secret_json: JSON.stringify({ password: next.password, token: next.token }),
+    updated_at: new Date().toISOString(),
+  };
+  const doc = currentDoc
+    ? await databases.updateDocument(DATABASE_ID, PLATFORM_SETTINGS_COLLECTION_ID, currentDoc.$id, data)
+    : await databases.createDocument(
+        DATABASE_ID,
+        PLATFORM_SETTINGS_COLLECTION_ID,
+        sdk.ID.unique(),
+        data,
+        ADMIN_DOC_PERMS,
+      );
+  return publicLastLinkSettings(next, doc.$updatedAt || null);
+}
+
+async function saveLastLinkSettings(input) {
+  const current = await loadLastLinkSettings();
+  const next = {
+    email: cleanString(input?.email),
+    password: cleanString(input?.password) || current.settings.password,
+    token: current.settings.token,
+    productSlug: cleanString(input?.productSlug) || current.settings.productSlug || lastlink.LASTLINK_CREDIT_PRODUCT_SLUG,
+    communityId: current.settings.communityId,
+    webhookUrl: current.settings.webhookUrl,
+  };
+  if (!next.email || !next.password) {
+    throw Object.assign(new Error("Informe e-mail e senha da LastLink."), { status: 400 });
+  }
+  if (cleanString(input?.password) && cleanString(input.password) !== current.settings.password) {
+    next.token = "";
+  }
+  return persistLastLinkSettings(next, current.doc);
+}
+
+async function saveLastLinkSession(token) {
+  const current = await loadLastLinkSettings();
+  return persistLastLinkSettings({ ...current.settings, token: cleanString(token) }, current.doc);
+}
+
+async function withLastLinkToken(fn) {
+  const { settings } = await loadLastLinkSettings();
+  if (!settings.email || !settings.password) {
+    throw Object.assign(new Error("Credenciais da LastLink não configuradas."), { status: 400 });
+  }
+  let token = settings.token;
+  if (!lastlink.tokenLooksValid(token)) {
+    token = await lastlink.loginLastLink(settings);
+    await saveLastLinkSession(token);
+  }
+  try {
+    return await fn(token);
+  } catch (error) {
+    if (Number(error?.status) !== 401) throw error;
+    token = await lastlink.loginLastLink(settings);
+    await saveLastLinkSession(token);
+    return fn(token);
+  }
+}
+
+async function testLastLinkConnection() {
+  const current = await loadLastLinkSettings();
+  const community = await withLastLinkToken((token) => lastlink.ensureCreditCommunity(token, {
+    communityId: current.settings.communityId,
+    productSlug: current.settings.productSlug,
+  }));
+  await persistLastLinkSettings({ ...current.settings, communityId: cleanString(community?.id) }, current.doc);
+  const { publicSettings } = await loadLastLinkSettings();
+  return publicSettings;
+}
+
+async function proposalBuyerFields(doc) {
+  let name = cleanString(doc?.lead_name);
+  let email = cleanString(doc?.lead_email);
+  let document = "";
+  let phone = "";
+  let cep = "";
+  const number = "";
+  let profileUserId = "";
+  const leadId = cleanString(doc?.lead_id);
+  if (leadId) {
+    const lead = await getLeadById(leadId).catch(() => null);
+    if (lead) {
+      if (!name) name = cleanString(lead.name || lead.full_name);
+      if (!email) email = cleanString(lead.email);
+      document = cleanString(lead.cpf);
+      phone = cleanString(lead.phone);
+      profileUserId = cleanString(lead.user_id);
+    } else {
+      profileUserId = leadId;
+    }
+  }
+  if (profileUserId) {
+    const profile = await getProfileByUserId(profileUserId).catch(() => null);
+    if (profile) {
+      if (!name) name = cleanString(profile.full_name);
+      if (!email) email = cleanString(profile.email);
+      if (!document) document = cleanString(profile.cpf);
+      if (!phone) phone = cleanString(profile.phone);
+      cep = cleanString(profile.cep);
+    }
+  }
+  return { name, email, document, phone, cep, number };
+}
+
+async function createLastLinkOfferForProposal(doc) {
+  const amount = proposalPaymentTotal(doc);
+  const titles = lastlink.buildCreditTitles({
+    studentName: cleanString(doc?.lead_name),
+    hours: Number(doc?.hours) || 0,
+  });
+  const [current, buyer] = await Promise.all([
+    loadLastLinkSettings(),
+    proposalBuyerFields(doc),
+  ]);
+  const created = await withLastLinkToken((token) => lastlink.createPaymentLink(token, {
+    offerName: titles.offerName,
+    amount,
+    communityId: current.settings.communityId,
+    productSlug: current.settings.productSlug,
+    proposalId: doc.$id,
+    buyer,
+  }));
+  if (cleanString(created.communityId) && created.communityId !== current.settings.communityId) {
+    await persistLastLinkSettings({ ...current.settings, communityId: created.communityId }, current.doc).catch(() => null);
+  }
+  return {
+    offerId: created.offerId,
+    paymentUrl: created.paymentUrl,
+    provider: "lastlink",
+    communityId: created.communityId,
+    code: created.code,
+  };
+}
+
+async function createCreditCheckoutPayment(doc) {
+  const provider = await loadCreditPaymentProvider();
+  if (provider === "lastlink") {
+    return createLastLinkOfferForProposal(doc);
+  }
+  const payment = await createCaktoOfferForProposal(doc);
+  return { ...payment, provider: "cakto" };
 }
 
 function defaultFlightCreditSalesConfig() {
@@ -25524,14 +25797,14 @@ async function createFlightCreditCheckoutForUser(
     ],
   );
   try {
-    const payment = await createCaktoOfferForProposal(doc);
+    const payment = await createCreditCheckoutPayment(doc);
     const updated = await updateProposalPayment(doc.$id, {
       cakto_offer_id: payment.offerId,
       payment_url: payment.paymentUrl,
       payment_status: "created",
       payment_error: "",
     });
-    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl, provider: payment.provider || "cakto" };
   } catch (error) {
     await updateProposalPayment(doc.$id, {
       payment_status: "failed",
@@ -25610,14 +25883,14 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
       ],
     );
     try {
-      const payment = await createCaktoOfferForProposal(doc);
+      const payment = await createCreditCheckoutPayment(doc);
       const updated = await updateProposalPayment(doc.$id, {
         cakto_offer_id: payment.offerId,
         payment_url: payment.paymentUrl,
         payment_status: "created",
         payment_error: "",
       });
-      return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+      return { proposalId: updated.$id, paymentUrl: payment.paymentUrl, provider: payment.provider || "cakto" };
     } catch (error) {
       await updateProposalPayment(doc.$id, {
         payment_status: "failed",
@@ -25720,14 +25993,14 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
     ],
   );
   try {
-    const payment = await createCaktoOfferForProposal(doc);
+    const payment = await createCreditCheckoutPayment(doc);
     const updated = await updateProposalPayment(doc.$id, {
       cakto_offer_id: payment.offerId,
       payment_url: payment.paymentUrl,
       payment_status: "created",
       payment_error: "",
     });
-    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl };
+    return { proposalId: updated.$id, paymentUrl: payment.paymentUrl, provider: payment.provider || "cakto" };
   } catch (error) {
     await updateProposalPayment(doc.$id, {
       payment_status: "failed",
@@ -28683,7 +28956,10 @@ async function retryCaktoProposal(proposalId) {
   const doc = await databases.getDocument(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, cleanString(proposalId));
   if (doc.payment_url) return mapCaktoProposal(doc);
   try {
-    const payment = await createCaktoOfferForProposal(doc);
+    const productsData = parseJsonObject(doc.products_json, {});
+    const payment = productsData?.kind === "student_credit_package"
+      ? await createCreditCheckoutPayment(doc)
+      : await createCaktoOfferForProposal(doc);
     return mapCaktoProposal(await updateProposalPayment(doc.$id, {
       cakto_offer_id: payment.offerId,
       payment_url: payment.paymentUrl,
@@ -31645,6 +31921,7 @@ function sampleEventForTemplate(templateType) {
         paymentMethod: "PIX",
         productLabel: "Pacote 10h — C152",
         orderId: "ORD-12345",
+        provider: "lastlink",
       },
     },
     "marketplace.order_paid": {
@@ -32687,9 +32964,8 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "notifyCaktoSaleEvent") {
-      // Chamada interna da function cakto-webhook — autenticada pelo token do webhook.
-      const expectedToken = await loadCaktoWebhookToken();
-      if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
+      // Chamada interna da cakto-webhook / lastlink-webhook — autenticada pelo token do webhook.
+      if (!(await paymentWebhookTokenMatches(payload.token))) {
         return jsonResponse(res, 401, { message: "Token inválido." });
       }
       const [deliveries, studentWpp, studentEmail] = await Promise.all([
@@ -32708,8 +32984,7 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (action === "notifyMarketplaceOrderPaid") {
-      const expectedToken = await loadCaktoWebhookToken();
-      if (!expectedToken || !timingSafeEqualString(payload.token, expectedToken)) {
+      if (!(await paymentWebhookTokenMatches(payload.token))) {
         return jsonResponse(res, 401, { message: "Token inválido." });
       }
       const sale = payload.sale && typeof payload.sale === "object" ? payload.sale : {};
@@ -33757,6 +34032,30 @@ module.exports = async ({ req, res, log, error }) => {
       await requireAdmin(actorUserId);
       await testCaktoConnection();
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "getCreditPaymentSettings") {
+      await requireAdmin(actorUserId);
+      const [provider, lastLink] = await Promise.all([loadCreditPaymentProvider(), loadLastLinkSettings()]);
+      return jsonResponse(res, 200, { provider, lastlink: lastLink.publicSettings });
+    }
+
+    if (action === "saveCreditPaymentProvider") {
+      await requireAdmin(actorUserId);
+      const provider = await saveCreditPaymentProvider(payload.provider);
+      return jsonResponse(res, 200, { provider });
+    }
+
+    if (action === "saveLastLinkSettings") {
+      await requireAdmin(actorUserId);
+      const settings = await saveLastLinkSettings(payload.settings);
+      return jsonResponse(res, 200, { settings });
+    }
+
+    if (action === "testLastLinkConnection") {
+      await requireAdmin(actorUserId);
+      const settings = await testLastLinkConnection();
+      return jsonResponse(res, 200, { ok: true, settings });
     }
 
     if (action === "createCaktoProposal") {

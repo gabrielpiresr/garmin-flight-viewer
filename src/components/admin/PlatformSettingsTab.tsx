@@ -40,6 +40,7 @@ import {
 import { ReferAndEarnSettingsPanel } from "./ReferAndEarnSettingsPanel";
 import { ProposalSettingsPanel } from "./ProposalSettingsPanel";
 import { CaktoSettingsPanel } from "./CaktoSettingsPanel";
+import { LastLinkSettingsPanel } from "./LastLinkSettingsPanel";
 import { FlightCreditPackagesPanel } from "./FlightCreditPackagesPanel";
 import { AdminImportTab } from "./AdminImportTab";
 import { AiswebSettingsPanel } from "./AiswebSettingsPanel";
@@ -227,7 +228,7 @@ const TEMPLATE_OPTIONS: Array<{ id: EmailTemplateType; label: string }> = [
   { id: "weeklyPlan.submitted", label: "Intenção enviada" },
   { id: "notice.published", label: "Novo aviso" },
   { id: "schedule.published", label: "Escala gerada" },
-  { id: "cakto.sale_approved", label: "Venda Cakto aprovada" },
+  { id: "cakto.sale_approved", label: "Venda LastLink aprovada" },
   { id: "marketplace.order_paid", label: "Compra marketplace confirmada" },
 ];
 
@@ -893,6 +894,7 @@ export function PlatformSettingsTab({ subTab: controlledSubTab, onSubTabChange }
           <SchoolCostsPanel />
           <FlightCreditPackagesPanel />
           <SchoolProductsPanel />
+          <LastLinkSettingsPanel />
           <CaktoSettingsPanel />
         </div>
       ) : null}

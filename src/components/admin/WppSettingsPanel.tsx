@@ -127,7 +127,7 @@ const WPP_BOT_ACTION_LABEL: Record<WppIncomingActionType, string> = {
   send_next_scheduled_flights: "Enviar pr\u00f3ximos voos agendados",
   send_flight_credit_purchase_options: "Enviar op\u00e7\u00f5es de compra de horas",
   send_flight_credit_custom_purchase_link: "Enviar link de compra personalizada",
-  create_flight_credit_checkout: "Gerar checkout Cakto de horas",
+  create_flight_credit_checkout: "Gerar checkout de horas",
   start_flight_booking: "Iniciar agendamento de voo",
 };
 
@@ -1241,7 +1241,7 @@ export function WppSettingsPanel() {
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
             <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
               <input type="checkbox" checked={paymentReceivedTemplate.enabled} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
-              Enviar confirmaÃ§Ã£o ao aluno quando o pagamento Cakto for aprovado
+              Enviar confirmação ao aluno quando o pagamento for aprovado
             </label>
             <label className="text-xs font-medium text-slate-400">Pagamento recebido
               <input value={paymentReceivedTemplate.templateName} onChange={(e) => setPaymentReceivedTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="pagamento_recebido_cakto" className={inputClass} />

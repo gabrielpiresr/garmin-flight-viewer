@@ -4,6 +4,8 @@ import type { CaktoReceipt, CaktoReceiptPage } from "../../types/cakto";
 import { useToast } from "../ui/ToastProvider";
 import { getFlightCreditSalesConfig, adminCreateFlightCreditCheckout, sendFlightCreditPaymentLinkEmail } from "../../lib/flightCreditSalesDb";
 import type { FlightCreditCheckoutExtraProduct, FlightCreditPackage } from "../../types/flightCreditSales";
+import { getCreditPaymentSettings } from "../../lib/lastlinkDb";
+import type { CreditPaymentProvider } from "../../types/lastlink";
 import { listSchoolProducts } from "../../lib/schoolProductsDb";
 import type { SchoolProduct } from "../../types/costs";
 import { listAdminUsers } from "../../lib/adminUsersDb";
@@ -53,16 +55,21 @@ export function PaymentLinkModal({
   const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [paymentProposalId, setPaymentProposalId] = useState<string | null>(null);
+  const [paymentProvider, setPaymentProvider] = useState<CreditPaymentProvider>("cakto");
 
   useEffect(() => {
     void (async () => {
       setPackagesLoading(true);
       try {
-        const config = await getFlightCreditSalesConfig();
+        const [config, paymentSettings] = await Promise.all([
+          getFlightCreditSalesConfig(),
+          getCreditPaymentSettings().catch(() => null),
+        ]);
         const active = config.packages.filter((p) => p.active);
         setPackages(active);
         const defaultPackage = active.find((item) => item.isDefault) ?? active[0];
         if (defaultPackage) setSelectedPackageId(defaultPackage.id);
+        if (paymentSettings?.provider) setPaymentProvider(paymentSettings.provider);
       } catch (e) {
         showToast({ variant: "error", message: (e as Error).message });
       } finally {
@@ -177,6 +184,7 @@ export function PaymentLinkModal({
       );
       setPaymentUrl(checkout.paymentUrl);
       setPaymentProposalId(checkout.proposalId);
+      if (checkout.provider) setPaymentProvider(checkout.provider);
       if (sendEmailAfterGenerate) {
         await sendPaymentEmail(checkout.paymentUrl, checkout.proposalId);
       }
@@ -205,6 +213,9 @@ export function PaymentLinkModal({
           <h2 className="text-sm font-semibold text-slate-100">Gerar link de pagamento</h2>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300 text-xs">Fechar</button>
         </div>
+        <p className="mt-1 text-[11px] text-slate-500">
+          Provedor ativo: {paymentProvider === "lastlink" ? "LastLink" : "Cakto"} (altera em Configurações → Financeiro)
+        </p>
 
         {paymentUrl ? (
           <div className="mt-4 space-y-3">
