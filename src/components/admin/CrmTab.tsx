@@ -46,7 +46,6 @@ import { getProposalConfig } from "../../lib/proposalSettingsDb";
 import { createLeadComment, deleteLeadComment, listLeadComments, type CrmLeadComment } from "../../lib/crmCommentsDb";
 import type { CrmProposal } from "../../types/proposal";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
-import { listProductSalesForUser } from "../../lib/productSalesDb";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import {
   approveStudentAccess,
@@ -2769,14 +2768,13 @@ export function CrmTab() {
   const [editModal, setEditModal] = useState<{ lead: CrmLead | null; initialStatus: CrmStatus } | null>(null);
   const [cadastroModal, setCadastroModal] = useState<CrmLead | null>(null);
   const [enrollmentModal, setEnrollmentModal] = useState<{ lead: CrmLead; templates: ContractTemplate[] } | null>(null);
-  const [creditModal, setCreditModal] = useState<{ lead: CrmLead; targetStatus: "aluno_pronto" | "ground_agendado" } | null>(null);
+  const [creditModal, setCreditModal] = useState<{ lead: CrmLead; targetStatus: "aluno_pronto" } | null>(null);
   const [lostReasonModal, setLostReasonModal] = useState<{ lead: CrmLead } | null>(null);
   const [proposalAcceptModal, setProposalAcceptModal] = useState<{ lead: CrmLead; proposals: CrmProposal[] } | null>(null);
   const [cardSettingsOpen, setCardSettingsOpen] = useState(false);
   const [statusSettings, setStatusSettings] = useState<CrmStatusSetting[]>([]);
   const [statusSettingsModal, setStatusSettingsModal] = useState<CrmStatus | null>(null);
   const [statusSettingsSaving, setStatusSettingsSaving] = useState(false);
-  const [groundPaymentModal, setGroundPaymentModal] = useState<{ lead: CrmLead } | null>(null);
   const [filters, setFilters] = useState<CrmLeadFilters>(EMPTY_CRM_LEAD_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [viewMode, setViewMode] = useState<CrmViewMode>(() => {
@@ -2951,28 +2949,9 @@ export function CrmTab() {
       }
       return null;
     }
-    if (targetStatus === "ground_agendado") {
-      if (!lead.payInPerson && !(await hasPaymentSignal(lead))) {
-        showToast("Nao ha credito inserido para aquele aluno.", "error");
-        setGroundPaymentModal({ lead });
-        return null;
-      }
-    }
     const nextLead = applyLeadStatusMove(lead, targetStatus, statusSettings);
     const ok = await persistStatusMove(lead, targetStatus);
     return ok ? nextLead : null;
-  }
-
-  async function hasPaymentSignal(lead: CrmLead): Promise<boolean> {
-    if (!lead.userId) return false;
-    const [statement, sales] = await Promise.all([
-      getStudentCreditStatement({
-        viewer: { userId: user?.id ?? "", role: (user?.role ?? "admin") as "admin" },
-        studentUserId: lead.userId,
-      }).catch(() => null),
-      listProductSalesForUser(lead.userId).catch(() => []),
-    ]);
-    return Boolean((statement && statement.purchases.length > 0) || sales.length > 0);
   }
 
   async function handleDrop(targetStatus: CrmStatus) {
@@ -2982,19 +2961,6 @@ export function CrmTab() {
 
     if (targetStatus === "lead_perdido") {
       setLostReasonModal({ lead });
-      return;
-    }
-
-    if (targetStatus === "ground_agendado") {
-      if (!lead.payInPerson) {
-        const hasPayment = await hasPaymentSignal(lead);
-        if (!hasPayment) {
-          showToast("Nao ha credito inserido para aquele aluno.", "error");
-          setGroundPaymentModal({ lead });
-          return;
-        }
-      }
-      await persistStatusMove(lead, targetStatus);
       return;
     }
 
@@ -3068,26 +3034,9 @@ export function CrmTab() {
     }
   }
 
-  async function confirmMoveAfterCredit(lead: CrmLead, targetStatus: "aluno_pronto" | "ground_agendado") {
+  async function confirmMoveAfterCredit(lead: CrmLead, targetStatus: "aluno_pronto") {
     setCreditModal(null);
     await persistStatusMove(lead, targetStatus);
-  }
-
-  async function confirmGroundPayInPerson(lead: CrmLead) {
-    const nextLead = { ...lead, payInPerson: true };
-    setGroundPaymentModal(null);
-    setLeads((ls) => ls.map((l) => l.id === lead.id ? nextLead : l));
-    const { error } = await updateLead(lead.id, { payInPerson: true });
-    if (error) {
-      showToast("Erro ao marcar pagamento presencial.", "error");
-      return;
-    }
-    await persistStatusMove(nextLead, "ground_agendado");
-  }
-
-  function addGroundCredit(lead: CrmLead) {
-    setGroundPaymentModal(null);
-    setCreditModal({ lead, targetStatus: "ground_agendado" });
   }
 
   async function handleSaveAutomationSettings(settings: CrmAutomationSettings) {
@@ -3536,30 +3485,6 @@ export function CrmTab() {
         />
       )}
 
-      {groundPaymentModal && groundPaymentModal.lead.userId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
-          <div className="w-full max-w-md rounded-xl border border-amber-700/40 bg-slate-900 shadow-2xl">
-            <div className="border-b border-slate-800 px-5 py-4">
-              <p className="text-sm font-semibold text-slate-100">Credito necessario</p>
-              <p className="mt-1 text-xs text-slate-500">
-                Nao ha credito inserido para aquele aluno. Insira credito ou marque que o aluno pagara presencialmente.
-              </p>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
-              <button type="button" onClick={() => setGroundPaymentModal(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-                Cancelar
-              </button>
-              <button type="button" onClick={() => addGroundCredit(groundPaymentModal.lead)} className="rounded-lg border border-emerald-700/60 bg-emerald-600/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-600/20">
-                Inserir credito
-              </button>
-              <button type="button" onClick={() => void confirmGroundPayInPerson(groundPaymentModal.lead)} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500">
-                Pagara presencialmente
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {creditModal && creditModal.lead.userId && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-4 sm:items-center">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-emerald-700/40 bg-slate-900 shadow-2xl">
@@ -3596,7 +3521,7 @@ export function CrmTab() {
                 onClick={() => void confirmMoveAfterCredit(creditModal.lead, creditModal.targetStatus)}
                 className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
               >
-                Confirmar e mover para {creditModal.targetStatus === "ground_agendado" ? "Ground Agendado" : "Em Curso"}
+                Confirmar e mover para Em Curso
               </button>
             </div>
           </div>
