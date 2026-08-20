@@ -30,6 +30,58 @@ export type AiswebWatchlist = {
   updatedAt: string | null;
 };
 
+export type AiswebWeatherAlertCondition =
+  | "wind_total"
+  | "crosswind"
+  | "gust"
+  | "visibility"
+  | "ceiling"
+  | "phenomenon";
+
+export type AiswebWeatherAlertComparator = "gt" | "lt" | "between" | "contains";
+
+export type AiswebWeatherAlertSource = "metar" | "taf";
+
+export type AiswebWeatherAlertMatchMode = "any" | "all";
+
+export type AiswebWeatherAlertRepeatMode = "continuous" | "once_until_normal";
+
+export type AiswebWeatherAlertCriterion = {
+  id: string;
+  source: AiswebWeatherAlertSource;
+  condition: AiswebWeatherAlertCondition;
+  comparator: AiswebWeatherAlertComparator;
+  value: number | string;
+  valueMax?: number | null;
+};
+
+export type AiswebWeatherAlert = {
+  id: string;
+  name: string;
+  icaoCodes: string[];
+  matchMode: AiswebWeatherAlertMatchMode;
+  repeatMode: AiswebWeatherAlertRepeatMode;
+  criteria: AiswebWeatherAlertCriterion[];
+  enabled: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastTriggeredAt?: string | null;
+  active?: boolean;
+};
+
+export type AiswebWeatherAlertHistoryItem = {
+  id: string;
+  alertId: string;
+  alertName: string;
+  icao: string;
+  source: AiswebWeatherAlertSource | "metar/taf";
+  summary: string;
+  details: string[];
+  triggeredAt: string;
+  emailStatus?: string | null;
+  wppStatus?: string | null;
+};
+
 export type AiswebCloudLayer = {
   cover: string;
   heightFt: number | null;

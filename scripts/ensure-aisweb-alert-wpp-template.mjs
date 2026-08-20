@@ -50,7 +50,7 @@ async function graphRequest(settings, pathOrUrl, options = {}) {
 }
 
 async function listTemplates(settings) {
-  const fields = "id,name,status,category,language,rejected_reason";
+  const fields = "id,name,status,category,language,components,rejected_reason";
   let nextUrl = `${settings.wabaId}/message_templates?limit=100&fields=${encodeURIComponent(fields)}`;
   const templates = [];
   for (let page = 0; nextUrl && page < 10; page += 1) {
@@ -71,13 +71,13 @@ function templatePayload(origin) {
       {
         type: "BODY",
         text:
-          "Alerta operacional AISWEB (NOTAM, suplemento AIP ou aviso de aerodromo).\n\n" +
+          "Alerta operacional AISWEB.\n\n" +
           "Tipo do alerta: {{1}}\n" +
-          "Aerodromo (ICAO): {{2}}\n" +
+          "Aeródromo (ICAO): {{2}}\n" +
           "Identificador: {{3}}\n\n" +
-          "Conteudo:\n{{4}}\n\n" +
-          "Periodo de validade: {{5}}\n\n" +
-          "Abra o aplicativo para ver o detalhe completo do aerodromo.",
+          "Conteúdo:\n{{4}}\n\n" +
+          "Horário ou validade: {{5}}\n\n" +
+          "Abra o aplicativo para ver os detalhes.",
         example: {
           body_text: [[
             "NOTAM",
@@ -88,7 +88,7 @@ function templatePayload(origin) {
           ]],
         },
       },
-      { type: "FOOTER", text: "Mensagem automatica" },
+      { type: "FOOTER", text: "Mensagem automática" },
       {
         type: "BUTTONS",
         buttons: [
@@ -102,6 +102,10 @@ function templatePayload(origin) {
       },
     ],
   };
+}
+
+function templateBody(template) {
+  return String((Array.isArray(template?.components) ? template.components : []).find((item) => item?.type === "BODY")?.text || "");
 }
 
 async function main() {
@@ -134,6 +138,15 @@ async function main() {
   const existing = (await listTemplates(settings)).filter((item) => item.name === TEMPLATE_NAME);
   const usable = existing.find((item) => String(item.status || "").toUpperCase() !== "REJECTED");
   if (usable) {
+    if (usable.id && !templateBody(usable).includes("Horário ou validade")) {
+      const payload = templatePayload(origin);
+      const updated = await graphRequest(settings, usable.id, {
+        method: "POST",
+        body: { category: payload.category, components: payload.components },
+      });
+      console.log(`Template atualizado: ${usable.name} · ${usable.language} · ${updated.status || "PENDING"} · ${payload.category}`);
+      return;
+    }
     console.log(`Template ja existe: ${usable.name} · ${usable.language} · ${usable.status} · ${usable.category}`);
     return;
   }

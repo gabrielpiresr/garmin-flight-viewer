@@ -2292,6 +2292,7 @@ module.exports = {
   MAX_METAR_WATCHES_PER_PHONE,
   DEFAULT_MINIMUMS,
   normalizeIcao,
+  parseMetar,
   loadSettings,
   saveSettings,
   loadWatchlist,

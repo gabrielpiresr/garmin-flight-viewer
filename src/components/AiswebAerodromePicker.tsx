@@ -128,7 +128,7 @@ export function AiswebAerodromePicker({
   async function handleLookup() {
     const query = lookupInput.trim().slice(0, 80);
     if (!query) {
-      showToast({ variant: "warning", message: "Informe um ICAO, cidade ou nome do aerodromo." });
+      showToast({ variant: "warning", message: "Informe um ICAO, cidade ou nome do aeródromo." });
       return;
     }
 

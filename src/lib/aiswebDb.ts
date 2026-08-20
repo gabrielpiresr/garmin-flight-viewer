@@ -6,6 +6,8 @@ import type {
   AiswebNotam,
   AiswebPlatformSettings,
   AiswebPlatformSettingsInput,
+  AiswebWeatherAlert,
+  AiswebWeatherAlertHistoryItem,
   AiswebWebcamsResult,
   AiswebWatchlist,
 } from "../types/aisweb";
@@ -45,6 +47,10 @@ type AiswebResponse = {
   mets?: AiswebAirportBundle["met"][];
   notams?: AiswebNotam[];
   webcams?: AiswebWebcamsResult;
+  alerts?: AiswebWeatherAlert[];
+  alert?: AiswebWeatherAlert;
+  history?: AiswebWeatherAlertHistoryItem[];
+  result?: unknown;
 };
 
 async function execute(payload: Record<string, unknown>): Promise<AiswebResponse> {
@@ -190,6 +196,40 @@ export async function saveAiswebSettings(
   });
   if (!response.settings) throw new Error("Configuração AISWEB não retornada.");
   return response.settings;
+}
+
+export async function listAiswebWeatherAlerts(): Promise<{
+  alerts: AiswebWeatherAlert[];
+  history: AiswebWeatherAlertHistoryItem[];
+}> {
+  const response = await execute({ action: "listAiswebWeatherAlerts" });
+  return {
+    alerts: Array.isArray(response.alerts) ? response.alerts : [],
+    history: Array.isArray(response.history) ? response.history : [],
+  };
+}
+
+export async function saveAiswebWeatherAlert(
+  alert: Partial<AiswebWeatherAlert>,
+): Promise<AiswebWeatherAlert> {
+  const response = await execute({
+    action: "saveAiswebWeatherAlert",
+    alert,
+  });
+  if (!response.alert) throw new Error("Alerta meteorológico não retornado.");
+  return response.alert;
+}
+
+export async function deleteAiswebWeatherAlert(alertId: string): Promise<void> {
+  await execute({
+    action: "deleteAiswebWeatherAlert",
+    alertId,
+  });
+}
+
+export async function runAiswebWeatherAlertScanNow(): Promise<unknown> {
+  const response = await execute({ action: "runAiswebWeatherAlertScan" });
+  return response.result || response;
 }
 
 export async function previewAiswebChart(link: string): Promise<{

@@ -14700,6 +14700,9 @@ const WPP_SETTINGS_KEY = "wpp";
 const WPP_METAR_TRIAL_PREFIX = "wppMetarTrial:";
 const WPP_METAR_TRIAL_LIMIT = 10;
 const WPP_AISWEB_ALERT_TEMPLATE_NAME = "alerta_aisweb";
+const AISWEB_WEATHER_ALERTS_PREFIX = "aiswebWeatherAlerts:";
+const AISWEB_WEATHER_ALERT_HISTORY_DAYS = 30;
+const AISWEB_WEATHER_ALERT_HISTORY_LIMIT = 120;
 const DEFAULT_WPP_INCOMING_AUTO_REPLY_MESSAGE =
   "Oi{{nickname_suffix}}! Este bot envia mensagens automaticas e tambem responde alguns pedidos por este canal.";
 const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
@@ -18899,27 +18902,21 @@ async function ensureAiswebAlertWppTemplate() {
   const templates = await listWppTemplates().catch(() => []);
   const byName = new Map(templates.map((template) => [cleanString(template.name), template]));
   const existing = byName.get(WPP_AISWEB_ALERT_TEMPLATE_NAME);
-  if (existing && cleanString(existing.status).toUpperCase() !== "REJECTED") {
-    return existing;
-  }
-  if (existing) {
-    await deleteWppTemplate(WPP_AISWEB_ALERT_TEMPLATE_NAME).catch(() => null);
-  }
   const origin = (cleanString(APP_URL) || "https://app.epeac.com.br").replace(/\/+$/, "");
-  return createWppTemplate({
+  const spec = {
     name: WPP_AISWEB_ALERT_TEMPLATE_NAME,
     category: "UTILITY",
     language: "pt_BR",
     headerText: "Alerta AISWEB",
     bodyText:
-      "Alerta operacional AISWEB (NOTAM, suplemento AIP ou aviso de aerodromo).\n\n" +
+      "Alerta operacional AISWEB.\n\n" +
       "Tipo do alerta: {{1}}\n" +
-      "Aerodromo (ICAO): {{2}}\n" +
+      "Aeródromo (ICAO): {{2}}\n" +
       "Identificador: {{3}}\n\n" +
-      "Conteudo:\n{{4}}\n\n" +
-      "Periodo de validade: {{5}}\n\n" +
-      "Abra o aplicativo para ver o detalhe completo do aerodromo.",
-    footerText: "Mensagem automatica",
+      "Conteúdo:\n{{4}}\n\n" +
+      "Horário ou validade: {{5}}\n\n" +
+      "Abra o aplicativo para ver os detalhes.",
+    footerText: "Mensagem automática",
     bodyExamples: [
       "NOTAM",
       "SBSP",
@@ -18935,7 +18932,18 @@ async function ensureAiswebAlertWppTemplate() {
         example: ["aluno/aisweb"],
       },
     ],
-  });
+  };
+  if (existing && cleanString(existing.status).toUpperCase() !== "REJECTED") {
+    const body = cleanString((existing.components || []).find((item) => cleanString(item?.type).toUpperCase() === "BODY")?.text);
+    if (existing.id && !body.includes("Horário ou validade")) {
+      return updateWppTemplate({ ...spec, id: existing.id });
+    }
+    return existing;
+  }
+  if (existing) {
+    await deleteWppTemplate(WPP_AISWEB_ALERT_TEMPLATE_NAME).catch(() => null);
+  }
+  return createWppTemplate(spec);
 }
 
 function isWppWebhookVerification(req) {
@@ -30645,6 +30653,489 @@ async function sendAiswebAdWarningAlertEmail(userId, userEmail, userName, warnin
   return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
 }
 
+function aiswebWeatherAlertsKey(userId) {
+  const id = cleanString(userId);
+  return id ? `${AISWEB_WEATHER_ALERTS_PREFIX}${id}` : "";
+}
+
+function pruneAiswebWeatherAlertHistory(history) {
+  const cutoff = Date.now() - AISWEB_WEATHER_ALERT_HISTORY_DAYS * 24 * 60 * 60 * 1000;
+  return (Array.isArray(history) ? history : [])
+    .filter((item) => {
+      const ts = Date.parse(item?.triggeredAt || "");
+      return Number.isFinite(ts) && ts >= cutoff;
+    })
+    .sort((a, b) => cleanString(b.triggeredAt).localeCompare(cleanString(a.triggeredAt)))
+    .slice(0, AISWEB_WEATHER_ALERT_HISTORY_LIMIT)
+    .map((item) => ({
+      id: cleanString(item.id) || crypto.randomUUID(),
+      alertId: cleanString(item.alertId),
+      alertName: cleanString(item.alertName).slice(0, 120) || "Alerta meteorológico",
+      icao: aiswebService.normalizeIcao(item.icao),
+      source: ["metar", "taf", "metar/taf"].includes(cleanString(item.source)) ? cleanString(item.source) : "metar/taf",
+      summary: cleanString(item.summary).slice(0, 700),
+      details: (Array.isArray(item.details) ? item.details : []).map((line) => cleanString(line).slice(0, 220)).filter(Boolean).slice(0, 12),
+      triggeredAt: cleanString(item.triggeredAt),
+      emailStatus: cleanString(item.emailStatus) || null,
+      wppStatus: cleanString(item.wppStatus) || null,
+    }));
+}
+
+function sanitizeAiswebWeatherAlertCriterion(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const source = cleanString(raw.source).toLowerCase() === "taf" ? "taf" : "metar";
+  const allowedConditions = new Set(["wind_total", "crosswind", "gust", "visibility", "ceiling", "phenomenon"]);
+  const condition = allowedConditions.has(cleanString(raw.condition)) ? cleanString(raw.condition) : "wind_total";
+  const comparator = condition === "phenomenon"
+    ? "contains"
+    : new Set(["gt", "lt", "between"]).has(cleanString(raw.comparator))
+      ? cleanString(raw.comparator)
+      : "gt";
+  let value = condition === "phenomenon" ? cleanString(raw.value).toUpperCase().slice(0, 16) : Number(raw.value);
+  if (condition !== "phenomenon" && !Number.isFinite(value)) value = 0;
+  const valueMaxRaw = Number(raw.valueMax);
+  return {
+    id: cleanString(raw.id) || crypto.randomUUID(),
+    source,
+    condition,
+    comparator,
+    value,
+    valueMax: comparator === "between" && Number.isFinite(valueMaxRaw) ? valueMaxRaw : null,
+  };
+}
+
+function sanitizeAiswebWeatherAlert(input, current = null) {
+  const raw = input && typeof input === "object" ? input : {};
+  const now = nowIso();
+  const icaoCodes = [
+    ...new Set((Array.isArray(raw.icaoCodes) ? raw.icaoCodes : [])
+      .map((code) => aiswebService.normalizeIcao(code))
+      .filter((code) => code.length === 4)),
+  ].slice(0, 20);
+  const criteria = (Array.isArray(raw.criteria) ? raw.criteria : [])
+    .map(sanitizeAiswebWeatherAlertCriterion)
+    .filter((criterion) => criterion.condition !== "phenomenon" || cleanString(criterion.value));
+  return {
+    id: cleanString(raw.id || current?.id) || crypto.randomUUID(),
+    name: cleanString(raw.name).slice(0, 120) || cleanString(current?.name).slice(0, 120) || "Alerta meteorológico",
+    icaoCodes,
+    matchMode: cleanString(raw.matchMode) === "all" ? "all" : "any",
+    repeatMode: cleanString(raw.repeatMode) === "continuous" ? "continuous" : "once_until_normal",
+    criteria: criteria.length ? criteria.slice(0, 12) : [sanitizeAiswebWeatherAlertCriterion({})],
+    enabled: raw.enabled === undefined ? current?.enabled !== false : raw.enabled !== false,
+    createdAt: cleanString(current?.createdAt) || cleanString(raw.createdAt) || now,
+    updatedAt: now,
+    lastTriggeredAt: cleanString(current?.lastTriggeredAt || raw.lastTriggeredAt) || null,
+    active: Boolean(current?.active || raw.active),
+  };
+}
+
+function sanitizeAiswebWeatherAlertsStore(raw) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const alerts = (Array.isArray(safe.alerts) ? safe.alerts : [])
+    .map((alert) => sanitizeAiswebWeatherAlert(alert, alert))
+    .filter((alert) => alert.icaoCodes.length && alert.criteria.length)
+    .slice(0, 60);
+  const states = safe.states && typeof safe.states === "object" && !Array.isArray(safe.states) ? safe.states : {};
+  return {
+    alerts,
+    states,
+    history: pruneAiswebWeatherAlertHistory(safe.history),
+    updatedAt: cleanString(safe.updatedAt) || null,
+  };
+}
+
+async function loadAiswebWeatherAlertsStore(userId) {
+  const key = aiswebWeatherAlertsKey(userId);
+  if (!key) return sanitizeAiswebWeatherAlertsStore({});
+  const doc = await getSettingDoc(key).catch(() => null);
+  const raw = doc ? parseJsonObject(doc.settings_json, {}) : {};
+  return sanitizeAiswebWeatherAlertsStore(raw);
+}
+
+async function saveAiswebWeatherAlertsStore(userId, store) {
+  const key = aiswebWeatherAlertsKey(userId);
+  if (!key) return null;
+  const next = sanitizeAiswebWeatherAlertsStore({
+    ...store,
+    history: pruneAiswebWeatherAlertHistory(store?.history),
+    updatedAt: nowIso(),
+  });
+  await upsertPlatformSettingDoc(key, next);
+  return next;
+}
+
+async function listAiswebWeatherAlerts(actorUserId) {
+  const store = await loadAiswebWeatherAlertsStore(actorUserId);
+  const pruned = pruneAiswebWeatherAlertHistory(store.history);
+  if (pruned.length !== store.history.length) {
+    await saveAiswebWeatherAlertsStore(actorUserId, { ...store, history: pruned }).catch(() => null);
+  }
+  return { alerts: store.alerts, history: pruned };
+}
+
+async function saveAiswebWeatherAlertForUser(actorUserId, input) {
+  const store = await loadAiswebWeatherAlertsStore(actorUserId);
+  const current = store.alerts.find((alert) => alert.id === cleanString(input?.id));
+  const alert = sanitizeAiswebWeatherAlert(input, current);
+  if (!alert.icaoCodes.length) throw Object.assign(new Error("Informe ao menos um aeródromo."), { status: 400 });
+  if (!alert.criteria.length) throw Object.assign(new Error("Informe ao menos um critério."), { status: 400 });
+  const alerts = [alert, ...store.alerts.filter((item) => item.id !== alert.id)].slice(0, 60);
+  await saveAiswebWeatherAlertsStore(actorUserId, { ...store, alerts });
+  return alert;
+}
+
+async function deleteAiswebWeatherAlertForUser(actorUserId, alertId) {
+  const id = cleanString(alertId);
+  const store = await loadAiswebWeatherAlertsStore(actorUserId);
+  const alerts = store.alerts.filter((alert) => alert.id !== id);
+  const states = { ...store.states };
+  delete states[id];
+  await saveAiswebWeatherAlertsStore(actorUserId, { ...store, alerts, states });
+  return { ok: true };
+}
+
+function splitAiswebTafSegments(raw) {
+  const taf = cleanString(raw).replace(/\s+/g, " ").trim();
+  if (!taf) return [];
+  const re = /\b(BECMG|TEMPO|FM\d{6}|PROB\d{2}(?:\s+TEMPO)?)\b/gi;
+  const matches = [...taf.matchAll(re)];
+  if (!matches.length) return [{ id: "base", label: "Base", text: taf }];
+  const segments = [];
+  const firstIdx = matches[0]?.index ?? 0;
+  const baseText = taf.slice(0, firstIdx).trim();
+  if (baseText) segments.push({ id: "base", label: "Base", text: baseText });
+  matches.forEach((match, index) => {
+    const start = match.index ?? 0;
+    const end = index + 1 < matches.length ? (matches[index + 1]?.index ?? taf.length) : taf.length;
+    const fullText = taf.slice(start, end).trim();
+    const token = cleanString(match[1]).toUpperCase();
+    const label = token.replace(/\s+/g, " ");
+    const text = fullText
+      .replace(/^\s*(BECMG|TEMPO|PROB\d{2}(?:\s+TEMPO)?|FM\d{6})\b/i, "")
+      .replace(/^\s*\d{4}\/\d{4}\b/, "")
+      .replace(/^\s*\d{6}\b/, "")
+      .trim();
+    segments.push({ id: `${label}-${index}`, label, text: text || fullText });
+  });
+  return segments;
+}
+
+function mergeAiswebParsedForTaf(base, changeText) {
+  const cleaned = cleanString(changeText)
+    .replace(/^\s*(BECMG|TEMPO|PROB\d{2}(?:\s+TEMPO)?|FM\d{6})\b/i, "")
+    .replace(/\b\d{4}\/\d{4}\b/, "")
+    .trim();
+  const override = aiswebService.parseMetar(`XXXX 010000Z ${cleaned}`.replace(/\s+/g, " ").trim());
+  if (!base && !override) return null;
+  if (!base) return override;
+  if (!override) return base;
+  const clearsSky = override.cavok || /\b(?:CAVOK|SKC|NSC|NCD|CLR)\b/i.test(cleaned);
+  if (clearsSky) {
+    return {
+      ...base,
+      windDirDeg: override.windDirDeg ?? base.windDirDeg,
+      windSpeedKt: override.windSpeedKt ?? base.windSpeedKt,
+      windGustKt: override.windGustKt ?? base.windGustKt,
+      visibilityM: override.cavok ? 10000 : (override.visibilityM ?? 10000),
+      visibilityKm: override.cavok ? 10 : (override.visibilityKm ?? 10),
+      ceilingFt: 10000,
+      clouds: [],
+      cloudsText: override.cavok ? "CAVOK" : "SKC",
+      weather: override.weather?.length ? override.weather : [],
+      cavok: override.cavok || /\bCAVOK\b/i.test(cleaned),
+    };
+  }
+  return {
+    ...base,
+    windDirDeg: override.windDirDeg ?? base.windDirDeg,
+    windSpeedKt: override.windSpeedKt ?? base.windSpeedKt,
+    windGustKt: override.windGustKt ?? base.windGustKt,
+    visibilityM: override.visibilityM ?? base.visibilityM,
+    visibilityKm: override.visibilityKm ?? base.visibilityKm,
+    ceilingFt: override.clouds?.length ? override.ceilingFt : base.ceilingFt,
+    clouds: override.clouds?.length ? override.clouds : base.clouds,
+    cloudsText: override.clouds?.length ? override.cloudsText : base.cloudsText,
+    weather: override.weather?.length ? override.weather : base.weather,
+    cavok: false,
+  };
+}
+
+function formatAiswebWeatherMetric(condition, value) {
+  if (value == null || !Number.isFinite(Number(value))) return "N/D";
+  if (condition === "visibility") return `${Number(value).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} km`;
+  if (condition === "ceiling") return `${Math.round(Number(value)).toLocaleString("pt-BR")} ft`;
+  return `${Math.round(Number(value))} kt`;
+}
+
+function aiswebWeatherCriterionValue(criterion, parsed, rotaer) {
+  if (!parsed) return null;
+  if (criterion.condition === "wind_total") return parsed.windSpeedKt;
+  if (criterion.condition === "gust") return parsed.windGustKt;
+  if (criterion.condition === "visibility") return parsed.visibilityKm;
+  if (criterion.condition === "ceiling") return parsed.ceilingFt;
+  if (criterion.condition === "crosswind") {
+    const analysis = wppMetar.analyzeWindVsRunways(parsed, rotaer?.runways);
+    return analysis?.crosswindKt;
+  }
+  return null;
+}
+
+function aiswebWeatherCriterionMatches(criterion, context) {
+  const parsed = context.parsed;
+  if (!parsed) return null;
+  if (criterion.condition === "phenomenon") {
+    const wanted = cleanString(criterion.value).toUpperCase();
+    const weather = (parsed.weather || []).map((item) => cleanString(item).toUpperCase());
+    const raw = cleanString(context.rawText).toUpperCase();
+    const matched = Boolean(wanted && (weather.some((item) => item.includes(wanted)) || raw.includes(wanted)));
+    return matched
+      ? { matched: true, detail: `${context.label}: fenômeno ${wanted} encontrado`, source: context.source }
+      : { matched: false, detail: `${context.label}: fenômeno ${wanted || "—"} ausente`, source: context.source };
+  }
+  const value = aiswebWeatherCriterionValue(criterion, parsed, context.rotaer);
+  const min = Number(criterion.value);
+  const max = Number(criterion.valueMax);
+  if (value == null || !Number.isFinite(Number(value))) {
+    return { matched: false, detail: `${context.label}: ${formatAiswebWeatherMetric(criterion.condition, value)}`, source: context.source };
+  }
+  let matched = false;
+  if (criterion.comparator === "gt") matched = Number(value) > min;
+  else if (criterion.comparator === "lt") matched = Number(value) < min;
+  else if (criterion.comparator === "between") matched = Number.isFinite(min) && Number.isFinite(max) && Number(value) >= Math.min(min, max) && Number(value) <= Math.max(min, max);
+  const metric = formatAiswebWeatherMetric(criterion.condition, value);
+  return { matched, detail: `${context.label}: ${metric}`, source: context.source };
+}
+
+function aiswebWeatherContextsForCriterion(criterion, met, rotaer) {
+  if (criterion.source === "taf") {
+    const base = met?.parsed || aiswebService.parseMetar(met?.metar);
+    return splitAiswebTafSegments(met?.taf).map((segment) => ({
+      source: "taf",
+      label: `TAF ${segment.label}`,
+      rawText: segment.text,
+      parsed: mergeAiswebParsedForTaf(base, segment.text),
+      rotaer,
+    }));
+  }
+  return [{
+    source: "metar",
+    label: "METAR",
+    rawText: met?.metar || "",
+    parsed: met?.parsed || aiswebService.parseMetar(met?.metar),
+    rotaer,
+  }];
+}
+
+function evaluateAiswebWeatherAlertForAirport(alert, icao, met, rotaer) {
+  const criterionResults = alert.criteria.map((criterion) => {
+    const contexts = aiswebWeatherContextsForCriterion(criterion, met, rotaer);
+    const evaluated = contexts.map((context) => aiswebWeatherCriterionMatches(criterion, context)).filter(Boolean);
+    return evaluated.find((item) => item.matched) || evaluated[0] || { matched: false, detail: "Dados indisponíveis", source: criterion.source };
+  });
+  const matched = alert.matchMode === "all"
+    ? criterionResults.length > 0 && criterionResults.every((item) => item.matched)
+    : criterionResults.some((item) => item.matched);
+  if (!matched) return null;
+  const details = criterionResults.filter((item) => item.matched).map((item) => item.detail).slice(0, 12);
+  const source = Array.from(new Set(criterionResults.filter((item) => item.matched).map((item) => item.source))).join("/") || "metar/taf";
+  return {
+    icao,
+    source,
+    details,
+    summary: `${alert.name}: condição atingida em ${icao}.`,
+    key: sha256(`${icao}|${details.join("|")}`).slice(0, 24),
+  };
+}
+
+async function sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, match, brand, emailSettings) {
+  const path = await resolveAiswebPortalPath(userId);
+  const details = [
+    ["Aeródromo", match.icao],
+    ["Fonte", cleanString(match.source).toUpperCase()],
+    ["Critérios atingidos", match.details.join(" | ") || "—"],
+  ];
+  const message = {
+    eyebrow: "AISWEB · METAR/TAF",
+    title: `Alerta meteorológico · ${alert.name}`,
+    intro: `Uma condição configurada no seu alerta foi atingida em ${match.icao}.`,
+    body: [match.summary, ...match.details].filter(Boolean).join("\n"),
+    details,
+    ctaLabel: "Abrir Meteorologia",
+    url: path,
+  };
+  return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
+}
+
+async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
+  if (!PLATFORM_SETTINGS_COLLECTION_ID) {
+    return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, notified: 0 };
+  }
+  const targetUserId = cleanString(options.targetUserId);
+  const docs = targetUserId
+    ? [await getSettingDoc(aiswebWeatherAlertsKey(targetUserId)).catch(() => null)].filter(Boolean)
+    : await listAllDocuments(PLATFORM_SETTINGS_COLLECTION_ID, [
+        sdk.Query.startsWith("key", AISWEB_WEATHER_ALERTS_PREFIX),
+      ]).catch(() => []);
+  if (!docs.length) return { ok: true, scannedUsers: 0, scannedAlerts: 0, notified: 0, errors: 0 };
+
+  const [{ settings: emailSettings }, { publicSettings: brand }] = await Promise.all([
+    loadEmailSettings(),
+    loadEmailBrandSettings(),
+  ]);
+
+  let scannedUsers = 0;
+  let scannedAlerts = 0;
+  let notified = 0;
+  let errors = 0;
+  const metByIcao = new Map();
+  const rotaerByIcao = new Map();
+
+  async function metFor(icao) {
+    if (!metByIcao.has(icao)) {
+      metByIcao.set(icao, await aiswebService.fetchMet(icao, { bypassCache: true }));
+    }
+    return metByIcao.get(icao);
+  }
+
+  async function rotaerFor(icao, needsCrosswind) {
+    if (!needsCrosswind) return null;
+    if (!rotaerByIcao.has(icao)) {
+      rotaerByIcao.set(icao, await aiswebService.fetchRotaer(icao).catch(() => null));
+    }
+    return rotaerByIcao.get(icao);
+  }
+
+  for (const doc of docs) {
+    const userId = cleanString(doc.key).startsWith(AISWEB_WEATHER_ALERTS_PREFIX)
+      ? cleanString(doc.key).slice(AISWEB_WEATHER_ALERTS_PREFIX.length)
+      : targetUserId;
+    if (!userId) continue;
+    const store = sanitizeAiswebWeatherAlertsStore(parseJsonObject(doc.settings_json, {}));
+    const activeAlerts = store.alerts.filter((alert) => alert.enabled && alert.icaoCodes.length && alert.criteria.length);
+    if (!activeAlerts.length) {
+      if (store.history.length) await saveAiswebWeatherAlertsStore(userId, store).catch(() => null);
+      continue;
+    }
+
+    scannedUsers += 1;
+    let userEmail = "";
+    let userName = "";
+    let profile = null;
+    const nextStates = { ...store.states };
+    const nextHistory = [...store.history];
+    const nextAlerts = [...store.alerts];
+    let changed = false;
+
+    for (const alert of activeAlerts) {
+      scannedAlerts += 1;
+      const needsCrosswind = alert.criteria.some((criterion) => criterion.condition === "crosswind");
+      let match = null;
+      for (const icao of alert.icaoCodes) {
+        try {
+          const [met, rotaer] = await Promise.all([metFor(icao), rotaerFor(icao, needsCrosswind)]);
+          if (!met || met.error) continue;
+          match = evaluateAiswebWeatherAlertForAirport(alert, icao, met, rotaer);
+          if (match) break;
+        } catch (err) {
+          errors += 1;
+          log(`[aisweb-weather-alert] fetch/evaluate failed ${icao}: ${err?.message || err}`);
+        }
+      }
+
+      const previousState = nextStates[alert.id] && typeof nextStates[alert.id] === "object" ? nextStates[alert.id] : {};
+      if (!match) {
+        if (previousState.active || alert.active) {
+          nextStates[alert.id] = { ...previousState, active: false, activeKey: null, normalizedAt: nowIso() };
+          const idx = nextAlerts.findIndex((item) => item.id === alert.id);
+          if (idx >= 0) nextAlerts[idx] = { ...nextAlerts[idx], active: false };
+          changed = true;
+        }
+        continue;
+      }
+
+      const shouldNotify = alert.repeatMode === "continuous" || previousState.active !== true;
+      nextStates[alert.id] = { active: true, activeKey: match.key, lastMatchedAt: nowIso() };
+      const idx = nextAlerts.findIndex((item) => item.id === alert.id);
+      if (idx >= 0) nextAlerts[idx] = { ...nextAlerts[idx], active: true };
+      changed = true;
+      if (!shouldNotify) continue;
+
+      if (!userEmail && !profile) {
+        try {
+          const [actor, userProfile] = await Promise.all([
+            users.get({ userId }).catch(() => null),
+            getProfileByUserId(userId).catch(() => null),
+          ]);
+          profile = userProfile || {};
+          userEmail = cleanString(actor?.email || profile?.email);
+          userName = cleanString(profile?.full_name || actor?.name || userEmail);
+        } catch (err) {
+          errors += 1;
+          log(`[aisweb-weather-alert] user lookup failed ${userId}: ${err?.message || err}`);
+        }
+      }
+
+      let emailStatus = "skipped";
+      let wppStatus = "skipped";
+      try {
+        const result = await sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, match, brand, emailSettings);
+        emailStatus = result?.status || "sent";
+      } catch (err) {
+        emailStatus = "failed";
+        errors += 1;
+        log(`[aisweb-weather-alert] email failed ${userId}/${alert.id}: ${err?.message || err}`);
+      }
+      try {
+        const wppResult = await sendAiswebAlertWpp(userId, "METAR/TAF", {
+          id: alert.id,
+          number: alert.name,
+          icao: match.icao,
+          text: [match.summary, ...match.details].join("\n"),
+          validFrom: nowIso(),
+        });
+        wppStatus = wppResult?.status || "sent";
+        if (wppStatus === "failed") log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${wppResult.reason}`);
+      } catch (err) {
+        wppStatus = "failed";
+        log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${err?.message || err}`);
+      }
+
+      notified += 1;
+      const triggeredAt = nowIso();
+      nextHistory.unshift({
+        id: crypto.randomUUID(),
+        alertId: alert.id,
+        alertName: alert.name,
+        icao: match.icao,
+        source: match.source,
+        summary: match.summary,
+        details: match.details,
+        triggeredAt,
+        emailStatus,
+        wppStatus,
+      });
+      if (idx >= 0) nextAlerts[idx] = { ...nextAlerts[idx], active: true, lastTriggeredAt: triggeredAt };
+      changed = true;
+    }
+
+    const prunedHistory = pruneAiswebWeatherAlertHistory(nextHistory);
+    if (changed || prunedHistory.length !== store.history.length) {
+      await saveAiswebWeatherAlertsStore(userId, {
+        ...store,
+        alerts: nextAlerts,
+        states: nextStates,
+        history: prunedHistory,
+      }).catch((err) => {
+        errors += 1;
+        log(`[aisweb-weather-alert] save failed ${userId}: ${err?.message || err}`);
+      });
+    }
+  }
+
+  return { ok: true, scannedUsers, scannedAlerts, notified, errors, uniqueIcaos: metByIcao.size };
+}
+
 async function runAiswebMetarWatchScan(log = () => {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scanned: 0, notified: 0 };
@@ -33839,8 +34330,20 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "runAiswebMetarWatchScan") {
       if (actorUserId) await requireAdmin(actorUserId);
-      const result = await runAiswebMetarWatchScan(log);
-      return jsonResponse(res, 200, { ok: true, ...result });
+      const [metarWatch, weatherAlerts] = await Promise.all([
+        runAiswebMetarWatchScan(log).catch((err) => ({ ok: false, message: cleanString(err?.message || err) })),
+        runAiswebWeatherAlertScan(log).catch((err) => ({ ok: false, message: cleanString(err?.message || err) })),
+      ]);
+      return jsonResponse(res, 200, { ok: true, metarWatch, weatherAlerts });
+    }
+
+    if (action === "runAiswebWeatherAlertScan") {
+      if (!actorUserId) {
+        const result = await runAiswebWeatherAlertScan(log);
+        return jsonResponse(res, 200, { ok: true, result });
+      }
+      const result = await runAiswebWeatherAlertScan(log, { targetUserId: actorUserId });
+      return jsonResponse(res, 200, { ok: true, result });
     }
 
     if (action === "runFlightRadarWatchScan") {
@@ -34452,6 +34955,24 @@ module.exports = async ({ req, res, log, error }) => {
         },
       );
       return jsonResponse(res, 200, { watchlist });
+    }
+
+    if (action === "listAiswebWeatherAlerts") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await listAiswebWeatherAlerts(actorUserId);
+      return jsonResponse(res, 200, result);
+    }
+
+    if (action === "saveAiswebWeatherAlert") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const alert = await saveAiswebWeatherAlertForUser(actorUserId, payload.alert || payload);
+      return jsonResponse(res, 200, { alert });
+    }
+
+    if (action === "deleteAiswebWeatherAlert") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      await deleteAiswebWeatherAlertForUser(actorUserId, payload.alertId || payload.id);
+      return jsonResponse(res, 200, { ok: true });
     }
 
     if (action === "previewAiswebChart") {

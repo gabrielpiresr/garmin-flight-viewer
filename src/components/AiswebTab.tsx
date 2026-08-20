@@ -104,6 +104,7 @@ function writeBootstrapCache(settings: AiswebDashboard["settings"], watchlist: A
   }
 }
 import { AiswebMeteorologyPanel } from "./AiswebMeteorologyPanel";
+import { AiswebWeatherAlertsPanel } from "./AiswebWeatherAlertsPanel";
 import { AiswebAirportDetailTabs } from "./AiswebAirportDetails";
 import { Skeleton } from "./ui/Skeleton";
 import { Tabs } from "./ui/Tabs";
@@ -138,7 +139,7 @@ function formatAerodromeMatchLabel(match: AiswebAerodromeMatch): string {
   return [match.icao, showName ? name : null, place ? `(${place})` : null].filter(Boolean).join(" ");
 }
 
-type AiswebSubTab = "condicoes" | "notams";
+type AiswebSubTab = "condicoes" | "notams" | "alertHistory" | "myAlerts";
 
 type StatusTooltipState = {
   check: AiswebMinimumCheck;
@@ -885,6 +886,8 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
           id: "notams" as const,
           label: `NOTAMs${dashboard ? ` (${dashboard.notams.length})` : ""}`,
         },
+        { id: "alertHistory" as const, label: "Histórico de alertas" },
+        { id: "myAlerts" as const, label: "Meus alertas" },
       ] as const,
     [dashboard],
   );
@@ -1482,6 +1485,10 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
           )}
         </section>
       ) : null}
+
+      {subTab === "alertHistory" ? <AiswebWeatherAlertsPanel tab="history" /> : null}
+
+      {subTab === "myAlerts" ? <AiswebWeatherAlertsPanel tab="mine" /> : null}
 
       <StatusTooltipCard state={tooltip} />
     </div>
