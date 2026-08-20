@@ -157,6 +157,10 @@ const CRM_STATUS_SETTINGS_COLLECTION_ID =
   "crm_status_settings";
 const CRM_PROPOSALS_COLLECTION_ID =
   process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || process.env.APPWRITE_CRM_PROPOSALS_COL_ID || "crm_proposals";
+const INSTRUCTOR_ADMISSION_CANDIDATES_COLLECTION_ID =
+  process.env.APPWRITE_INSTRUCTOR_ADMISSION_CANDIDATES_COLLECTION_ID ||
+  process.env.APPWRITE_INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID ||
+  "instructor_admission_candidates";
 const CAKTO_RECEIPTS_COLLECTION_ID =
   process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || process.env.APPWRITE_CAKTO_RECEIPTS_COL_ID || "cakto_receipts";
 const MAINTENANCE_ATTACHMENTS_COLLECTION_ID =
@@ -2096,6 +2100,7 @@ function compactSagaImportSummary(summary) {
       }
       : undefined,
     deletedFlights: Array.isArray(summary.deletedFlights) ? summary.deletedFlights.slice(0, 50) : [],
+    adoptedFlights: Array.isArray(summary.adoptedFlights) ? summary.adoptedFlights.slice(0, 50) : [],
     skippedFlights: Array.isArray(summary.skippedFlights) ? summary.skippedFlights.slice(0, 50) : [],
     skippedCredits: Array.isArray(summary.skippedCredits) ? summary.skippedCredits.slice(0, 50) : [],
   };
@@ -6787,7 +6792,7 @@ async function tryAttachFr24TelemetryAfterSagaCreate(doc, materialized, firstLeg
   }
 }
 
-async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode = false, cookieJar = null, logs = null, pdfRecordOverride = undefined, forceStudentUserId = null, forceInstructorUserId = null, existingDocId = null, skipMissionMapping = false, missionRemapped = false, createOnly = false, assignTrainingTrack = true } = {}) {
+async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { testMode = false, cookieJar = null, logs = null, pdfRecordOverride = undefined, forceStudentUserId = null, forceInstructorUserId = null, existingDocId = null, skipMissionMapping = false, missionRemapped = false, createOnly = false, assignTrainingTrack = true, preserveLocalEnrichment = false } = {}) {
   const firstLeg = group.legs[0] || {};
   const groupKey = cleanString(group.key || group.id);
   const sagaAircraft = cleanString(firstLeg.aeronave);
@@ -6815,9 +6820,12 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     return { skipped: true, reason: "missing_student", ...baseFailure };
   }
 
-  const docId = cleanString(existingDocId) || sagaDocId(testMode ? "saga_test_flight" : "saga_flight", groupKey);
-  const existingDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
-  if (existingDoc && createOnly) {
+  const forcedExistingId = cleanString(existingDocId);
+  const existingDoc = forcedExistingId
+    ? await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, forcedExistingId).catch(() => null)
+    : await findLocalSagaFlightDoc(groupKey, { testMode });
+  const docId = existingDoc?.$id || forcedExistingId || sagaDocId(testMode ? "saga_test_flight" : "saga_flight", groupKey);
+  if (existingDoc && createOnly && !preserveLocalEnrichment) {
     return { skipped: true, duplicate: true, reason: "already_exists", id: group.id, documentId: docId };
   }
   const totalFlightMinutes = group.legs.reduce((acc, leg) => acc + parseDurationToMinutes(leg.tempoDeVooHhmm || leg.tempoDeVooHoras), 0);
@@ -6913,6 +6921,21 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
       if (existingDoc.csv_file_id) {
         materialized.csv_file_id = existingDoc.csv_file_id;
       }
+    }
+  }
+  if (existingDoc && preserveLocalEnrichment) {
+    const existingName = cleanString(existingDoc.name);
+    if (existingName) materialized.name = existingName;
+    const existingSource = cleanString(existingDoc.source_filename);
+    if (existingSource && !/^saga-(?:test-)?(?:flight|schedule)-/i.test(existingSource)) {
+      materialized.source_filename = existingSource;
+    }
+    if (
+      (existingDoc.telemetry_present || existingDoc.csv_file_id) &&
+      typeof existingDoc.duration_sec === "number" &&
+      existingDoc.duration_sec > 0
+    ) {
+      materialized.duration_sec = existingDoc.duration_sec;
     }
   }
   const optionalFields = {
@@ -12092,10 +12115,16 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     filters.instructors = [actorUserId];
   }
 
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const queryToDate =
+    filters.status === "all" || filters.status === "Realizado" || filters.status === "Cancelado"
+      ? [filters.toDate, todayIso].filter(Boolean).sort()[0]
+      : filters.toDate;
+
   const flightSelect = hydration.mission ? FLIGHT_REPORT_SELECT : FLIGHT_REPORT_BASE_SELECT;
   const flightQueries = [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
-    ...dateQuery("flight_date", filters.fromDate, filters.toDate),
+    ...dateQuery("flight_date", filters.fromDate, queryToDate),
     ...dashboardEqualQuery("aircraft_ident", stringList(params.aircraftIdents)),
     ...dashboardEqualQuery("instructor_user_id", stringList(params.instructorUserIds)),
     ...dashboardEqualQuery("student_user_id", stringList(params.studentUserIds)),
@@ -12270,6 +12299,13 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
     .filter((row) => {
       if (filters.ghostMode === "exclude" && row.isGhostFlight) return false;
       if (filters.ghostMode === "only" && !row.isGhostFlight) return false;
+      if (
+        filters.status === "all" &&
+        isScheduledFlightStatusValue(row.status) &&
+        isFutureFlight(row)
+      ) {
+        return false;
+      }
       return rowMatchesReportFilters(row, filters);
     })
     .sort((a, b) => flightDateTimeKey(b).localeCompare(flightDateTimeKey(a)));
@@ -26035,6 +26071,266 @@ async function adminCreateFlightCreditCheckout(actorUserId, targetUserId, packag
   }
 }
 
+function registrationOptionPayload(raw) {
+  const opts = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return {
+    chargeGround: opts.chargeGround === true,
+    chargeEnrollment: opts.chargeEnrollment === true,
+    allowCheckout: opts.allowCheckout === true || opts.chargeGround === true || opts.chargeEnrollment === true,
+    allowFirstFlightBooking: opts.allowFirstFlightBooking === true,
+  };
+}
+
+function registrationOptionsFromCandidate(candidate) {
+  const responses = parseJsonObject(candidate?.responses_json, {});
+  return registrationOptionPayload(responses.__registrationLinkOptions);
+}
+
+async function getRegistrationCandidateByToken(token) {
+  const safeToken = cleanString(token);
+  if (!safeToken || !INSTRUCTOR_ADMISSION_CANDIDATES_COLLECTION_ID) return null;
+  const result = await databases.listDocuments(DATABASE_ID, INSTRUCTOR_ADMISSION_CANDIDATES_COLLECTION_ID, [
+    sdk.Query.equal("registration_token", [safeToken]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  return result.documents?.[0] || null;
+}
+
+async function getRegistrationLeadByToken(token) {
+  const safeToken = cleanString(token);
+  if (!safeToken || !CRM_LEADS_COLLECTION_ID) return null;
+  const result = await databases.listDocuments(DATABASE_ID, CRM_LEADS_COLLECTION_ID, [
+    sdk.Query.equal("qual_token", [safeToken]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  return result.documents?.[0] || null;
+}
+
+function normalizedProductMatch(text, wanted) {
+  const value = normalizeSearch(text);
+  if (wanted === "ground") return /\bground\b/.test(value);
+  if (wanted === "enrollment") return /matric|matricula|matr/i.test(value);
+  return false;
+}
+
+function registrationProductCopy(kind, name, price) {
+  if (kind === "ground") {
+    return {
+      kind,
+      name: cleanString(name) || "Ground School",
+      price,
+      description:
+        "Briefing teórico presencial sobre o avião, procedimentos e regras da escola. Acontece na EPEAC imediatamente antes do primeiro voo e dura entre 1h e 2h. Depois você faz uma prova rápida (mínimo 70%) para ser liberado para o voo.",
+    };
+  }
+  return {
+    kind: "enrollment",
+    name: cleanString(name) || "Matrícula",
+    price,
+    description:
+      "Taxa de matrícula para efetivar seu vínculo como aluno da escola e liberar o acesso à formação, à plataforma e aos próximos passos do curso.",
+  };
+}
+
+async function registrationCheckoutProducts({ ground, enrollment }) {
+  if (!SCHOOL_PRODUCTS_COLLECTION_ID) return [];
+  const result = await databases.listDocuments(DATABASE_ID, SCHOOL_PRODUCTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.isNull("deleted_at"),
+    sdk.Query.limit(500),
+  ]);
+  const selected = [];
+  if (ground) {
+    const product = result.documents.find((doc) => normalizedProductMatch(`${doc.name || ""} ${doc.$id || ""}`, "ground"));
+    if (!product) throw Object.assign(new Error("Produto Ground School nao encontrado ou inativo."), { status: 404 });
+    selected.push({
+      id: product.$id,
+      price: Number(product.ideal_price) || 0,
+      ...registrationProductCopy("ground", product.name, Number(product.ideal_price) || 0),
+    });
+  }
+  if (enrollment) {
+    const product = result.documents.find((doc) => normalizedProductMatch(`${doc.name || ""} ${doc.$id || ""}`, "enrollment"));
+    if (!product) throw Object.assign(new Error("Produto Matricula nao encontrado ou inativo."), { status: 404 });
+    selected.push({
+      id: product.$id,
+      price: Number(product.ideal_price) || 0,
+      ...registrationProductCopy("enrollment", product.name, Number(product.ideal_price) || 0),
+    });
+  }
+  return selected.filter((item) => item.id && item.name && item.price > 0);
+}
+
+function registrationProductsAmount(products) {
+  return products.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
+}
+
+async function resolveRegistrationCheckoutContext(payload = {}) {
+  const candidate = await getRegistrationCandidateByToken(payload.token);
+  const lead = candidate ? null : await getRegistrationLeadByToken(payload.token);
+  if (!candidate && !lead) throw Object.assign(new Error("Link de cadastro invalido."), { status: 404 });
+  const options = candidate
+    ? registrationOptionsFromCandidate(candidate)
+    : registrationOptionPayload({
+        chargeGround: payload.chargeGround === true,
+        chargeEnrollment: payload.chargeEnrollment === true,
+      });
+  const linkedUserId = cleanString(candidate?.user_id || lead?.user_id);
+  const studentUserId = cleanString(payload.userId || linkedUserId);
+  return { candidate, lead, options, linkedUserId, studentUserId };
+}
+
+function proposalHasRegistrationProducts(doc, wantedIds) {
+  const parsed = parseJsonObject(doc?.products_json, {});
+  const list = Array.isArray(parsed?.products) ? parsed.products : Array.isArray(parsed) ? parsed : [];
+  return list.some((item) => wantedIds.has(cleanString(item?.id)));
+}
+
+async function createProductOnlyCheckoutForUser(targetUserId, extraProductsInput = []) {
+  const safeTargetUserId = cleanString(targetUserId);
+  if (!safeTargetUserId) throw Object.assign(new Error("Aluno de destino nao informado."), { status: 400 });
+  const extraProducts = await checkoutExtraProducts(extraProductsInput);
+  if (extraProducts.length === 0) throw Object.assign(new Error("Nenhum produto selecionado para pagamento."), { status: 400 });
+  const targetUser = await users.get({ userId: safeTargetUserId });
+  const targetProfile = await getProfileByUserId(safeTargetUserId).catch(() => null);
+  const snapshot = {
+    packageId: "",
+    referencePackageId: "",
+    customHours: null,
+    customHourPrice: null,
+    hours: 0,
+    hourPrice: 0,
+    baseHourPrice: 0,
+    weekdayOnly: false,
+    weekdayDiscountPct: null,
+    totalValue: 0,
+    validityDays: 0,
+    aircraftModelId: "",
+    aircraftModelName: "",
+  };
+  const proposalId = sdk.ID.unique();
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CRM_PROPOSALS_COLLECTION_ID,
+    proposalId,
+    {
+      school_id: SCHOOL_ID,
+      lead_id: safeTargetUserId,
+      lead_name: cleanString(targetProfile?.full_name) || cleanString(targetUser.name) || "Aluno",
+      lead_email: cleanString(targetUser.email),
+      hours: 0,
+      hour_price: 0,
+      total_value: 0,
+      products_json: JSON.stringify({
+        kind: "student_credit_package",
+        studentUserId: safeTargetUserId,
+        packageId: "",
+        creditId: "",
+        snapshot,
+        products: extraProducts,
+      }),
+      public_token: crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+      status: "draft",
+      payment_status: "pending",
+    },
+    [
+      sdk.Permission.read(sdk.Role.any()),
+      sdk.Permission.read(sdk.Role.user(safeTargetUserId)),
+      sdk.Permission.update(sdk.Role.label("admin")),
+      sdk.Permission.delete(sdk.Role.label("admin")),
+    ],
+  );
+  try {
+    const payment = await createCreditCheckoutPayment(doc);
+    const updated = await updateProposalPayment(doc.$id, {
+      cakto_offer_id: payment.offerId,
+      payment_url: payment.paymentUrl,
+      payment_status: "created",
+      payment_error: "",
+    });
+    return {
+      proposalId: updated.$id,
+      paymentUrl: payment.paymentUrl,
+      provider: payment.provider || "cakto",
+      publicToken: cleanString(updated.public_token),
+    };
+  } catch (error) {
+    await updateProposalPayment(doc.$id, {
+      payment_status: "failed",
+      payment_error: cleanString(error?.message).slice(0, 2048),
+    });
+    throw Object.assign(new Error(cleanString(error?.message) || "Falha ao criar checkout."), { status: 400 });
+  }
+}
+
+async function quoteRegistrationCheckout(payload = {}) {
+  const { options } = await resolveRegistrationCheckoutContext(payload);
+  if (!options.allowCheckout) throw Object.assign(new Error("Pagamento nao liberado neste link."), { status: 403 });
+  const products = await registrationCheckoutProducts({
+    ground: options.chargeGround,
+    enrollment: options.chargeEnrollment,
+  });
+  return { products, amount: registrationProductsAmount(products) };
+}
+
+async function getRegistrationCheckoutStatus(payload = {}) {
+  const { options, linkedUserId, studentUserId } = await resolveRegistrationCheckoutContext(payload);
+  if (!options.allowCheckout) throw Object.assign(new Error("Pagamento nao liberado neste link."), { status: 403 });
+  if (linkedUserId && studentUserId && linkedUserId !== studentUserId) {
+    throw Object.assign(new Error("Usuario nao pertence a este link de cadastro."), { status: 403 });
+  }
+  const products = await registrationCheckoutProducts({
+    ground: options.chargeGround,
+    enrollment: options.chargeEnrollment,
+  });
+  const wantedIds = new Set(products.map((item) => item.id));
+  let match = null;
+  if (studentUserId && CRM_PROPOSALS_COLLECTION_ID) {
+    const result = await databases.listDocuments(DATABASE_ID, CRM_PROPOSALS_COLLECTION_ID, [
+      sdk.Query.equal("lead_id", [studentUserId]),
+      sdk.Query.orderDesc("$createdAt"),
+      sdk.Query.limit(25),
+    ]).catch(() => ({ documents: [] }));
+    match = (result.documents || []).find((doc) => proposalHasRegistrationProducts(doc, wantedIds)) || null;
+  }
+  const paymentStatus = ["created", "paid", "failed"].includes(match?.payment_status)
+    ? match.payment_status
+    : match
+      ? "pending"
+      : "pending";
+  return {
+    products,
+    amount: registrationProductsAmount(products),
+    paid: paymentStatus === "paid",
+    paymentStatus,
+    proposalId: match?.$id || "",
+    paymentUrl: cleanString(match?.payment_url),
+    publicToken: cleanString(match?.public_token),
+  };
+}
+
+async function createRegistrationCheckout(payload = {}) {
+  const { options, linkedUserId, studentUserId } = await resolveRegistrationCheckoutContext(payload);
+  if (!options.allowCheckout) throw Object.assign(new Error("Pagamento nao liberado neste link."), { status: 403 });
+  if (!studentUserId) throw Object.assign(new Error("Conclua o cadastro antes de gerar o pagamento."), { status: 400 });
+  if (linkedUserId && linkedUserId !== studentUserId) {
+    throw Object.assign(new Error("Usuario nao pertence a este link de cadastro."), { status: 403 });
+  }
+  const products = await registrationCheckoutProducts({
+    ground: options.chargeGround,
+    enrollment: options.chargeEnrollment,
+  });
+  const checkout = await createProductOnlyCheckoutForUser(studentUserId, products);
+  return {
+    ...checkout,
+    products,
+    amount: registrationProductsAmount(products),
+    paid: false,
+    paymentStatus: "created",
+  };
+}
+
 function extractCaktoOfferIdFromUrl(paymentUrl) {
   const raw = cleanString(paymentUrl);
   if (!raw) return "";
@@ -29906,7 +30202,10 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
   const mapping = await loadSagaImportMapping();
   const forceRun = options.force === true;
   const flightsOnly = options.flightsOnly === true;
-  const windowDays = flightsOnly ? 365 : 7;
+  const requestedDays = Math.round(Number(options.operationsDays) || 0);
+  const windowDays = requestedDays > 0
+    ? Math.max(1, Math.min(365, requestedDays))
+    : (flightsOnly ? 365 : 7);
   const origin = cleanString(options.origin) || (actorUserId === "system" ? "cron" : "manual");
   const minIntervalMs = 55 * 60 * 1000;
   const nowMs = Date.now();
@@ -29956,24 +30255,36 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
   });
   logs.push(...(Array.isArray(result.logs) ? result.logs : []));
 
+  const operationsRange = sagaDateRangeDays(windowDays);
+  const allGroups = groupSagaFlightsById(Array.isArray(result.flights) ? result.flights : []);
+  const [catalogs, existingProfiles] = await Promise.all([
+    listSagaImportCatalogs(),
+    safeListAllDocuments(PROFILES_COLLECTION_ID, [
+      sdk.Query.equal("school_id", [SCHOOL_ID]),
+      ...selectQuery(["$id", "user_id", "anac_code", "saga_user_id"]),
+    ]),
+  ]);
+  const usersByCanac = new Map();
+  for (const profile of existingProfiles) {
+    if (cleanString(profile.anac_code) && cleanString(profile.user_id)) {
+      usersByCanac.set(cleanString(profile.anac_code), cleanString(profile.user_id));
+    }
+  }
+  const adopted = await adoptDeletedSagaFlightIds({
+    presentGroups: allGroups,
+    mapping,
+    catalogs,
+    usersByCanac,
+    operationsRange,
+    logs,
+    actorUserId: "system",
+  });
+
   let usersToImport = result.users || [];
   let flightsToImport = result.flights || [];
   if (flightsOnly) {
-    const allGroups = groupSagaFlightsById(Array.isArray(result.flights) ? result.flights : []);
-    const allDocIds = allGroups.map((group) => sagaDocId("saga_flight", group.key));
-    const existingIds = new Set();
-    const batchSize = 100;
-    for (let index = 0; index < allDocIds.length; index += batchSize) {
-      const chunk = allDocIds.slice(index, index + batchSize);
-      if (!chunk.length) continue;
-      const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
-        sdk.Query.equal("$id", chunk),
-        sdk.Query.select(["$id"]),
-        sdk.Query.limit(chunk.length),
-      ]).catch(() => ({ documents: [] }));
-      for (const document of found.documents || []) existingIds.add(cleanString(document.$id));
-    }
-    const newGroups = allGroups.filter((group) => !existingIds.has(sagaDocId("saga_flight", group.key)));
+    const existingKeys = await listLocalSagaKeysAlreadyImported(allGroups.map((group) => group.key));
+    const newGroups = allGroups.filter((group) => !existingKeys.has(cleanString(group.key)));
     const participantCanacs = new Set();
     for (const group of newGroups) {
       for (const leg of group.legs || []) {
@@ -29986,7 +30297,7 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
     flightsToImport = newGroups.flatMap((group) => group.legs || []);
     usersToImport = (result.users || []).filter((user) => participantCanacs.has(cleanString(user.codigoAnac)));
     logs.push(
-      `Sync somente voos: ${newGroups.length}/${allGroups.length} voo(s) novo(s); ${usersToImport.length} participante(s) elegiveis para criacao se ausentes.`,
+      `Sync somente voos: ${newGroups.length}/${allGroups.length} voo(s) novo(s); ${usersToImport.length} participante(s) elegiveis para criacao se ausentes; ${adopted.adopted.length} ID(s) adotado(s).`,
     );
   }
 
@@ -30016,8 +30327,9 @@ async function sagaImportAllUsersFromSaga(actorUserId = "system", options = {}) 
   );
 
   const summary = summaryResult?.summary || {};
-  const operationsRange = sagaDateRangeDays(windowDays);
-  const flightGroups = groupSagaFlightsById(Array.isArray(result.flights) ? result.flights : []);
+  summary.adoptedFlights = adopted.adopted;
+  summary.flightsUpdated = (Number(summary.flightsUpdated) || 0) + adopted.adopted.length;
+  const flightGroups = allGroups;
   const staleCleanup = await purgeMissingSagaImportedFlightsForActor("system", flightGroups, operationsRange, logs);
   summary.flightsDeleted = staleCleanup.deletedFlights.length;
   summary.deletedFlights = staleCleanup.deletedFlights;
@@ -32207,27 +32519,28 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   const groups = groupSagaFlightsById(myFlightRows);
   logs.push(`Grupos de voos: ${groups.length}.`);
 
-  // Batch-check which flights already exist in Appwrite — only import new ones
-  const allDocIds = groups.map((g) => sagaDocId("saga_flight", g.key));
-  const existingIds = new Set();
-  const BATCH = 100;
-  for (let i = 0; i < allDocIds.length; i += BATCH) {
-    const chunk = allDocIds.slice(i, i + BATCH);
-    const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
-      sdk.Query.equal("$id", chunk),
-      sdk.Query.select(["$id"]),
-      sdk.Query.limit(chunk.length),
-    ]).catch(() => ({ documents: [] }));
-    for (const d of found.documents) existingIds.add(d.$id);
-  }
+  const adopted = await adoptDeletedSagaFlightIds({
+    presentGroups: groups,
+    mapping,
+    catalogs,
+    usersByCanac,
+    operationsRange,
+    logs,
+    actorUserId,
+    cookieJar,
+    linkedUserIds: allInstructors ? instructorUserIds : null,
+  });
 
-  const newGroups = groups.filter((g) => !existingIds.has(sagaDocId("saga_flight", g.key)));
-  const existingGroups = groups.filter((g) => existingIds.has(sagaDocId("saga_flight", g.key)));
+  const existingKeys = await listLocalSagaKeysAlreadyImported(groups.map((group) => group.key));
+  const newGroups = groups.filter((group) => !existingKeys.has(cleanString(group.key)));
+  const existingGroups = groups.filter((group) => existingKeys.has(cleanString(group.key)));
   const skippedCount = groups.length - newGroups.length;
   logs.push(`Ja importados: ${skippedCount}. Novos para importar: ${newGroups.length}.`);
-  logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes.`);
+  logLine(`[sagaImportSelfFlights] ${newGroups.length} novo(s), ${skippedCount} ja existentes, ${adopted.adopted.length} ID(s) adotado(s).`);
 
   const summary = makeSummary({ requestedFlightGroups: groups.length, flightsSkipped: skippedCount });
+  summary.flightsUpdated += adopted.adopted.length;
+  summary.adoptedFlights = adopted.adopted;
   const staleCleanup = await purgeMissingSagaImportedFlightsForActor(
     actorUserId,
     groups,
@@ -32256,7 +32569,10 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   }
 
   if (!newGroups.length) {
-    const message = repairedExisting > 0
+    const adoptedCount = adopted.adopted.length;
+    const message = adoptedCount > 0
+      ? `${adoptedCount} voo(s) com ID SAGA recriado adotado(s) sem perder enriquecimento.`
+      : repairedExisting > 0
       ? `${repairedExisting} voo(s) existente(s) reparado(s). ${summary.flightsDeleted} removido(s) por nao existir(em) mais no SAGA.`
       : summary.flightsDeleted > 0
         ? `${summary.flightsDeleted} voo(s) removido(s) localmente por terem sido apagados no SAGA.`
@@ -32305,6 +32621,488 @@ async function sagaImportSelfFlights(actorUserId, runtimeLog, importRunId = null
   });
   await saveSagaImportLastSummary(compactSagaImportSummary(summary)).catch(() => null);
   return { ok: true, summary };
+}
+
+function sagaNormalizeLogbookId(value) {
+  return cleanString(value).replace(/^ID\s+/i, "").replace(/\s+/g, "").toUpperCase();
+}
+
+function sagaIdentKey(value) {
+  return cleanString(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function sagaClockMinutesOrNull(value) {
+  return parseClockMinutes(cleanString(value).slice(0, 5));
+}
+
+function sagaLegsFromDoc(doc) {
+  try {
+    const parsed = JSON.parse(doc?.saga_legs_json || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function sagaLogbookIdsFromLegs(legs) {
+  return new Set((legs || []).map((leg) => sagaNormalizeLogbookId(leg?.diarioDeBordo)).filter(Boolean));
+}
+
+function sagaFlightWindowFromLegs(legs, fallbackDate = "", fallbackStart = "") {
+  const list = Array.isArray(legs) ? legs : [];
+  const first = list[0] || {};
+  const last = list[list.length - 1] || first;
+  const date = dateBrToIso(first.dataDoVoo) || cleanString(fallbackDate).slice(0, 10);
+  const start = sagaClockMinutesOrNull(first.acionamento || first.decolagem || fallbackStart);
+  let end = sagaClockMinutesOrNull(last.corte || last.pouso);
+  if (start == null) return { date, start: null, end: null };
+  if (end == null || end <= start) end = start + Math.max(1, clockDiffMinutes(first.acionamento, last.corte) || 1);
+  return {
+    date,
+    start,
+    end,
+    canac: normalizeCanac(first.canacAluno),
+    aircraftRaw: cleanString(first.aeronave),
+  };
+}
+
+function sagaWindowsOverlap(left, right) {
+  if (!left?.date || !right?.date || left.date !== right.date) return false;
+  if (left.start == null || right.start == null || left.end == null || right.end == null) return false;
+  return left.start < right.end && right.start < left.end;
+}
+
+function sagaGroupMatchFingerprint(group, mapping = {}) {
+  const legs = group?.legs || [];
+  const first = legs[0] || {};
+  const window = sagaFlightWindowFromLegs(legs, dateBrToIso(first.dataDoVoo), first.acionamento || first.decolagem);
+  const mappedAircraft = cleanString(mapping.aircraftBySaga?.[window.aircraftRaw]) || window.aircraftRaw;
+  return {
+    key: cleanString(group?.key || group?.id),
+    logbookIds: sagaLogbookIdsFromLegs(legs),
+    window,
+    aircraftKey: sagaIdentKey(mappedAircraft) || sagaIdentKey(window.aircraftRaw),
+    canac: window.canac,
+  };
+}
+
+function sagaLocalMatchFingerprint(doc, mapping = {}) {
+  const legs = sagaLegsFromDoc(doc);
+  const window = sagaFlightWindowFromLegs(legs, doc?.flight_date, doc?.start_time);
+  const mappedFromLegs = cleanString(mapping.aircraftBySaga?.[window.aircraftRaw]) || window.aircraftRaw;
+  return {
+    key: parseSagaGroupKeyFromFlightDoc(doc),
+    logbookIds: sagaLogbookIdsFromLegs(legs),
+    window: {
+      ...window,
+      date: window.date || cleanString(doc?.flight_date).slice(0, 10),
+    },
+    aircraftKey: sagaIdentKey(doc?.aircraft_ident) || sagaIdentKey(mappedFromLegs),
+    canac: window.canac,
+    studentUserId: cleanString(doc?.student_user_id || doc?.user_id),
+  };
+}
+
+function sagaDeletedFlightLooksLikeSuccessor(stale, incoming) {
+  if (!stale?.key || !incoming?.key || stale.key === incoming.key) return false;
+  const sharedLogbook = [...stale.logbookIds].some((id) => incoming.logbookIds.has(id));
+  if (sharedLogbook) return true;
+  if (!stale.canac || !incoming.canac || stale.canac !== incoming.canac) return false;
+  if (!stale.aircraftKey || !incoming.aircraftKey || stale.aircraftKey !== incoming.aircraftKey) return false;
+  return sagaWindowsOverlap(stale.window, incoming.window);
+}
+
+function pickFirstSagaSuccessor(matches) {
+  return [...(matches || [])].sort((left, right) => {
+    const dateCmp = cleanString(left?.window?.date).localeCompare(cleanString(right?.window?.date));
+    if (dateCmp) return dateCmp;
+    const startCmp = (Number(left?.window?.start) || 1e9) - (Number(right?.window?.start) || 1e9);
+    if (startCmp) return startCmp;
+    const leftNum = Number(left?.key);
+    const rightNum = Number(right?.key);
+    if (Number.isFinite(leftNum) && Number.isFinite(rightNum) && leftNum !== rightNum) return leftNum - rightNum;
+    return cleanString(left?.key).localeCompare(cleanString(right?.key));
+  })[0] || null;
+}
+
+function sagaFlightEnrichmentSlice(doc) {
+  return {
+    localId: cleanString(doc?.$id),
+    sagaFlightId: parseSagaGroupKeyFromFlightDoc(doc),
+    name: cleanString(doc?.name),
+    sourceFilename: cleanString(doc?.source_filename),
+    flightDate: cleanString(doc?.flight_date).slice(0, 10),
+    startTime: cleanString(doc?.start_time).slice(0, 8),
+    durationSec: Number(doc?.duration_sec) || 0,
+    blockTimeMinutes: Number(doc?.block_time_minutes) || 0,
+    telemetryPresent: Boolean(doc?.telemetry_present || doc?.csv_file_id),
+    csvFileId: cleanString(doc?.csv_file_id) || null,
+  };
+}
+
+function sagaEnrichmentFieldChanges(beforeSlice, afterSlice) {
+  const keys = ["sagaFlightId", "name", "sourceFilename", "durationSec", "blockTimeMinutes", "telemetryPresent", "csvFileId"];
+  const changes = [];
+  for (const field of keys) {
+    const fromValue = beforeSlice?.[field] ?? null;
+    const toValue = afterSlice?.[field] ?? null;
+    if (String(fromValue ?? "") === String(toValue ?? "")) continue;
+    changes.push({ field, from: fromValue, to: toValue });
+  }
+  return changes;
+}
+
+function isSagaGenericSourceFilename(value) {
+  return /^saga-(?:test-)?(?:flight|schedule)-/i.test(cleanString(value));
+}
+
+async function findLocalSagaFlightDoc(groupKey, { testMode = false } = {}) {
+  const key = cleanString(groupKey);
+  if (!key) return null;
+  const docId = sagaDocId(testMode ? "saga_test_flight" : "saga_flight", key);
+  const byId = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, docId).catch(() => null);
+  if (byId) return byId;
+  const ids = testMode ? [key, `test:${key}`] : [key];
+  const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("saga_flight_id", ids),
+    sdk.Query.limit(5),
+  ]).catch(() => ({ documents: [] }));
+  return found.documents?.[0] || null;
+}
+
+async function listLocalSagaKeysAlreadyImported(keys) {
+  const present = new Set();
+  const missing = [];
+  const BATCH = 100;
+  const cleanKeys = [...new Set((keys || []).map(cleanString).filter(Boolean))];
+  for (let index = 0; index < cleanKeys.length; index += BATCH) {
+    const chunk = cleanKeys.slice(index, index + BATCH);
+    const docIds = chunk.map((key) => sagaDocId("saga_flight", key));
+    const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("$id", docIds),
+      sdk.Query.select(["$id"]),
+      sdk.Query.limit(chunk.length),
+    ]).catch(() => ({ documents: [] }));
+    const foundIds = new Set((found.documents || []).map((doc) => cleanString(doc.$id)));
+    for (const key of chunk) {
+      if (foundIds.has(sagaDocId("saga_flight", key))) present.add(key);
+      else missing.push(key);
+    }
+  }
+  for (let index = 0; index < missing.length; index += BATCH) {
+    const chunk = missing.slice(index, index + BATCH);
+    const found = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("saga_flight_id", chunk),
+      sdk.Query.select(["$id", "saga_flight_id"]),
+      sdk.Query.limit(chunk.length),
+    ]).catch(() => ({ documents: [] }));
+    for (const doc of found.documents || []) {
+      const key = parseSagaGroupKeyFromFlightDoc(doc);
+      if (key) present.add(key);
+    }
+  }
+  return present;
+}
+
+async function deleteLocalSagaDuplicateFlight(flightId, logs = [], options = {}) {
+  const id = cleanString(flightId);
+  if (!id) return;
+  const keepCsvFileId = cleanString(options.keepCsvFileId);
+  const summary = { deletedDocuments: 0, deletedByCollection: {}, deletedFiles: 0, fileErrors: [], errors: [] };
+  await deleteDocsByEqual(summary, FLIGHT_SIGNATURES_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_MANEUVERS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_VIDEOS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_PHOTOS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_TAKEOFFS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  await deleteDocsByEqual(summary, FLIGHT_INSTRUCTOR_PAYMENTS_COLLECTION_ID, "flight_id", [id]).catch(() => null);
+  const doc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, id).catch(() => null);
+  const csvFileId = cleanString(doc?.csv_file_id);
+  if (csvFileId && FLIGHTS_CSV_BUCKET_ID && csvFileId !== keepCsvFileId) {
+    await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, csvFileId).catch(() => null);
+  }
+  await databases.deleteDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, id);
+  logs.push(`Voo SAGA local removido: local=${id}${options.reason ? ` (${options.reason})` : ""}.`);
+}
+
+async function transferSagaEnrichmentToSuccessor(staleDoc, successorDoc, logs = []) {
+  if (!staleDoc?.$id || !successorDoc?.$id || staleDoc.$id === successorDoc.$id) {
+    return { transferred: {}, changes: [], keepCsvFileId: null };
+  }
+  const beforeSlice = sagaFlightEnrichmentSlice(successorDoc);
+  const staleHasFile = Boolean(cleanString(staleDoc.csv_file_id));
+  const staleCsvText = await loadFlightCsvText(staleDoc).catch(() => staleDoc.csv_text || "");
+  const successorCsvText = await loadFlightCsvText(successorDoc).catch(() => successorDoc.csv_text || "");
+  const staleDecoded = decodeFlightRecordCsv(staleCsvText);
+  const staleHasTelemetry = Boolean(staleDoc.telemetry_present || staleHasFile || hasDecodedTelemetry(staleDecoded));
+  const staleSource = cleanString(staleDoc.source_filename);
+  const staleName = cleanString(staleDoc.name);
+  const patch = {};
+
+  if (staleName && !/^SAGA\s/i.test(staleName)) patch.name = staleName;
+  if (staleSource && !isSagaGenericSourceFilename(staleSource)) patch.source_filename = staleSource;
+  if (staleHasTelemetry && typeof staleDoc.duration_sec === "number" && staleDoc.duration_sec > 0) {
+    patch.duration_sec = staleDoc.duration_sec;
+  }
+
+  const merged = mergeSagaCsvPreservingTelemetry(successorCsvText, staleCsvText, { preserveTraining: false });
+  if (merged.csvText) patch.csv_text = merged.csvText;
+  if (merged.hasTelemetry || staleHasTelemetry) patch.telemetry_present = true;
+  if (staleHasFile) patch.csv_file_id = cleanString(staleDoc.csv_file_id);
+
+  if (Object.keys(patch).length) {
+    await updateDocumentCompat(FLIGHTS_COLLECTION_ID, successorDoc.$id, patch);
+  }
+
+  if (staleHasTelemetry) {
+    const wipe = { deletedDocuments: 0, deletedByCollection: {}, deletedFiles: 0, fileErrors: [], errors: [] };
+    await deleteDocsByEqual(wipe, FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID, "flight_id", [successorDoc.$id]).catch(() => null);
+    await deleteDocsByEqual(wipe, FLIGHT_LANDINGS_COLLECTION_ID, "flight_id", [successorDoc.$id]).catch(() => null);
+    await deleteDocsByEqual(wipe, FLIGHT_TAKEOFFS_COLLECTION_ID, "flight_id", [successorDoc.$id]).catch(() => null);
+    await deleteDocsByEqual(wipe, FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, "flight_id", [successorDoc.$id]).catch(() => null);
+  }
+
+  const identityPatch = {
+    student_user_id: successorDoc.student_user_id || successorDoc.user_id || null,
+    instructor_user_id: successorDoc.instructor_user_id || null,
+    aircraft_ident: successorDoc.aircraft_ident || null,
+    flight_date: successorDoc.flight_date || null,
+    start_time: successorDoc.start_time || null,
+  };
+  const transferred = {
+    videos: await reassignFlightChildren(
+      FLIGHT_VIDEOS_COLLECTION_ID,
+      staleDoc.$id,
+      successorDoc.$id,
+      {},
+      (video) => flightVideoPermissions(video, successorDoc),
+    ),
+    photos: await reassignFlightPhotos(staleDoc.$id, successorDoc.$id).catch(() => 0),
+    telemetrySummaries: await reassignFlightChildren(
+      FLIGHT_TELEMETRY_SUMMARIES_COLLECTION_ID,
+      staleDoc.$id,
+      successorDoc.$id,
+      identityPatch,
+    ),
+    landings: await reassignFlightChildren(FLIGHT_LANDINGS_COLLECTION_ID, staleDoc.$id, successorDoc.$id, identityPatch),
+    takeoffs: await reassignFlightChildren(FLIGHT_TAKEOFFS_COLLECTION_ID, staleDoc.$id, successorDoc.$id, identityPatch),
+    alerts: await reassignFlightChildren(FLIGHT_TELEMETRY_ALERTS_COLLECTION_ID, staleDoc.$id, successorDoc.$id, identityPatch),
+    maneuvers: await reassignFlightChildren(FLIGHT_MANEUVERS_COLLECTION_ID, staleDoc.$id, successorDoc.$id, {
+      student_id: successorDoc.student_user_id || successorDoc.user_id || null,
+      instructor_id: successorDoc.instructor_user_id || null,
+      aircraft_ident: successorDoc.aircraft_ident || null,
+    }),
+    reviews: await reassignFlightChildren(FLIGHT_MANEUVER_REVIEWS_COLLECTION_ID, staleDoc.$id, successorDoc.$id),
+  };
+
+  const successorCsvFileId = cleanString(successorDoc.csv_file_id);
+  const keptCsvFileId = staleHasFile ? cleanString(staleDoc.csv_file_id) : "";
+  if (successorCsvFileId && keptCsvFileId && successorCsvFileId !== keptCsvFileId && FLIGHTS_CSV_BUCKET_ID) {
+    await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, successorCsvFileId).catch(() => null);
+  }
+
+  const afterDoc = { ...successorDoc, ...patch, $id: successorDoc.$id };
+  const changes = sagaEnrichmentFieldChanges(beforeSlice, sagaFlightEnrichmentSlice(afterDoc));
+  logs.push(
+    `Enriquecimento de ${staleDoc.$id} copiado para ${successorDoc.$id}` +
+    `${transferred.videos ? `, videos=${transferred.videos}` : ""}` +
+    `${transferred.photos ? `, fotos=${transferred.photos}` : ""}.`,
+  );
+  return { transferred, changes, keepCsvFileId: keptCsvFileId || null };
+}
+
+async function adoptDeletedSagaFlightIds({
+  presentGroups = [],
+  mapping,
+  catalogs,
+  usersByCanac,
+  operationsRange,
+  logs = [],
+  actorUserId = "system",
+  cookieJar = null,
+  linkedUserIds = null,
+} = {}) {
+  const presentKeys = new Set((presentGroups || []).map((group) => cleanString(group?.key || group?.id)).filter(Boolean));
+  if (presentKeys.size === 0) {
+    logs.push("[saga-id-adopt] abortado: relatorio SAGA veio vazio; nenhum voo local sera movido ou excluido.");
+    return { adopted: [], adoptedKeys: new Set(), purged: [], staleCount: 0, aborted: true };
+  }
+  const startDate = cleanString(operationsRange?.startDate);
+  const endDate = cleanString(operationsRange?.endDate);
+  const inRange = (value) => {
+    const date = cleanString(value).slice(0, 10);
+    if (!date) return false;
+    if (startDate && date < startDate) return false;
+    if (endDate && date > endDate) return false;
+    return true;
+  };
+  const schoolDocs = await safeListAllDocuments(FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    ...selectQuery([
+      "$id",
+      "flight_date",
+      "start_time",
+      "student_user_id",
+      "user_id",
+      "instructor_user_id",
+      "aircraft_ident",
+      "saga_flight_id",
+      "source_filename",
+    ]),
+  ]);
+  const staleCandidates = schoolDocs.filter((doc) => {
+    if (isGhostFlightDoc(doc)) return false;
+    if (!inRange(doc?.flight_date)) return false;
+    const studentUserId = cleanString(doc?.student_user_id || doc?.user_id);
+    const legacyUserId = cleanString(doc?.user_id);
+    const instructorUserId = cleanString(doc?.instructor_user_id);
+    if (actorUserId !== "system" || linkedUserIds) {
+      if (linkedUserIds) {
+        if (
+          !(studentUserId && linkedUserIds.has(studentUserId))
+          && !(legacyUserId && linkedUserIds.has(legacyUserId))
+          && !(instructorUserId && linkedUserIds.has(instructorUserId))
+        ) return false;
+      } else if (studentUserId !== actorUserId && legacyUserId !== actorUserId && instructorUserId !== actorUserId) {
+        return false;
+      }
+    }
+    const sagaKey = parseSagaGroupKeyFromFlightDoc(doc);
+    if (!sagaKey) return false;
+    return !presentKeys.has(sagaKey);
+  });
+  const staleDocs = [];
+  for (const candidate of staleCandidates) {
+    const full = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, candidate.$id).catch(() => candidate);
+    staleDocs.push(full);
+  }
+  const incoming = (presentGroups || []).map((group) => sagaGroupMatchFingerprint(group, mapping));
+  const adoptedKeys = new Set();
+  const adopted = [];
+  const purged = [];
+  for (const doc of staleDocs) {
+    const stale = sagaLocalMatchFingerprint(doc, mapping);
+    const matches = incoming
+      .filter((item) => !adoptedKeys.has(item.key) && sagaDeletedFlightLooksLikeSuccessor(stale, item));
+    const successor = pickFirstSagaSuccessor(matches);
+    if (!successor) {
+      const beforeSlice = sagaFlightEnrichmentSlice(doc);
+      try {
+        await deleteLocalSagaDuplicateFlight(doc.$id, logs, { reason: "ID ausente no SAGA sem sucessor" });
+        purged.push({ from: stale.key, documentId: doc.$id });
+        logs.push(`Voo SAGA ${stale.key} ausente e sem sucessor; local=${doc.$id} excluido.`);
+        await createAuditEvent(actorUserId, {
+          eventType: "saga_flight_missing_purged",
+          entityType: "flight",
+          entityId: doc.$id,
+          reason: `ID SAGA ${stale.key} ausente no SAGA e sem sucessor. Voo local ${doc.$id} excluido.`,
+          beforeSnapshot: {
+            sagaIdFrom: stale.key,
+            sagaIdTo: null,
+            deletedLocalId: doc.$id,
+            flight: beforeSlice,
+          },
+          afterSnapshot: {
+            sagaIdFrom: stale.key,
+            sagaIdTo: null,
+            deleted: true,
+            action: "purged_missing_from_saga",
+          },
+        }).catch(() => null);
+      } catch (err) {
+        logs.push(`Falha ao excluir voo SAGA ausente ${stale.key} (local=${doc.$id}): ${err?.message || err}.`);
+      }
+      continue;
+    }
+
+    const group = (presentGroups || []).find((item) => cleanString(item.key || item.id) === successor.key);
+    if (!group) continue;
+    const candidateKeys = successor
+      ? [successor.key, ...matches.map((item) => item.key).filter((key) => key !== successor.key)]
+      : [];
+    try {
+      let successorDoc = await findLocalSagaFlightDoc(successor.key);
+      const importResult = await importSagaFlightGroup(group, mapping, catalogs, usersByCanac, {
+        testMode: false,
+        cookieJar,
+        logs,
+        existingDocId: successorDoc?.$id || null,
+        forceStudentUserId: doc.student_user_id || doc.user_id || successorDoc?.student_user_id || successorDoc?.user_id,
+        forceInstructorUserId: doc.instructor_user_id || successorDoc?.instructor_user_id,
+        skipMissionMapping: false,
+        createOnly: false,
+        assignTrainingTrack: false,
+        preserveLocalEnrichment: false,
+      });
+      if (importResult?.skipped && !successorDoc) {
+        logs.push(`Adocao SAGA ${stale.key} -> ${successor.key} ignorada: ${importResult.reason || "skipped"}.`);
+        continue;
+      }
+      successorDoc = await findLocalSagaFlightDoc(successor.key);
+      if (!successorDoc?.$id) {
+        logs.push(`Adocao SAGA ${stale.key} -> ${successor.key} ignorada: documento sucessor nao encontrado.`);
+        continue;
+      }
+      const beforeSuccessor = sagaFlightEnrichmentSlice(successorDoc);
+      const transfer = successorDoc.$id === doc.$id
+        ? { transferred: {}, changes: [], keepCsvFileId: null }
+        : await transferSagaEnrichmentToSuccessor(doc, successorDoc, logs);
+      if (successorDoc.$id !== doc.$id) {
+        await deleteLocalSagaDuplicateFlight(doc.$id, logs, {
+          keepCsvFileId: transfer.keepCsvFileId,
+          reason: `ID ${stale.key} ausente; enriquecimento em ${successor.key}`,
+        });
+      }
+      const afterDoc = await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, successorDoc.$id).catch(() => successorDoc);
+      const afterSuccessor = sagaFlightEnrichmentSlice(afterDoc);
+      adoptedKeys.add(successor.key);
+      adopted.push({ from: stale.key, to: successor.key, documentId: successorDoc.$id, deletedLocalId: doc.$id });
+      const ambiguousNote = candidateKeys.length > 1
+        ? ` Sucessores ${candidateKeys.join(", ")}; usado o primeiro (${successor.key}).`
+        : "";
+      logs.push(`ID SAGA ${stale.key} -> ${successor.key}: manteve local=${successorDoc.$id}, excluiu local=${doc.$id}.${ambiguousNote}`);
+      await createAuditEvent(actorUserId, {
+        eventType: "saga_flight_id_adopted",
+        entityType: "flight",
+        entityId: successorDoc.$id,
+        reason: `ID SAGA ${stale.key} ausente no SAGA.${ambiguousNote} Voo local ${doc.$id} excluido. Enriquecimento copiado para o ID ${successor.key} (local ${successorDoc.$id}).`,
+        beforeSnapshot: {
+          sagaIdFrom: stale.key,
+          sagaIdTo: successor.key,
+          deletedLocalId: doc.$id,
+          keptLocalId: successorDoc.$id,
+          successorCandidates: candidateKeys,
+          deletedFlight: sagaFlightEnrichmentSlice(doc),
+          keptFlight: beforeSuccessor,
+        },
+        afterSnapshot: {
+          sagaIdFrom: stale.key,
+          sagaIdTo: successor.key,
+          deletedLocalId: doc.$id,
+          keptLocalId: successorDoc.$id,
+          successorCandidates: candidateKeys,
+          keptFlight: afterSuccessor,
+          transferred: transfer.transferred || {},
+          changes: [
+            { field: "sagaFlightId", from: stale.key, to: successor.key },
+            { field: "localId", from: doc.$id, to: successorDoc.$id },
+            ...(Array.isArray(transfer.changes) ? transfer.changes : sagaEnrichmentFieldChanges(beforeSuccessor, afterSuccessor)),
+          ],
+        },
+      }).catch(() => null);
+    } catch (err) {
+      logs.push(`Falha ao adotar ID SAGA ${stale.key} -> ${successor.key}: ${err?.message || err}.`);
+    }
+  }
+  if (staleDocs.length) {
+    logs.push(
+      `[saga-id-adopt] apagadosNoSAGA=${staleDocs.length} adotados=${adopted.length} excluidosSemSucessor=${purged.length}.`,
+    );
+  }
+  return { adopted, adoptedKeys, purged, staleCount: staleDocs.length };
 }
 
 async function purgeMissingSagaImportedFlightsForActor(actorUserId, groups, operationsRange, logs = [], options = {}) {
@@ -33121,6 +33919,21 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { proposal });
     }
 
+    if (action === "quoteRegistrationCheckout") {
+      const registrationQuote = await quoteRegistrationCheckout(payload);
+      return jsonResponse(res, 200, { registrationQuote });
+    }
+
+    if (action === "getRegistrationCheckoutStatus") {
+      const registrationCheckout = await getRegistrationCheckoutStatus(payload);
+      return jsonResponse(res, 200, { registrationCheckout });
+    }
+
+    if (action === "createRegistrationCheckout") {
+      const checkout = await createRegistrationCheckout(payload);
+      return jsonResponse(res, 200, { checkout });
+    }
+
     if (action === "createPublicLiabilityWaiverContract") {
       const result = await createPublicLiabilityWaiverContract(payload, req);
       return jsonResponse(res, 200, { ok: true, ...result });
@@ -33497,6 +34310,7 @@ module.exports = async ({ req, res, log, error }) => {
       const syncInput = {
         force: true,
         flightsOnly: true,
+        operationsDays: payload.operationsDays,
         origin: "manual-flights-only",
         importRunId: cleanString(payload.importRunId),
         startedAt: nowIso(),

@@ -10,6 +10,31 @@ const EVENT_LABELS: Record<string, string> = {
   flight_admin_edited: "Edição administrativa",
   flight_signed: "Assinatura eletrônica",
   logbook_exported: "Exportação ANAC",
+  saga_flight_id_adopted: "ID SAGA adotado",
+  saga_flight_missing_purged: "Voo removido (ausente no SAGA)",
+  ghost_flight_merged: "Voo temporário apontado",
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  sagaFlightId: "ID SAGA",
+  localId: "Documento local",
+  name: "Nome",
+  sourceFilename: "Arquivo / origem",
+  durationSec: "Duração (s)",
+  blockTimeMinutes: "Bloco (min)",
+  telemetryPresent: "Telemetria",
+  csvFileId: "Arquivo CSV",
+};
+
+const TRANSFER_LABELS: Record<string, string> = {
+  videos: "vídeos",
+  photos: "fotos",
+  telemetrySummaries: "resumos de telemetria",
+  landings: "pousos",
+  takeoffs: "decolagens",
+  alerts: "alertas",
+  maneuvers: "manobras",
+  reviews: "revisões",
 };
 
 function formatDateTime(value: string): string {
@@ -33,6 +58,45 @@ function prettyJson(value: string | null): string {
 
 function shortHash(value: string | null): string {
   return value ? value.slice(0, 12) : "-";
+}
+
+function parseSnapshot(value: string | null): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function asString(value: unknown): string {
+  if (value == null || value === "") return "-";
+  if (typeof value === "boolean") return value ? "sim" : "não";
+  return String(value);
+}
+
+function snapshotSagaIds(event: AdminAuditEvent) {
+  const before = parseSnapshot(event.beforeSnapshotJson);
+  const after = parseSnapshot(event.afterSnapshotJson);
+  const sagaIdFrom = asString(after?.sagaIdFrom ?? before?.sagaIdFrom);
+  const sagaIdTo = after?.sagaIdTo == null && before?.sagaIdTo == null
+    ? ""
+    : asString(after?.sagaIdTo ?? before?.sagaIdTo);
+  const deletedLocalId = asString(after?.deletedLocalId ?? before?.deletedLocalId);
+  const keptLocalId = asString(after?.keptLocalId ?? before?.keptLocalId);
+  const candidates = Array.isArray(after?.successorCandidates)
+    ? after.successorCandidates.map((item) => String(item))
+    : Array.isArray(before?.successorCandidates)
+      ? before.successorCandidates.map((item) => String(item))
+      : [];
+  const changes = Array.isArray(after?.changes) ? after.changes : [];
+  const transferred = after?.transferred && typeof after.transferred === "object"
+    ? after.transferred as Record<string, unknown>
+    : {};
+  return { sagaIdFrom, sagaIdTo, deletedLocalId, keptLocalId, candidates, changes, transferred };
 }
 
 export function FlightAuditLogPanel({ flightId }: Props) {
@@ -101,6 +165,11 @@ export function FlightAuditLogPanel({ flightId }: Props) {
         <div className="space-y-3">
           {events.map((event) => {
             const isExpanded = event.id === expandedId;
+            const saga = snapshotSagaIds(event);
+            const hasSagaIds = saga.sagaIdFrom !== "-" || Boolean(saga.sagaIdTo && saga.sagaIdTo !== "-");
+            const transferParts = Object.entries(saga.transferred)
+              .filter(([, count]) => Number(count) > 0)
+              .map(([key, count]) => `${count} ${TRANSFER_LABELS[key] || key}`);
             return (
               <article key={event.id} className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -121,9 +190,74 @@ export function FlightAuditLogPanel({ flightId }: Props) {
                   </button>
                 </div>
 
+                {hasSagaIds ? (
+                  <div className="mt-3 rounded border border-sky-500/20 bg-sky-950/20 px-3 py-2 text-sm text-sky-100">
+                    <p>
+                      ID SAGA{" "}
+                      <span className="font-semibold">{saga.sagaIdFrom}</span>
+                      {saga.sagaIdTo && saga.sagaIdTo !== "-" ? (
+                        <>
+                          {" → "}
+                          <span className="font-semibold">{saga.sagaIdTo}</span>
+                        </>
+                      ) : (
+                        " (sem sucessor)"
+                      )}
+                    </p>
+                    {saga.keptLocalId !== "-" || saga.deletedLocalId !== "-" ? (
+                      <p className="mt-1 text-xs text-sky-200/80">
+                        {saga.keptLocalId !== "-" ? `Manteve ${saga.keptLocalId}` : null}
+                        {saga.keptLocalId !== "-" && saga.deletedLocalId !== "-" ? " · " : null}
+                        {saga.deletedLocalId !== "-" ? `Excluiu ${saga.deletedLocalId}` : null}
+                      </p>
+                    ) : null}
+                    {saga.candidates.length > 1 ? (
+                      <p className="mt-1 text-xs text-sky-200/80">
+                        Sucessores no SAGA: {saga.candidates.join(", ")}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 {event.reason ? (
                   <p className="mt-3 rounded border border-amber-500/20 bg-amber-950/20 px-3 py-2 text-sm text-amber-100">
                     {event.reason}
+                  </p>
+                ) : null}
+
+                {saga.changes.length > 0 ? (
+                  <div className="mt-3 overflow-x-auto rounded border border-slate-800">
+                    <table className="min-w-full text-left text-xs text-slate-300">
+                      <thead className="bg-slate-900/80 text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-semibold">Campo</th>
+                          <th className="px-3 py-2 font-semibold">Antes</th>
+                          <th className="px-3 py-2 font-semibold">Depois</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {saga.changes.map((change, index) => {
+                          const row = change && typeof change === "object"
+                            ? change as { field?: string; from?: unknown; to?: unknown }
+                            : {};
+                          return (
+                            <tr key={`${event.id}-change-${index}`} className="border-t border-slate-800">
+                              <td className="px-3 py-2 text-slate-200">
+                                {FIELD_LABELS[String(row.field || "")] || row.field || "-"}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-[11px]">{asString(row.from)}</td>
+                              <td className="px-3 py-2 font-mono text-[11px]">{asString(row.to)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+
+                {transferParts.length > 0 ? (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Enriquecimento transferido: {transferParts.join(", ")}.
                   </p>
                 ) : null}
 
