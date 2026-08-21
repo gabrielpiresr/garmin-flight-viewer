@@ -120,7 +120,7 @@ test("FPL SBJD–SBBU–SBJD: AD com nível do regresso e VFR na reentrada; RMK 
   const route = rea.buildFplRouteText(waypoints, corridors, 90, { destInsideTma: true });
   assert.equal(
     route,
-    "REA 2309S04745W/N0090A055 DCT 2221S04903W/N0090A065 DCT 2309S04745W/N0090VFR REA",
+    "REA 2309S04745W/N0090A065 DCT 2221S04903W/N0090A055 DCT 2309S04745W/N0090VFR REA",
     route,
   );
   const rmk = rea.buildFplRmkText(waypoints, corridors);

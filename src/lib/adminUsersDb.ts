@@ -7,7 +7,7 @@ import type { AdminDashboardData, AdminDashboardParams } from "../types/adminDas
 import type { AdminFlightReportPage, AdminFlightReportParams, AdminFlightReportRow } from "../types/adminFlightReports";
 import type { AdminStudentsProgressData, AdminStudentsProgressParams } from "../types/adminStudents";
 import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types/adminUsers";
-import type { StudentCreditInput } from "../types/credits";
+import type { StudentCreditAdjustmentInput, StudentCreditInput } from "../types/credits";
 import type { StudentTrainingTrack } from "../types/trainingTrack";
 import type { CapacityMonthActual, CapacityStudentInput } from "../types/capacityProjection";
 
@@ -631,6 +631,13 @@ export async function deleteAdminUserCredit(creditId: string, userId: string): P
 
 export async function deleteAdminUserCreditAdjustment(adjustmentId: string, userId: string): Promise<void> {
   await executeAdminUsers({ action: "deleteCreditAdjustment", adjustmentId, userId });
+}
+
+export async function updateAdminUserCreditAdjustment(
+  adjustmentId: string,
+  input: StudentCreditAdjustmentInput,
+): Promise<void> {
+  await executeAdminUsers({ action: "updateCreditAdjustment", adjustmentId, adjustment: input });
 }
 
 export async function deleteAdminUserCascade(userId: string, reason?: string): Promise<AdminUserDeletionSummary> {

@@ -27,6 +27,7 @@ const { PROVA_ACTIONS, createProvaService } = require("./provas");
 const memberkit = require("./memberkit");
 const lastlink = require("./lastlink");
 const { sanitizeCapacityProjectionSettings, projectionCourseCode, isWeekendIso, resolveCourseFlownHours } = require("./capacityProjectionSettings");
+const { nightMinutesFromFlightMeta, nightSurchargeDebitHours } = require("./nightSurcharge");
 
 let sharpModule = undefined;
 
@@ -4996,6 +4997,84 @@ async function registerSagaCancellationPenalty(params, logs = []) {
   return { ok: true, status: "completed", marker, sagaStudentId, value, hours: penaltyHours };
 }
 
+async function registerSagaNightSurchargeEntry(params, logs = []) {
+  const studentUserId = cleanString(params?.studentUserId);
+  const hours = positiveNumber(params?.hours);
+  if (!studentUserId) return { ok: false, status: "skipped", message: "Aluno nao informado." };
+  if (hours <= 0) return { ok: false, status: "skipped", message: "Sem adicional a lancar." };
+
+  const profile = await getProfileByUserId(studentUserId).catch(() => null);
+  const sagaStudentId =
+    cleanString(profile?.saga_user_id) || cleanString(studentUserId).match(/^saga_(\d+)$/)?.[1] || "";
+  if (!sagaStudentId) return { ok: false, status: "skipped", message: "Aluno sem saga_user_id vinculado." };
+
+  const marker = cleanString(params?.marker);
+  if (!marker) return { ok: false, status: "skipped", message: "Marcador SAGA nao informado." };
+
+  const { cookieJar, loginEmail } = await loadSagaCreditCookieJar(logs);
+  let page = await sagaCreditPage(cookieJar, sagaStudentId);
+  if (String(page.html || "").includes(marker)) {
+    await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+    return { ok: true, status: "already_exists", marker, sagaStudentId };
+  }
+
+  const csrfToken = resolveSagaCsrfToken(page.html, cookieJar);
+  if (!csrfToken) {
+    throw Object.assign(new Error("Token CSRF do formulario de creditos do SAGA nao encontrado."), { status: 502 });
+  }
+
+  const modelId = cleanString(params?.aircraftModelId);
+  const mapping = await loadSagaImportMapping().catch(() => defaultSagaImportMapping());
+  const aircraftIcao = resolveSagaCreditAircraftIcaoForLocalModel(mapping, modelId);
+  const rate = await resolveStudentHourlyRateServer(studentUserId, modelId, true).catch(() => ({ hourlyRate: 0 }));
+  const value = Math.round(Number(rate?.hourlyRate || 0) * hours * 100) / 100;
+  const createdAt = asIsoDate(params?.createdAt) || nowIso().slice(0, 10);
+  const mode = cleanString(params?.mode) === "credit" ? "credit" : "remove";
+  const notes = [cleanString(params?.notes), marker].filter(Boolean).join(" ").slice(0, 1024);
+  const form = new URLSearchParams({
+    _token: csrfToken,
+    student_id: sagaStudentId,
+    created_at: createdAt,
+    aircraft_icao: aircraftIcao,
+    type: SAGA_CREDIT_TYPE,
+    hours: String(hours).replace(".", ","),
+    value: String(value),
+    bank_id: mode === "credit" ? SAGA_CREDIT_BANK_ID : SAGA_CREDIT_PENALTY_BANK_ID,
+    expiration_at: mode === "credit" ? addDaysIso(createdAt, 365) : createdAt,
+    notes,
+  });
+  const path = mode === "credit" ? "/credits" : "/credits?action=remove";
+  const post = await sagaFetch(
+    path,
+    {
+      method: "POST",
+      body: form.toString(),
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: SAGA_BASE_URL,
+        referer: `${SAGA_BASE_URL}/credits/create?student_id=${encodeURIComponent(sagaStudentId)}`,
+      },
+    },
+    cookieJar,
+  );
+  if (isSagaLoginResponse(post)) {
+    throw Object.assign(new Error("Sessao SAGA expirou ao lancar adicional noturno."), { status: 401 });
+  }
+
+  page = await sagaCreditPage(cookieJar, sagaStudentId);
+  const confirmed = String(page.html || "").includes(marker);
+  await saveSagaAuthSession(cookieJar, loginEmail).catch(() => undefined);
+  if (!confirmed) {
+    const location = cleanString(post.response.headers.get("location"));
+    throw Object.assign(
+      new Error(`SAGA nao confirmou o adicional noturno (HTTP ${post.response.status}, redirect ${location || "ausente"}).`),
+      { status: 502 },
+    );
+  }
+  return { ok: true, status: "completed", marker, sagaStudentId, value, hours };
+}
+
 async function upsertSagaCredit(actorUserId, credit, userId, mapping, catalogs, { testMode = false, createOnly = false } = {}) {
   if (!STUDENT_CREDITS_COLLECTION_ID) {
     return { skipped: true, reason: "credits_collection_missing", aircraft: cleanString(credit.model) };
@@ -7039,6 +7118,10 @@ async function importSagaFlightGroup(group, mapping, catalogs, usersByCanac, { t
     : false;
   await ensureSagaInstructorSignature(doc, materialized.instructor_signed_at, logs);
   await saveInstructorPaymentSnapshotServer(doc, "saga-import", materialized.instructor_signed_at);
+  const nightSurcharge = await ensureNightSurchargeForFlight(doc, { actorUserId: "saga-import", logs: logs || null });
+  if (logs && nightSurcharge?.status === "created") {
+    logs.push(`Adicional noturno SAGA ${group.id}: ${nightSurcharge.debitHours}h debitadas sobre ${nightSurcharge.nightMinutes}min noturnos.`);
+  }
 
   let fr24Attached = false;
   if (!testMode) {
@@ -8367,6 +8450,117 @@ function encodeFlightRecordCsv({ meta, telemetryCsv, telemetryFiles }) {
   const csv = cleanString(telemetryCsv);
   if (!csv) return `${META_PREFIX}${metaEncoded}\n`;
   return `${META_PREFIX}${metaEncoded}\n${csv}`;
+}
+
+async function flightCsvTextForFinancialAdjustments(doc) {
+  const inline = cleanString(doc?.csv_text);
+  const fileId = cleanString(doc?.csv_file_id);
+  if (!fileId || !FLIGHTS_CSV_BUCKET_ID) return inline;
+  try {
+    const file = await storage.getFileDownload(FLIGHTS_CSV_BUCKET_ID, fileId);
+    if (Buffer.isBuffer(file)) return file.toString("utf8");
+    if (file instanceof ArrayBuffer) return Buffer.from(file).toString("utf8");
+    if (file && typeof file.arrayBuffer === "function") {
+      return Buffer.from(await file.arrayBuffer()).toString("utf8");
+    }
+  } catch {
+    return inline;
+  }
+  return inline;
+}
+
+function creditAdjustmentPermissions(studentUserId) {
+  return [
+    studentUserId ? sdk.Permission.read(sdk.Role.user(studentUserId)) : null,
+    sdk.Permission.read(sdk.Role.label("admin")),
+    sdk.Permission.update(sdk.Role.label("admin")),
+    sdk.Permission.delete(sdk.Role.label("admin")),
+    sdk.Permission.read(sdk.Role.label("instrutor")),
+  ].filter(Boolean);
+}
+
+function nightSurchargeReason(nightMinutes, percentage) {
+  const hh = String(Math.floor(nightMinutes / 60)).padStart(2, "0");
+  const mm = String(nightMinutes % 60).padStart(2, "0");
+  return `Adicional noturno ${percentage}% sobre ${hh}:${mm}`;
+}
+
+async function ensureNightSurchargeForFlight(flightInput, { actorUserId = "system", logs = null } = {}) {
+  if (!CREDIT_ADJUSTMENTS_COLLECTION_ID || !FLIGHTS_COLLECTION_ID) {
+    return { ok: false, status: "skipped", reason: "collection_missing" };
+  }
+  const flightId = cleanString(typeof flightInput === "string" ? flightInput : flightInput?.$id);
+  if (!flightId) return { ok: false, status: "skipped", reason: "flight_missing" };
+  const flightDoc = typeof flightInput === "object" && flightInput?.$id
+    ? flightInput
+    : await databases.getDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId).catch(() => null);
+  if (!flightDoc) return { ok: false, status: "skipped", reason: "flight_not_found" };
+  if (cleanString(flightDoc.flight_status) !== "Realizado") {
+    return { ok: true, status: "skipped", reason: "flight_not_realized", flightId };
+  }
+
+  const { settings } = await loadFlightCreditSalesConfig();
+  const percentage = parseNightSurchargePct(settings.nightSurchargePct) ?? 0;
+  if (percentage <= 0) return { ok: true, status: "skipped", reason: "disabled", flightId };
+
+  const csvText = await flightCsvTextForFinancialAdjustments(flightDoc);
+  const meta = decodeFlightRecordCsv(csvText).meta;
+  const nightMinutes = nightMinutesFromFlightMeta(meta);
+  const debitHours = nightSurchargeDebitHours(nightMinutes, percentage);
+  if (debitHours <= 0) {
+    return { ok: true, status: "skipped", reason: "no_night_minutes", flightId, nightMinutes };
+  }
+
+  const existing = await databases.listDocuments(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, [
+    sdk.Query.equal("flight_id", [flightId]),
+    sdk.Query.limit(5),
+  ]).catch(() => ({ documents: [] }));
+  const existingDoc = existing.documents?.[0] || null;
+  if (existingDoc) {
+    if (cleanString(existingDoc.adjustment_type) === "night_surcharge") {
+      return { ok: true, status: "already_exists", adjustmentId: existingDoc.$id, flightId, nightMinutes, debitHours };
+    }
+    return { ok: false, status: "skipped", reason: "flight_adjustment_exists", flightId };
+  }
+
+  const studentUserId = cleanString(flightDoc.student_user_id || flightDoc.user_id);
+  const modelId = cleanString(flightDoc.aircraft_model_id) || await getAircraftModelIdByIdent(cleanString(flightDoc.aircraft_ident));
+  const adjustmentId = `night-${flightId.replace(/[^A-Za-z0-9._-]/g, "-")}`.slice(0, 36);
+  const payload = {
+    school_id: SCHOOL_ID,
+    student_user_id: studentUserId,
+    aircraft_model_id: modelId || "",
+    aircraft_ident: cleanString(flightDoc.aircraft_ident),
+    flight_id: flightId,
+    adjustment_type: "night_surcharge",
+    hours: -debitHours,
+    percentage,
+    is_night: true,
+    reason: nightSurchargeReason(nightMinutes, percentage),
+    flight_date: cleanString(flightDoc.flight_date).slice(0, 10) || null,
+    flight_start_time: cleanString(flightDoc.start_time).slice(0, 8) || null,
+    created_by: actorUserId,
+    occurred_at: nowIso(),
+  };
+  const doc = await databases.createDocument(
+    DATABASE_ID,
+    CREDIT_ADJUSTMENTS_COLLECTION_ID,
+    adjustmentId,
+    payload,
+    creditAdjustmentPermissions(studentUserId),
+  );
+
+  const saga = await registerSagaNightSurchargeEntry({
+    studentUserId,
+    aircraftModelId: modelId,
+    hours: debitHours,
+    marker: `GFV-NIGHT-SURCHARGE:${flightId}`,
+    createdAt: payload.flight_date || nowIso().slice(0, 10),
+    mode: "remove",
+    notes: `${payload.reason} - voo ${flightId}`,
+  }, logs || []).catch((err) => ({ ok: false, status: "failed", message: err?.message || String(err) }));
+
+  return { ok: true, status: "created", adjustmentId: doc.$id, flightId, nightMinutes, debitHours, saga };
 }
 
 function hasDecodedTelemetry(decoded) {
@@ -13659,16 +13853,100 @@ async function deleteCredit(creditId, userId) {
   await databases.deleteDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, creditId);
 }
 
+function sanitizeCreditAdjustmentInput(input) {
+  const hours = positiveNumber(input?.hours);
+  if (hours <= 0) throw Object.assign(new Error("Horas do lançamento inválidas."), { status: 400 });
+  const percentage = parseNightSurchargePct(input?.percentage);
+  if (input?.percentage != null && input.percentage !== "" && percentage == null) {
+    throw Object.assign(new Error("Percentual do lançamento inválido."), { status: 400 });
+  }
+  return {
+    hours: -Number(hours.toFixed(2)),
+    percentage: percentage ?? 0,
+    reason: cleanString(input?.reason).slice(0, 1024) || null,
+  };
+}
+
+async function registerNightSurchargeCorrection(existing, nextDebitHours, markerSuffix, mode, actorUserId) {
+  if (cleanString(existing.adjustment_type) !== "night_surcharge") return null;
+  const hours = positiveNumber(Math.abs(markerSuffix?.hours ?? 0));
+  if (hours <= 0) return null;
+  return registerSagaNightSurchargeEntry({
+    studentUserId: cleanString(existing.student_user_id),
+    aircraftModelId: cleanString(existing.aircraft_model_id),
+    hours,
+    marker: markerSuffix.marker,
+    createdAt: nowIso().slice(0, 10),
+    mode,
+    notes: [
+      mode === "credit" ? "Compensacao de adicional noturno" : "Ajuste de adicional noturno",
+      `lancamento ${cleanString(existing.$id)}`,
+      actorUserId ? `admin ${actorUserId}` : "",
+    ].filter(Boolean).join(" - "),
+  }).catch((err) => ({ ok: false, status: "failed", message: err?.message || String(err) }));
+}
+
+async function updateCreditAdjustment(actorUserId, adjustmentId, input) {
+  if (!CREDIT_ADJUSTMENTS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de ajustes de credito nao configurada."), { status: 500 });
+  }
+  if (!adjustmentId) throw Object.assign(new Error("Lançamento não informado."), { status: 400 });
+  const existing = await databases.getDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId);
+  const userId = cleanString(input?.userId);
+  if (userId && existing.student_user_id && existing.student_user_id !== userId) {
+    throw Object.assign(new Error("Lançamento não pertence ao aluno selecionado."), { status: 400 });
+  }
+  const data = sanitizeCreditAdjustmentInput(input);
+  const oldDebitHours = positiveNumber(Math.abs(Math.min(0, Number(existing.hours || 0))));
+  const newDebitHours = positiveNumber(Math.abs(data.hours));
+  const updated = await databases.updateDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId, data);
+  let saga = null;
+  if (cleanString(existing.adjustment_type) === "night_surcharge") {
+    const delta = Number((newDebitHours - oldDebitHours).toFixed(2));
+    const deltaMinutes = Math.round(Math.abs(delta) * 60);
+    if (deltaMinutes > 0) {
+      const oldMin = Math.round(oldDebitHours * 60);
+      const newMin = Math.round(newDebitHours * 60);
+      saga = await registerNightSurchargeCorrection(
+        existing,
+        newDebitHours,
+        {
+          hours: Math.abs(delta),
+          marker: `GFV-NIGHT-SURCHARGE-ADJ:${adjustmentId}:${oldMin}to${newMin}`,
+        },
+        delta > 0 ? "remove" : "credit",
+        actorUserId,
+      );
+    }
+  }
+  return { updated, saga };
+}
+
 async function deleteCreditAdjustment(adjustmentId, userId) {
   if (!CREDIT_ADJUSTMENTS_COLLECTION_ID) {
     throw Object.assign(new Error("Colecao de ajustes de credito nao configurada."), { status: 500 });
   }
-  if (!adjustmentId) throw Object.assign(new Error("Multa nao informada."), { status: 400 });
+  if (!adjustmentId) throw Object.assign(new Error("Lançamento não informado."), { status: 400 });
   const existing = await databases.getDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId);
   if (userId && existing.student_user_id && existing.student_user_id !== userId) {
-    throw Object.assign(new Error("Multa nao pertence ao aluno selecionado."), { status: 400 });
+    throw Object.assign(new Error("Lançamento não pertence ao aluno selecionado."), { status: 400 });
   }
   await databases.deleteDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId);
+  if (cleanString(existing.adjustment_type) === "night_surcharge") {
+    const debitHours = positiveNumber(Math.abs(Math.min(0, Number(existing.hours || 0))));
+    if (debitHours > 0) {
+      await registerNightSurchargeCorrection(
+        existing,
+        0,
+        {
+          hours: debitHours,
+          marker: `GFV-NIGHT-SURCHARGE-ADJ:${adjustmentId}:delete-${Math.round(debitHours * 60)}`,
+        },
+        "credit",
+        "delete-adjustment",
+      );
+    }
+  }
 }
 
 function incrementDeletedCount(summary, collectionId, amount = 1) {
@@ -24513,6 +24791,7 @@ function defaultFlightCreditSalesConfig() {
   return {
     studentPurchasesEnabled: false,
     nightHoursDifferentFromDay: true,
+    nightSurchargePct: 0,
     weekdayDiscountPct: null,
     packages: [],
   };
@@ -24525,12 +24804,20 @@ function parseWeekdayDiscountPct(value) {
   return Number(parsed.toFixed(2));
 }
 
+function parseNightSurchargePct(value) {
+  if (value == null || value === "") return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+  return Number(parsed.toFixed(2));
+}
+
 function publicFlightCreditSalesConfig(settings, updatedAt = null, activeOnly = false) {
   const source = settings && typeof settings === "object" ? settings : defaultFlightCreditSalesConfig();
   const packages = Array.isArray(source.packages) ? source.packages : [];
   return {
     studentPurchasesEnabled: Boolean(source.studentPurchasesEnabled),
     nightHoursDifferentFromDay: source.nightHoursDifferentFromDay !== false,
+    nightSurchargePct: parseNightSurchargePct(source.nightSurchargePct) ?? 0,
     weekdayDiscountPct: parseWeekdayDiscountPct(source.weekdayDiscountPct),
     packages: packages
       .filter((item) => !activeOnly || item.active === true)
@@ -24637,9 +24924,14 @@ async function saveFlightCreditSalesConfig(input) {
   if (input?.weekdayDiscountPct != null && input.weekdayDiscountPct !== "" && weekdayDiscountPct == null) {
     throw Object.assign(new Error("Percentual de desconto seg-sex invalido (use valor entre 0 e 100, exclusivo)."), { status: 400 });
   }
+  const nightSurchargePct = parseNightSurchargePct(input?.nightSurchargePct);
+  if (nightSurchargePct == null) {
+    throw Object.assign(new Error("Percentual de adicional noturno invalido (use valor entre 0 e 100)."), { status: 400 });
+  }
   const settings = {
     studentPurchasesEnabled: Boolean(input?.studentPurchasesEnabled),
     nightHoursDifferentFromDay: input?.nightHoursDifferentFromDay !== false,
+    nightSurchargePct,
     weekdayDiscountPct,
     packages: await sanitizeFlightCreditPackages(input?.packages),
   };
@@ -34798,6 +35090,21 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { ok: true, result });
     }
 
+    if (action === "ensureNightSurchargeForFlight") {
+      if (actorUserId) await requireAdmin(actorUserId);
+      const logs = [];
+      const result = await ensureNightSurchargeForFlight(cleanString(payload.flightId), {
+        actorUserId: cleanString(payload.actorUserId) || actorUserId || "system",
+        logs,
+      }).catch((err) => ({
+        ok: false,
+        status: "error",
+        message: err?.message || String(err),
+      }));
+      log(`[ensureNightSurchargeForFlight] flight=${cleanString(payload.flightId)} result=${JSON.stringify(result)}`);
+      return jsonResponse(res, 200, { ok: true, result, logs: logs.slice(-5) });
+    }
+
     if (action === "notifyCaktoSaleEvent") {
       // Chamada interna da cakto-webhook / lastlink-webhook — autenticada pelo token do webhook.
       if (!(await paymentWebhookTokenMatches(payload.token))) {
@@ -36207,6 +36514,11 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "updateCredit") {
       await updateCredit(actorUserId, String(payload.creditId || ""), payload.credit);
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "updateCreditAdjustment") {
+      const result = await updateCreditAdjustment(actorUserId, String(payload.adjustmentId || ""), payload.adjustment);
+      return jsonResponse(res, 200, { ok: true, saga: result.saga || null });
     }
 
     if (action === "deleteCredit") {

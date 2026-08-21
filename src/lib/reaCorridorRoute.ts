@@ -781,17 +781,43 @@ export function applySemicircularCruiseAltitudes(
 ): FlightPlanWaypoint[] {
   return waypoints.map((wp, idx, arr) => {
     if (idx === 0) return wp;
+    const next = arr[idx + 1];
+    const nextInside = next ? Boolean(legCorridors?.[idx + 1]) : null;
     if (isAirportLike(wp)) {
       const field = wp.fieldElevFt;
+      const outbound =
+        next && nextInside === false ? semicircularCruiseFt(calcTrueBearing(wp, next)) : null;
       if (field != null && Number.isFinite(field)) {
         const elev = Math.round(field);
-        return wp.altitudeFt === elev ? wp : { ...wp, altitudeFt: elev };
+        return {
+          ...wp,
+          altitudeFt: elev,
+          ...(outbound != null ? { outboundAltitudeFt: outbound, altitudeRef: "ae" as const } : { outboundAltitudeFt: null }),
+        };
       }
-      return wp;
+      return outbound != null
+        ? { ...wp, outboundAltitudeFt: outbound, altitudeRef: "ae" as const }
+        : { ...wp, outboundAltitudeFt: null };
     }
-    if (legCorridors?.[idx]) return wp;
+    if (next && nextInside === false) {
+      const cruise = semicircularCruiseFt(calcTrueBearing(wp, next));
+      return { ...wp, altitudeFt: cruise, outboundAltitudeFt: null, altitudeRef: "ae" };
+    }
+    if (legCorridors?.[idx]) return { ...wp, outboundAltitudeFt: null };
     const from = arr[idx - 1]!;
-    return { ...wp, altitudeFt: semicircularCruiseFt(calcTrueBearing(from, wp)) };
+    return { ...wp, altitudeFt: semicircularCruiseFt(calcTrueBearing(from, wp)), outboundAltitudeFt: null };
+  });
+}
+
+export function applyCorridorAltitudes(
+  waypoints: FlightPlanWaypoint[],
+  legCorridors?: Array<{ altMax?: number | null } | null>,
+): FlightPlanWaypoint[] {
+  return waypoints.map((wp, idx) => {
+    if (idx === 0 || isAirportLike(wp)) return wp;
+    const corridor = legCorridors?.[idx];
+    if (corridor?.altMax == null || !Number.isFinite(corridor.altMax)) return wp;
+    return { ...wp, altitudeFt: Math.round(corridor.altMax) };
   });
 }
 

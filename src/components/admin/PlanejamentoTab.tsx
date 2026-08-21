@@ -28,7 +28,6 @@ import {
 import { getRouteElevation } from "../../lib/routeElevationDb";
 import {
   buildFlightPlanLegs,
-  calcTrueBearing,
   findRouteInsertHint,
   formatBearingDeg,
   formatCompactAviationCoord,
@@ -38,7 +37,6 @@ import {
   formatFuel,
   haversineM,
   parseFplRouteText,
-  semicircularCruiseFt,
   snapWaypointsToAerodromes,
   snapWaypointsToFixes,
   summarizeFlightPlanRoute,
@@ -47,7 +45,7 @@ import {
 import { offlineBriefingPath, saveOfflineFlightBriefing } from "../../lib/offlineFlightBriefing";
 import { getPdfBrand } from "../../lib/pdfBrand";
 import { collectReaFixPoints, getCachedReaRoutes, loadReaRoutes, type ReaFixPoint } from "../../lib/reaRoutesDb";
-import { snapRouteToVisualCorridors } from "../../lib/reaCorridorRoute";
+import { applyCorridorAltitudes, applySemicircularCruiseAltitudes, snapRouteToVisualCorridors } from "../../lib/reaCorridorRoute";
 import { buildFlightPlanRouteTableRows, buildRouteTableViewRows } from "../../lib/routeTableDisplay";
 import { geometryContainsLatLng } from "../../lib/afisCoverage";
 import {
@@ -286,6 +284,20 @@ function IconClearRoute() {
         d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
         clipRule="evenodd"
       />
+    </svg>
+  );
+}
+
+function IconAutoRoute() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M4.5 3.5a2 2 0 114 0 2 2 0 01-4 0zM11.5 14.5a2 2 0 114 0 2 2 0 01-4 0z" />
+      <path
+        fillRule="evenodd"
+        d="M6.75 6.5a.75.75 0 01.75.75v1.2c0 .86.7 1.55 1.55 1.55h1.9A3.05 3.05 0 0114 13.05v.2a.75.75 0 01-1.5 0v-.2c0-.86-.7-1.55-1.55-1.55h-1.9A3.05 3.05 0 016 8.45v-1.2a.75.75 0 01.75-.75z"
+        clipRule="evenodd"
+      />
+      <path d="M14.25 2.5a.75.75 0 01.75.75V5h1.75a.75.75 0 010 1.5H15v1.75a.75.75 0 01-1.5 0V6.5h-1.75a.75.75 0 010-1.5h1.75V3.25a.75.75 0 01.75-.75z" />
     </svg>
   );
 }
@@ -644,6 +656,16 @@ export function PlanejamentoTab({
   }
   dirtyRef.current = isRouteDirty();
 
+  function markCurrentRouteClean() {
+    setCleanFingerprint({
+      id: activeSavedId,
+      name: saveName,
+      waypoints,
+      alternates,
+      customAreas,
+    });
+  }
+
   function openEditor(section: PlanejamentoSectionId) {
     setEditorMounted(true);
     setOpenedSections((prev) => {
@@ -731,50 +753,6 @@ export function PlanejamentoTab({
       eet: formatEteClock(summary.eteHours).replace(":", ""),
     };
   }, [waypoints, legCorridors, cruiseOpt, summary.eteHours, originReaTma, destReaTma, airspaces, airspaceVolumes]);
-
-  // Dentro da REA: teto do corredor. Fora (DCT): A055/A065 conforme a proa (ICA 100-12).
-  useEffect(() => {
-    if (waypoints.length < 2) return;
-    setWaypoints((prev) => {
-      let changed = false;
-      const autoAlts = new Set([5500, 6500]);
-      for (const corridor of legCorridors) {
-        if (corridor?.altMax != null && Number.isFinite(corridor.altMax)) {
-          autoAlts.add(Math.round(corridor.altMax));
-        }
-      }
-      const next = prev.map((wp, idx, arr) => {
-        if (idx === 0) return wp;
-        const cur = wp.altitudeFt;
-        const field = wp.fieldElevFt;
-        const trackingAuto =
-          cur == null ||
-          !Number.isFinite(cur) ||
-          (field != null && cur === Math.round(field)) ||
-          autoAlts.has(Math.round(cur));
-        if (isAirportLike(wp)) {
-          if (field == null || !Number.isFinite(field)) return wp;
-          const elev = Math.round(field);
-          if (!trackingAuto || cur === elev) return wp;
-          changed = true;
-          return { ...wp, altitudeFt: elev };
-        }
-        const corridorMax = legCorridors[idx]?.altMax;
-        if (corridorMax != null && Number.isFinite(corridorMax)) {
-          const max = Math.round(corridorMax);
-          if (!trackingAuto || cur === max) return wp;
-          changed = true;
-          return { ...wp, altitudeFt: max };
-        }
-        const from = arr[idx - 1]!;
-        const cruise = semicircularCruiseFt(calcTrueBearing(from, wp));
-        if (!trackingAuto || cur === cruise) return wp;
-        changed = true;
-        return { ...wp, altitudeFt: cruise };
-      });
-      return changed ? next : prev;
-    });
-  }, [legCorridors, waypoints]);
 
   useEffect(() => {
     setRouteTextDraft(nexAtlasText);
@@ -1179,7 +1157,16 @@ export function PlanejamentoTab({
         showToast({ variant: "warning", title: "Corredores visuais", message: result.error });
         return;
       }
-      setWaypoints(normalizeRouteWaypoints(result.waypoints));
+      const normalized = normalizeRouteWaypoints(result.waypoints);
+      const generatedCorridors: Array<LegCorridorInfo | null> = [null];
+      for (let i = 1; i < normalized.length; i++) {
+        generatedCorridors.push(matchReaCorridorForLeg(normalized[i - 1]!, normalized[i]!, list));
+      }
+      const withGeneratedAltitudes = applySemicircularCruiseAltitudes(
+        applyCorridorAltitudes(normalized, generatedCorridors),
+        generatedCorridors,
+      );
+      setWaypoints(withGeneratedAltitudes);
       setFitKey(`rea-${Date.now()}`);
       setGenerated(false);
       const names = result.corridorNames.slice(0, 3).join(", ");
@@ -2224,8 +2211,6 @@ export function PlanejamentoTab({
         onShowRouteNotamsOnMapChange={setShowRouteNotamsOnMap}
         filterNotamsByVerticalProfile={filterNotamsByVerticalProfile}
         onFilterNotamsByVerticalProfileChange={setFilterNotamsByVerticalProfile}
-        onSnapToVisualCorridors={snapToVisualCorridors}
-        corridorSnapEnabled={waypoints.length >= 2}
         mapOverlayMaxWidthClass={
           planningPanelCollapsed ? "w-auto" : "w-[min(100%-1rem,24rem)]"
         }
@@ -2295,6 +2280,22 @@ export function PlanejamentoTab({
                 }}
               >
                 <IconMeasure />
+              </button>
+              <button
+                type="button"
+                className={`${btnIcon} ${
+                  waypoints.length >= 2 ? "border-amber-500/40 text-amber-100 hover:bg-amber-500/15" : ""
+                }`}
+                title={
+                  waypoints.length >= 2
+                    ? "Gerar rota nos corredores visuais"
+                    : "Coloque origem e destino para gerar rota"
+                }
+                aria-label="Gerar rota nos corredores visuais"
+                disabled={waypoints.length < 2}
+                onClick={snapToVisualCorridors}
+              >
+                <IconAutoRoute />
               </button>
               <button
                 type="button"
@@ -3796,6 +3797,7 @@ export function PlanejamentoTab({
                 onClick={() => {
                   const next = pendingNavRef.current;
                   pendingNavRef.current = null;
+                  markCurrentRouteClean();
                   setUnsavedOpen(false);
                   next?.();
                 }}

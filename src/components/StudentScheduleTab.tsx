@@ -1175,6 +1175,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
   const [creditSummaries, setCreditSummaries] = useState<StudentCreditModelSummary[]>([]);
   const [creditTotals, setCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [weekdayOnlyPurchasedHours, setWeekdayOnlyPurchasedHours] = useState(0);
+  const [nightSurchargePct, setNightSurchargePct] = useState(0);
   const [creditsLoading, setCreditsLoading] = useState(false);
   const creditsLoadedRef = useRef(false);
   const creditsFetchingRef = useRef(false);
@@ -1338,6 +1339,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     void (async () => {
       try {
         const config = await getAvailableFlightCreditPackages().catch(() => null);
+        setNightSurchargePct(config?.nightSurchargePct ?? 0);
         const stmt = await getStudentCreditStatement({
           viewer: { userId: user.id, role: user.role },
           studentUserId: scheduleStudentUserId,
@@ -1355,6 +1357,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
         setCreditSummaries([]);
         setCreditTotals(null);
         setWeekdayOnlyPurchasedHours(0);
+        setNightSurchargePct(0);
         creditsLoadedRef.current = false;
       } finally {
         creditsFetchingRef.current = false;
@@ -1479,7 +1482,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     }
 
     const freeHours = selectedModelBalance?.freeHours ?? 0;
-    const requestedHours = durationMinutes / 60;
+    const isNight = rules.allowNightFlights && timeToMinutes(startTime) >= rules.nightFlightStartHour * 60;
+    const requestedHours = Number((((durationMinutes / 60) * (isNight ? 100 + nightSurchargePct : 100)) / 100).toFixed(2));
 
     if (freeHours + 0.001 >= requestedHours) return clear;
 
@@ -1511,7 +1515,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
 
     return {
       blocked: true,
-      message: `Crédito insuficiente. Saldo livre para agendar: ${formatDecimalHours(Math.max(0, freeHours))}; este voo precisa de ${formatDecimalHours(durationMinutes / 60)}.`,
+      message: `Crédito insuficiente. Saldo livre para agendar: ${formatDecimalHours(Math.max(0, freeHours))}; este voo precisa de ${formatDecimalHours(requestedHours)}.`,
       needsZeroCreditConfirm: false,
       showCreditsCta: true,
     };
@@ -1519,6 +1523,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     bookingOpen,
     rules.requireCreditsForBooking,
     rules.allowZeroCreditOneHour,
+    rules.allowNightFlights,
+    rules.nightFlightStartHour,
     creditsLoading,
     futureLoading,
     aircrafts,
@@ -1529,6 +1535,8 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
     selectedModelBalance?.anyDayRemaining,
     creditTotals,
     durationMinutes,
+    startTime,
+    nightSurchargePct,
   ]);
   const bookingCreditPending = rules.requireCreditsForBooking && (creditsLoading || futureLoading);
 

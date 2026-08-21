@@ -193,6 +193,63 @@ test("export FPL SDRK → SBJD começa em DCT até a entrada da REA", () => {
   assert.notEqual(route, "REA", route);
 });
 
+test("export FPL SBJD → SDPW → SDRK usa semicircular fora da terminal", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SBJD = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "origin",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const SDPW = {
+    lat: -(22 + 43 / 60),
+    lng: -(47 + 37 / 60),
+    label: "SDPW",
+    raw: "SDPW",
+    kind: "airport",
+    fieldElevFt: 1900,
+    altitudeFt: 1900,
+  };
+  const SDRK = {
+    lat: -22.3964,
+    lng: -47.5603,
+    label: "SDRK",
+    raw: "SDRK",
+    kind: "destination",
+    fieldElevFt: 1991,
+    altitudeFt: 1991,
+  };
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SDPW, SDRK], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  let corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  let withAlt = rea.applyCorridorAltitudes(snapped.waypoints, corridors);
+  withAlt = rea.applySemicircularCruiseAltitudes(withAlt, corridors);
+  corridors = rea.matchLegCorridors(withAlt, national.features || []);
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: false,
+    originReaTmaId: "XP",
+    destReaTmaId: null,
+  });
+  assert.match(route, /^REA 2249S04734W\/N0090A065 DCT 2243S04737W\/N0090A055 DCT\b/, route);
+  assert.doesNotMatch(route, /2249S04734W\/N0090A050/, route);
+  assert.doesNotMatch(route, /2243S04737W\/N0090A019/, route);
+  const tgl = withAlt.find((wp) => wp.label === "SDPW");
+  assert.ok(tgl, "SDPW deve permanecer como TGL");
+  assert.equal(tgl.altitudeFt, 1900, "SDPW usa a elevação do AD na tabela/perfil");
+  assert.equal(tgl.outboundAltitudeFt, 5500, "SDPW sobe para A055 após o TGL");
+  assert.equal(tgl.altitudeRef, "ae", "SDPW aplica o nível de cruzeiro após o TGL");
+});
+
 test("export FPL SDRK → SBJD usa DCT de entrada quando a origem não está na TMA com REA", () => {
   const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
   let national = { features: [] };
@@ -424,13 +481,18 @@ test("export FPL SBJD → SDRK → SBJD termina em REA e usa A055/A065", () => {
   assert.match(route, /2236S04719W\/N0090A0\d{2} DCT/, route);
   const tgl = withAlt.find((wp, idx) => idx > 0 && idx < withAlt.length - 1 && wp.kind === "airport");
   assert.ok(tgl, "SDRK deve permanecer como AD intermediário (TGL)");
-  assert.equal(tgl.altitudeFt, Math.round(tgl.fieldElevFt), "TGL usa a elevação do aeródromo no perfil");
+  assert.equal(tgl.altitudeFt, Math.round(tgl.fieldElevFt), "TGL usa a elevação do aeródromo no ponto");
+  assert.equal(tgl.outboundAltitudeFt, 6500, "TGL seguido de DCT usa semicircular como nível de saída");
+  assert.equal(tgl.altitudeRef, "ae", "TGL seguido de DCT aplica o nível após passar o aeródromo");
   for (let i = 1; i < withAlt.length - 1; i++) {
     const wp = withAlt[i];
     const alt = wp.altitudeFt;
     if (wp.kind === "airport") continue;
     if (!corridors[i]) {
       assert.ok(alt === 5500 || alt === 6500, `DCT ${wp.label} deve ser A055/A065, veio ${alt}`);
+    } else if (withAlt[i + 1] && !corridors[i + 1]) {
+      assert.ok(alt === 5500 || alt === 6500, `Saída REA ${wp.label} deve usar A055/A065 após o ponto, veio ${alt}`);
+      assert.equal(wp.altitudeRef, "ae", `Saída REA ${wp.label} deve aplicar nível após o ponto`);
     } else if (corridors[i].altMax != null) {
       assert.equal(alt, Math.round(corridors[i].altMax), `REA ${wp.label} deve respeitar o teto do corredor`);
     }

@@ -13,6 +13,24 @@ type FlightCreditSalesResponse = {
   email?: string;
 };
 
+function normalizeFlightCreditSalesConfig(
+  config: FlightCreditSalesConfig,
+  fallback?: Partial<FlightCreditSalesConfigInput>,
+): FlightCreditSalesConfig {
+  const hasNightSurchargePct = Object.prototype.hasOwnProperty.call(config, "nightSurchargePct");
+  return {
+    ...config,
+    nightSurchargePct: Number.isFinite(Number(hasNightSurchargePct ? config.nightSurchargePct : fallback?.nightSurchargePct))
+      ? Number(hasNightSurchargePct ? config.nightSurchargePct : fallback?.nightSurchargePct)
+      : 0,
+    weekdayDiscountPct: config.weekdayDiscountPct != null && Number.isFinite(Number(config.weekdayDiscountPct))
+      ? Number(config.weekdayDiscountPct)
+      : null,
+    packages: Array.isArray(config.packages) ? config.packages : [],
+    updatedAt: config.updatedAt ?? null,
+  };
+}
+
 async function execute(payload: Record<string, unknown>): Promise<FlightCreditSalesResponse> {
   if (!functions || !ADMIN_USERS_FUNCTION_ID) {
     throw new Error("Funcao administrativa nao configurada.");
@@ -33,7 +51,7 @@ async function execute(payload: Record<string, unknown>): Promise<FlightCreditSa
 export async function getFlightCreditSalesConfig(): Promise<FlightCreditSalesConfig> {
   const response = await execute({ action: "getFlightCreditSalesConfig" });
   if (!response.config) throw new Error(response.message || "Configuracao de pacotes nao retornada.");
-  return response.config;
+  return normalizeFlightCreditSalesConfig(response.config);
 }
 
 export async function saveFlightCreditSalesConfig(
@@ -41,13 +59,13 @@ export async function saveFlightCreditSalesConfig(
 ): Promise<FlightCreditSalesConfig> {
   const response = await execute({ action: "saveFlightCreditSalesConfig", config });
   if (!response.config) throw new Error(response.message || "Configuracao de pacotes nao retornada.");
-  return response.config;
+  return normalizeFlightCreditSalesConfig(response.config, config);
 }
 
 export async function getAvailableFlightCreditPackages(): Promise<FlightCreditSalesConfig> {
   const response = await execute({ action: "getAvailableFlightCreditPackages" });
   if (!response.config) throw new Error(response.message || "Pacotes de horas nao retornados.");
-  return response.config;
+  return normalizeFlightCreditSalesConfig(response.config);
 }
 
 export async function createFlightCreditCheckout(

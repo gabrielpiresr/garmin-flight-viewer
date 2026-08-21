@@ -773,6 +773,7 @@ function mapCreditAdjustment(doc: Record<string, unknown>): CreditAdjustmentRow 
   return {
     id: String(doc.$id ?? ""),
     flightId: (doc.flight_id as string | null | undefined) ?? null,
+    adjustmentType: String(doc.adjustment_type ?? ""),
     aircraftModelId: String(doc.aircraft_model_id ?? ""),
     aircraftIdent: String(doc.aircraft_ident ?? ""),
     hours: Number(doc.hours ?? 0),

@@ -58,6 +58,8 @@ export type FlightPlanWaypoint = {
   note?: string;
   /** Altitude planejada do trecho até este ponto (ft). */
   altitudeFt?: number | null;
+  /** Altitude planejada ao sair deste ponto, útil quando um AD/TGL mantém a elevação no ponto. */
+  outboundAltitudeFt?: number | null;
   /** Elevação publicada do campo (ft); usada como início/fim do perfil TOC/TOD. */
   fieldElevFt?: number | null;
   /**

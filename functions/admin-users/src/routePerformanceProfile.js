@@ -63,6 +63,13 @@ function plannedAlt(wp, fallback) {
   return Math.round(fallback);
 }
 
+function outboundAlt(wp, fallback) {
+  if (wp?.outboundAltitudeFt != null && Number.isFinite(wp.outboundAltitudeFt)) {
+    return Math.round(wp.outboundAltitudeFt);
+  }
+  return plannedAlt(wp, fallback);
+}
+
 function isAirportKind(wp) {
   return wp?.kind === "airport" || wp?.kind === "origin" || wp?.kind === "destination";
 }
@@ -261,7 +268,7 @@ function buildRoutePerformanceProfile(waypoints, perf) {
     const toMode = altitudeRefMode(toWp);
     const nextMode = nextWp ? altitudeRefMode(nextWp) : null;
     const nextIsDest = i + 1 === waypoints.length - 1;
-    const fromAlt = waypointProfileAlt(fromWp, alt, i > 1);
+    const fromAlt = fromMode === "ae" ? outboundAlt(fromWp, alt) : waypointProfileAlt(fromWp, alt, i > 1);
     const toAlt = waypointProfileAlt(toWp, alt, !isLast);
     const nextAlt = nextWp ? waypointProfileAlt(nextWp, alt, !nextIsDest) : toAlt;
 

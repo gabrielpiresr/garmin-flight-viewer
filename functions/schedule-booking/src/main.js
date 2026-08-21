@@ -212,17 +212,28 @@ async function getRules() {
  * saldo (ex.: 5h) e a API rejeita o agendamento por filtrar créditos por is_night/expiração.
  * Default false (dia ≠ noite) quando o config não existe — igual ao padrão do front.
  */
-async function getCreditSalesSimplified() {
+async function getCreditSalesSettings() {
   try {
     const result = await databases.listDocuments(DATABASE_ID, SETTINGS_ID, [
       sdk.Query.equal("key", ["flightCreditSales"]),
       sdk.Query.limit(1),
     ]);
     const body = parseJson(result.documents[0]?.settings_json, {});
-    return body.nightHoursDifferentFromDay === false;
+    const pct = Number(body.nightSurchargePct);
+    return {
+      creditSimplified: body.nightHoursDifferentFromDay === false,
+      nightSurchargePct: Number.isFinite(pct) && pct > 0 ? Math.min(100, pct) : 0,
+    };
   } catch {
-    return false;
+    return { creditSimplified: false, nightSurchargePct: 0 };
   }
+}
+
+function bookingDebitHours(durationMinutes, isNight, rules) {
+  const base = Math.max(0, Number(durationMinutes) || 0);
+  const pct = Number(rules.nightSurchargePct || 0);
+  const extraMinutes = isNight && pct > 0 ? Math.round(base * pct / 100) : 0;
+  return (base + extraMinutes) / 60;
 }
 
 async function getProfile(userId) {
@@ -1253,9 +1264,11 @@ async function sagaReservedHoursForModel(events, studentSagaId, modelId, rules, 
     if (modelByReg[normalizeRegistration(event.aircraft)] !== modelId) continue;
     const times = sagaEventTimes(event, rules);
     if (!times || dateTimeMs(times.flightDate, times.startTime) <= now) continue;
+    const isNight = times.startMinute >= number(rules.nightFlightStartHour, 18) * 60;
+    const debitMinutes = bookingDebitHours(times.durationMinutes, isNight, rules) * 60;
     const day = dayOfWeek(times.flightDate);
-    if (day === 0 || day === 6) weekendMinutes += times.durationMinutes;
-    else weekdayMinutes += times.durationMinutes;
+    if (day === 0 || day === 6) weekendMinutes += debitMinutes;
+    else weekdayMinutes += debitMinutes;
   }
   return { weekdayHours: weekdayMinutes / 60, weekendHours: weekendMinutes / 60 };
 }
@@ -1448,11 +1461,16 @@ function isWeekendDate(date) {
   return day === 0 || day === 6;
 }
 
-function flightCreditHours(doc) {
+function flightCreditHours(doc, nightSurchargePct = 0) {
+  const base = doc.flight_status === "Realizado"
+    ? number(doc.block_time_minutes || doc.total_flight_minutes, 0)
+    : number(doc.requested_duration_minutes, 0);
+  const pct = Number(nightSurchargePct || 0);
   if (doc.flight_status === "Realizado") {
-    return number(doc.block_time_minutes || doc.total_flight_minutes, 0) / 60;
+    return base / 60;
   }
-  return number(doc.requested_duration_minutes, 0) / 60;
+  const extra = Boolean(doc.is_night) && pct > 0 ? Math.round(base * pct / 100) : 0;
+  return (base + extra) / 60;
 }
 
 function creditPurchaseDate(doc) {
@@ -1509,7 +1527,7 @@ function applyPenaltyToPools(pools, penaltyHours, flightDate) {
 }
 
 /** Replay cronológico + LIFO — espelha replayCreditLedger em src/lib/creditsDb.ts */
-function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight, simplified = false) {
+function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight, simplified = false, nightSurchargePct = 0) {
   const mutable = creditDocs.map((doc) => ({
     id: clean(doc.$id),
     purchaseDate: creditPurchaseDate(doc),
@@ -1524,7 +1542,7 @@ function computeCreditPools(creditDocs, flightDocs, adjustmentDocs, isNight, sim
   const flights = flightDocs
     .map((doc) => ({
       flightDate: clean(doc.flight_date),
-      hours: flightCreditHours(doc),
+      hours: flightCreditHours(doc, nightSurchargePct),
       isNight: Boolean(doc.is_night),
     }))
     .filter((flight) => flight.flightDate);
@@ -1626,7 +1644,7 @@ function creditInsufficientMessage(freeBalance, flightHours, flightDate, availWk
   return `Crédito insuficiente. Disponível: ${Math.max(0, freeBalance).toFixed(2)}h.`;
 }
 
-async function creditAvailable(studentId, modelId, isNight, flightHours, flightDate, sagaReserved = { weekdayHours: 0, weekendHours: 0 }, simplified = false) {
+async function creditAvailable(studentId, modelId, isNight, flightHours, flightDate, sagaReserved = { weekdayHours: 0, weekendHours: 0 }, simplified = false, nightSurchargePct = 0) {
   // Bug 5 guard: if aircraft has no model configured, credits can't be verified
   if (!modelId) {
     return {
@@ -1662,7 +1680,7 @@ async function creditAvailable(studentId, modelId, isNight, flightHours, flightD
   const scopedCredits = simplified
     ? credits.documents
     : credits.documents.filter((doc) => Boolean(doc.is_night) === isNight);
-  const pools = computeCreditPools(scopedCredits, flights.documents, adjustments.documents, isNight, simplified);
+  const pools = computeCreditPools(scopedCredits, flights.documents, adjustments.documents, isNight, simplified, nightSurchargePct);
   const { availWk, rawAny } = pools;
   const freeBalance = freeBalanceForDate(pools, sagaReserved, flightDate);
   const weekdayReserve = number(sagaReserved.weekdayHours, 0);
@@ -2090,7 +2108,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
     if (rules.requireCreditsForBooking) {
       const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules);
-      const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
+      const credit = await creditAvailable(studentId, aircraftModelId, isNight, bookingDebitHours(durationMinutes, isNight, rules), date, reserved, rules.creditSimplified, rules.nightSurchargePct);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -2199,7 +2217,7 @@ async function handleRequest(payload, actorId, actorRole, profile, rules) {
     }
   }
   if (rules.requireCreditsForBooking) {
-    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, durationMinutes / 60, date, undefined, rules.creditSimplified);
+    const credit = await creditAvailable(studentId, aircraft.model_id, isNight, bookingDebitHours(durationMinutes, isNight, rules), date, undefined, rules.creditSimplified, rules.nightSurchargePct);
     const freeBalanceHours = credit.rawAvailableHours;
     if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
       fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -2312,7 +2330,7 @@ async function handleAvailability(payload, actorId, actorRole, rules) {
   } else {
     await validateFlightConflict(registration, date, times.occupiedStartAt, times.occupiedEndAt);
   }
-  const credit = await creditAvailable(studentId, aircraftModelId, isNight, durationMinutes / 60, date, reservedSaga, rules.creditSimplified);
+  const credit = await creditAvailable(studentId, aircraftModelId, isNight, bookingDebitHours(durationMinutes, isNight, rules), date, reservedSaga, rules.creditSimplified, rules.nightSurchargePct);
   const freeBalanceHours = credit.rawAvailableHours;
   const zeroCreditExceptionAvailable =
     rules.requireCreditsForBooking && zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit);
@@ -2579,7 +2597,7 @@ async function handleRescheduleSagaOnly(payload, actorId, actorRole, profile, ru
     const studentUserId = clean(event.studentUserId) || (own ? actorId : null);
     const reserved = await sagaReservedHoursForModel(events, studentSagaId, aircraftModelId, rules, id);
     if (studentUserId) {
-      const credit = await creditAvailable(studentUserId, aircraftModelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
+      const credit = await creditAvailable(studentUserId, aircraftModelId, isNight, bookingDebitHours(durationMinutes, isNight, rules), date, reserved, rules.creditSimplified, rules.nightSurchargePct);
       const freeBalanceHours = credit.rawAvailableHours;
       if (!credit.sufficient && !zeroCreditExceptionApplies(rules, freeBalanceHours, durationMinutes, credit)) {
         fail(credit.insufficientMessage || `Crédito insuficiente. Disponível: ${Math.max(0, freeBalanceHours).toFixed(2)}h.`);
@@ -2819,7 +2837,7 @@ async function handleCreditPreview(payload, actorId, actorRole, rules) {
         await sagaReservedHoursForModel(events, studentSagaId, modelId, rules)
       : { weekdayHours: 0, weekendHours: 0 };
     // eslint-disable-next-line no-await-in-loop
-    const credit = await creditAvailable(studentId, modelId, isNight, durationMinutes / 60, date, reserved, rules.creditSimplified);
+    const credit = await creditAvailable(studentId, modelId, isNight, bookingDebitHours(durationMinutes, isNight, rules), date, reserved, rules.creditSimplified, rules.nightSurchargePct);
     models.push({
       modelId,
       freeHours: credit.rawAvailableHours,
@@ -3164,9 +3182,11 @@ module.exports = async ({ req, res, error }) => {
     const profile = await getProfile(actorId);
     const actorRole = getEffectiveRole(profile);
     const rules = await getRules();
-    // Flag do modo simplificado de créditos (dia = noite) — threaded via rules p/ as
-    // verificações de crédito espelharem o extrato do aluno.
-    rules.creditSimplified = await getCreditSalesSimplified();
+    // Config financeira de créditos — threaded via rules p/ as verificações de
+    // crédito espelharem o extrato do aluno.
+    const creditSalesSettings = await getCreditSalesSettings();
+    rules.creditSimplified = creditSalesSettings.creditSimplified;
+    rules.nightSurchargePct = creditSalesSettings.nightSurchargePct;
     let data;
     if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
     else if (payload.action === "getInitialRegistrationCalendar") data = await handleInitialRegistrationCalendar(payload, actorId, actorRole, rules);

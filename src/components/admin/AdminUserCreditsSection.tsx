@@ -14,7 +14,7 @@ function formatExpiration(purchaseDate: string, validityDays: string): string | 
   d.setDate(d.getDate() + days);
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(d);
 }
-import { createAdminUserCredit, deleteAdminUserCredit, deleteAdminUserCreditAdjustment, updateAdminUserCredit } from "../../lib/adminUsersDb";
+import { createAdminUserCredit, deleteAdminUserCredit, deleteAdminUserCreditAdjustment, updateAdminUserCredit, updateAdminUserCreditAdjustment } from "../../lib/adminUsersDb";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { listModels } from "../../lib/aircraftModelsDb";
@@ -37,6 +37,12 @@ type CreditForm = {
   weekdayOnly: boolean;
 };
 
+type AdjustmentForm = {
+  hours: string;
+  percentage: string;
+  reason: string;
+};
+
 const PAYMENT_METHODS = ["Cartão de crédito à vista", "Parcelado", "PIX"] as const;
 
 const emptyForm: CreditForm = {
@@ -52,6 +58,12 @@ const emptyForm: CreditForm = {
   weekdayOnly: false,
 };
 
+const emptyAdjustmentForm: AdjustmentForm = {
+  hours: "",
+  percentage: "",
+  reason: "",
+};
+
 function parseNumber(value: string): number {
   const parsed = Number(value.trim().replace(",", "."));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -59,6 +71,12 @@ function parseNumber(value: string): number {
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? String(value).replace(".", ",") : "";
+}
+
+function adjustmentActionLabel(adjustment: StudentCreditStatement["adjustments"][number]): string {
+  if (adjustment.adjustmentType === "night_surcharge") return "adicional noturno";
+  if (adjustment.adjustmentType === "cancellation_penalty") return "multa";
+  return "ajuste";
 }
 
 export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }: { studentUserId: string; studentName: string; anacCode?: string }) {
@@ -76,6 +94,10 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deletingAdjustmentId, setDeletingAdjustmentId] = useState<string | null>(null);
+  const [editingAdjustmentId, setEditingAdjustmentId] = useState<string | null>(null);
+  const [adjustmentForm, setAdjustmentForm] = useState<AdjustmentForm>(emptyAdjustmentForm);
+  const [adjustmentModalOpen, setAdjustmentModalOpen] = useState(false);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
 
   useEffect(() => {
     setLoadingModels(true);
@@ -221,17 +243,54 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
     }
   }
 
+  function startEditAdjustment(adjustment: StudentCreditStatement["adjustments"][number]) {
+    setEditingAdjustmentId(adjustment.id);
+    setAdjustmentForm({
+      hours: formatNumber(Math.abs(adjustment.hours)),
+      percentage: adjustment.percentage > 0 ? formatNumber(adjustment.percentage) : "",
+      reason: adjustment.reason,
+    });
+    setAdjustmentModalOpen(true);
+  }
+
+  function closeAdjustmentModal() {
+    setEditingAdjustmentId(null);
+    setAdjustmentForm(emptyAdjustmentForm);
+    setAdjustmentModalOpen(false);
+  }
+
   async function handleDeleteAdjustment(adjustment: StudentCreditStatement["adjustments"][number]) {
-    if (!window.confirm(`Remover esta multa de ${Math.abs(adjustment.hours).toFixed(2)}h?`)) return;
+    if (!window.confirm(`Remover este ${adjustmentActionLabel(adjustment)} de ${Math.abs(adjustment.hours).toFixed(2)}h?`)) return;
     setDeletingAdjustmentId(adjustment.id);
     try {
       await deleteAdminUserCreditAdjustment(adjustment.id, studentUserId);
-      showToast({ variant: "success", message: "Multa removida." });
+      showToast({ variant: "success", message: "Lançamento removido." });
       await load();
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
       setDeletingAdjustmentId(null);
+    }
+  }
+
+  async function handleAdjustmentSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingAdjustmentId) return;
+    setSavingAdjustment(true);
+    try {
+      await updateAdminUserCreditAdjustment(editingAdjustmentId, {
+        userId: studentUserId,
+        hours: parseNumber(adjustmentForm.hours),
+        percentage: adjustmentForm.percentage.trim() ? parseNumber(adjustmentForm.percentage) : null,
+        reason: adjustmentForm.reason,
+      });
+      showToast({ variant: "success", message: "Lançamento atualizado." });
+      closeAdjustmentModal();
+      await load();
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSavingAdjustment(false);
     }
   }
 
@@ -389,6 +448,65 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
         </div>
       ) : null}
 
+      {adjustmentModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={(e) => void handleAdjustmentSubmit(e)}
+            className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl"
+          >
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-rose-300">Editar lançamento</p>
+                <p className="mt-1 text-sm text-slate-400">Ajuste o débito financeiro sem alterar o voo ou a ficha.</p>
+              </div>
+              <button type="button" onClick={closeAdjustmentModal} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+                Fechar
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Horas debitadas
+                <input
+                  value={adjustmentForm.hours}
+                  onChange={(e) => setAdjustmentForm((prev) => ({ ...prev, hours: e.target.value }))}
+                  placeholder="0,10"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-rose-500"
+                />
+              </label>
+              <label className="text-xs text-slate-400">
+                Percentual
+                <div className="mt-1 flex rounded-lg border border-slate-700 bg-slate-800 focus-within:border-rose-500">
+                  <input
+                    value={adjustmentForm.percentage}
+                    onChange={(e) => setAdjustmentForm((prev) => ({ ...prev, percentage: e.target.value }))}
+                    placeholder="10"
+                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none"
+                  />
+                  <span className="flex items-center border-l border-slate-700 px-3 text-sm text-slate-400">%</span>
+                </div>
+              </label>
+              <label className="text-xs text-slate-400 sm:col-span-2">
+                Descrição
+                <input
+                  value={adjustmentForm.reason}
+                  onChange={(e) => setAdjustmentForm((prev) => ({ ...prev, reason: e.target.value }))}
+                  placeholder="Opcional"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-rose-500"
+                />
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={closeAdjustmentModal} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+                Cancelar
+              </button>
+              <button type="submit" disabled={savingAdjustment} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50">
+                {savingAdjustment ? "Salvando..." : "Salvar lançamento"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
       {loading ? (
         <div className="space-y-3">
           <Skeleton className="h-24 rounded-xl" />
@@ -421,14 +539,23 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
             </>
           )}
           renderAdjustmentActions={(adjustment) => (
-            <button
-              type="button"
-              onClick={() => void handleDeleteAdjustment(adjustment)}
-              disabled={deletingAdjustmentId === adjustment.id}
-              className="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/30 disabled:opacity-50"
-            >
-              {deletingAdjustmentId === adjustment.id ? "Removendo..." : "Remover multa"}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => startEditAdjustment(adjustment)}
+                className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+              >
+                Editar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteAdjustment(adjustment)}
+                disabled={deletingAdjustmentId === adjustment.id}
+                className="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/30 disabled:opacity-50"
+              >
+                {deletingAdjustmentId === adjustment.id ? "Removendo..." : "Remover"}
+              </button>
+            </>
           )}
         />
       ) : null}

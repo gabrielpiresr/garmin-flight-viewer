@@ -150,19 +150,30 @@ function applySemicircularCruiseAltitudes(waypoints, legCorridors) {
   const list = Array.isArray(waypoints) ? waypoints : [];
   return list.map((wp, idx, arr) => {
     if (idx === 0) return wp;
+    const next = arr[idx + 1];
+    const nextInside = next ? Boolean(legCorridors?.[idx + 1]) : null;
     if (isAirportLike(wp)) {
       const field = wp.fieldElevFt;
+      const outbound =
+        next && nextInside === false ? semicircularCruiseFt(calcTrueBearing(wp, next)) : null;
       if (field != null && Number.isFinite(field)) {
         const elev = Math.round(field);
-        return wp.altitudeFt === elev ? wp : { ...wp, altitudeFt: elev };
+        return {
+          ...wp,
+          altitudeFt: elev,
+          ...(outbound != null ? { outboundAltitudeFt: outbound, altitudeRef: "ae" } : { outboundAltitudeFt: null }),
+        };
       }
-      return wp;
+      return outbound != null ? { ...wp, outboundAltitudeFt: outbound, altitudeRef: "ae" } : { ...wp, outboundAltitudeFt: null };
     }
-    if (legCorridors?.[idx]) return wp;
+    if (next && nextInside === false) {
+      const cruise = semicircularCruiseFt(calcTrueBearing(wp, next));
+      return { ...wp, altitudeFt: cruise, outboundAltitudeFt: null, altitudeRef: "ae" };
+    }
+    if (legCorridors?.[idx]) return { ...wp, outboundAltitudeFt: null };
     const from = arr[idx - 1];
-    const next = arr[idx + 1];
     const bearing = calcTrueBearing(from, wp);
-    return { ...wp, altitudeFt: semicircularCruiseFt(bearing) };
+    return { ...wp, altitudeFt: semicircularCruiseFt(bearing), outboundAltitudeFt: null };
   });
 }
 
@@ -1037,13 +1048,14 @@ function formatFplPointSpeedLevel(wp, speedKt, levelFt) {
   return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(level)}`;
 }
 
-function levelFlownFrom(waypoints, legIdx, nextInside) {
+function levelFlownFrom(waypoints, legIdx, nextInside, currentInside = false) {
   if (nextInside === true) return null;
   const to = waypoints[legIdx];
   const next = waypoints[legIdx + 1];
-  if (isAirportLike(to) && next && !isAirportLike(next) && next.altitudeFt != null && Number.isFinite(next.altitudeFt)) {
-    return next.altitudeFt;
-  }
+  if (to?.outboundAltitudeFt != null && Number.isFinite(to.outboundAltitudeFt)) return to.outboundAltitudeFt;
+  if ((currentInside || isAirportLike(to)) && next) return semicircularCruiseFt(calcTrueBearing(to, next));
+  if (to?.altitudeFt != null && Number.isFinite(to.altitudeFt)) return to.altitudeFt;
+  if (next) return semicircularCruiseFt(calcTrueBearing(to, next));
   return to.altitudeFt;
 }
 
@@ -1186,7 +1198,7 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, options = {}) {
     for (let legIdx = 1; legIdx < waypoints.length - 1; legIdx++) {
       pushFplToken(
         tokens,
-        formatFplPointSpeedLevel(waypoints[legIdx], speedKt, levelFlownFrom(waypoints, legIdx, false)),
+        formatFplPointSpeedLevel(waypoints[legIdx], speedKt, levelFlownFrom(waypoints, legIdx, false, false)),
       );
       pushFplToken(tokens, "DCT");
     }
@@ -1232,24 +1244,24 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, options = {}) {
       if (nextInside === false) {
         const next = waypoints[legIdx + 1];
         if (next && next === dest && endsInside) continue;
-        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
+        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside, true)));
         pushFplToken(tokens, "DCT");
       } else if (isLastLeg && !endsInside) {
         const from = waypoints[legIdx - 1];
         if (from && from !== origin) {
-          pushFplToken(tokens, formatFplPointSpeedLevel(from, speedKt, levelFlownFrom(waypoints, legIdx - 1, false)));
+          pushFplToken(tokens, formatFplPointSpeedLevel(from, speedKt, levelFlownFrom(waypoints, legIdx - 1, false, true)));
           pushFplToken(tokens, "DCT");
         }
       }
       continue;
     }
     if (nextInside === true) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, true)));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, true, false)));
       pushFplToken(tokens, "REA");
       continue;
     }
     if (!isLastLeg) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside, false)));
       pushFplToken(tokens, "DCT");
     }
   }

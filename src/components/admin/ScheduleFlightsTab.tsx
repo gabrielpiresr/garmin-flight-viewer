@@ -3672,7 +3672,7 @@ export function ScheduleFlightsTab({
   const [formStudentCreditTotals, setFormStudentCreditTotals] = useState<StudentCreditStatement["totals"] | null>(null);
   const [formStudentCreditsLoading, setFormStudentCreditsLoading] = useState(false);
   const [formStudentSagaScheduledFlights, setFormStudentSagaScheduledFlights] = useState<FormStudentScheduledFlight[] | null>(null);
-  const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean } | null>(null);
+  const salesConfigFlagRef = useRef<{ at: number; nightDifferent: boolean; nightSurchargePct: number } | null>(null);
   // Horas totais atuais por aeronave (mesmo cálculo da Frota) — base da projeção na agenda
   const [aircraftBaseHours, setAircraftBaseHours] = useState<Map<string, AircraftBaseHours> | null>(null);
   const [projectionHoursSource, setProjectionHoursSource] = useState<ProjectionHoursSource>("system");
@@ -4588,7 +4588,11 @@ export function ScheduleFlightsTab({
         // Mesmo cálculo da aba Créditos: o flag nightHoursDifferentFromDay muda o modo do extrato.
         if (!salesConfigFlagRef.current || Date.now() - salesConfigFlagRef.current.at > 5 * 60_000) {
           const config = await getFlightCreditSalesConfig().catch(() => null);
-          salesConfigFlagRef.current = { at: Date.now(), nightDifferent: config?.nightHoursDifferentFromDay !== false };
+          salesConfigFlagRef.current = {
+            at: Date.now(),
+            nightDifferent: config?.nightHoursDifferentFromDay !== false,
+            nightSurchargePct: config?.nightSurchargePct ?? 0,
+          };
         }
         const stmt = await getStudentCreditStatement({
           viewer: { userId: user.id, role: user.role },
@@ -4686,6 +4690,11 @@ export function ScheduleFlightsTab({
     const thisFlightHours = scheduleRules.sagaOnlySchedule
       ? sagaEffectiveFlightMinutes(durationMinutes, scheduleRules) / 60
       : formDraft.durationHours;
+    const nightSurchargePct = salesConfigFlagRef.current?.nightSurchargePct ?? 0;
+    const thisFlightDebitHours =
+      formDraft.isNight && nightSurchargePct > 0
+        ? Number(((thisFlightHours * (100 + nightSurchargePct)) / 100).toFixed(2))
+        : thisFlightHours;
     const currentFlightActive = formDraft.flightStatus !== "Cancelado";
     const currentFlightMs = flightDate && formDraft.startTime
       ? scheduledFlightMs(flightDate, formDraft.startTime)
@@ -4699,7 +4708,7 @@ export function ScheduleFlightsTab({
         .toFixed(2),
     );
     const otherScheduledHours = Number(scheduled.reduce((sum, flight) => sum + flight.hours, 0).toFixed(2));
-    const activeThisFlightHours = currentFlightActive ? thisFlightHours : 0;
+    const activeThisFlightHours = currentFlightActive ? thisFlightDebitHours : 0;
     const allScheduledHours = Number((otherScheduledHours + activeThisFlightHours).toFixed(2));
     const balanceAfterThisFlight = Number((studentBalance - activeThisFlightHours - scheduledBeforeHours).toFixed(2));
     const balanceAfterAllScheduled = Number((studentBalance - allScheduledHours).toFixed(2));

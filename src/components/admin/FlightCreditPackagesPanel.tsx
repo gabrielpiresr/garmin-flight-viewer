@@ -48,12 +48,18 @@ function parseNumber(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function formatOptionalPct(value: unknown): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "";
+}
+
 export function FlightCreditPackagesPanel() {
   const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [nightHoursDifferentFromDay, setNightHoursDifferentFromDay] = useState(true);
+  const [nightSurchargePct, setNightSurchargePct] = useState("");
   const [weekdayDiscountPct, setWeekdayDiscountPct] = useState("");
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [models, setModels] = useState<AircraftModel[]>([]);
@@ -70,6 +76,7 @@ export function FlightCreditPackagesPanel() {
       ]);
       setEnabled(config.studentPurchasesEnabled);
       setNightHoursDifferentFromDay(config.nightHoursDifferentFromDay !== false);
+      setNightSurchargePct(formatOptionalPct(config.nightSurchargePct));
       setWeekdayDiscountPct(
         config.weekdayDiscountPct != null && config.weekdayDiscountPct > 0
           ? String(config.weekdayDiscountPct)
@@ -175,14 +182,17 @@ export function FlightCreditPackagesPanel() {
   async function save() {
     setSaving(true);
     try {
+      const submittedNightSurchargePct = nightSurchargePct.trim() ? parseNumber(nightSurchargePct) : 0;
       const config = await saveFlightCreditSalesConfig({
         studentPurchasesEnabled: enabled,
         nightHoursDifferentFromDay,
+        nightSurchargePct: submittedNightSurchargePct,
         weekdayDiscountPct: weekdayDiscountPct.trim() ? parseNumber(weekdayDiscountPct) : null,
         packages,
       });
       setEnabled(config.studentPurchasesEnabled);
       setNightHoursDifferentFromDay(config.nightHoursDifferentFromDay !== false);
+      setNightSurchargePct(formatOptionalPct(config.nightSurchargePct));
       setWeekdayDiscountPct(
         config.weekdayDiscountPct != null && config.weekdayDiscountPct > 0
           ? String(config.weekdayDiscountPct)
@@ -232,6 +242,26 @@ export function FlightCreditPackagesPanel() {
             Quando desativado, todos os creditos sao debitados sem distinção entre dia e noite.
           </span>
         </span>
+      </label>
+
+      <label className="mt-2 block rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
+        <span className="block text-sm font-medium text-slate-200">Adicional noturno</span>
+        <span className="mt-1 block text-xs text-slate-500">
+          Percentual debitado apenas sobre os minutos noturnos informados nas pernas do voo. Use 0 ou deixe vazio para desligar.
+        </span>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="0.1"
+            value={nightSurchargePct}
+            onChange={(event) => setNightSurchargePct(event.target.value)}
+            placeholder="Ex.: 10"
+            className="w-28 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+          />
+          <span className="text-sm text-slate-400">%</span>
+        </div>
       </label>
 
       <label className="mt-2 block rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">

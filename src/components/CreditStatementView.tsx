@@ -34,6 +34,18 @@ function formatFlightSchedule(flightDate: string | null, flightStartTime: string
   return `${dateLabel} às ${flightStartTime}`;
 }
 
+function adjustmentLabel(adjustment: StudentCreditAdjustment): string {
+  if (adjustment.adjustmentType === "night_surcharge") return "Adicional noturno";
+  if (adjustment.adjustmentType === "cancellation_penalty") return "Multa de cancelamento";
+  return "Ajuste de crédito";
+}
+
+function adjustmentPercentLabel(adjustment: StudentCreditAdjustment): string {
+  if (adjustment.percentage <= 0) return "";
+  const label = adjustment.adjustmentType === "night_surcharge" ? "adicional" : "multa";
+  return ` · ${label} de ${adjustment.percentage}%`;
+}
+
 function formatHours(value: number): string {
   return `${Number(value || 0).toFixed(1)}h`;
 }
@@ -366,18 +378,18 @@ export function CreditStatementView({
               <div key={adjustment.id} className="rounded-lg border border-rose-500/20 bg-slate-950/30 px-3 py-2.5 text-xs">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0 space-y-1">
-                    <p className="font-medium text-slate-200">{adjustment.reason || "Multa de cancelamento"}</p>
+                    <p className="font-medium text-slate-200">{adjustment.reason || adjustmentLabel(adjustment)}</p>
                     <p className="text-slate-400">
                       {adjustment.aircraftIdent || "Aeronave não informada"}
-                      {adjustment.percentage > 0 ? ` · multa de ${adjustment.percentage}%` : ""}
+                      {adjustmentPercentLabel(adjustment)}
                     </p>
                     {flightSchedule ? (
                       <p className="text-slate-500">
-                        Voo cancelado: <span className="text-slate-300">{flightSchedule}</span>
+                        Voo: <span className="text-slate-300">{flightSchedule}</span>
                       </p>
                     ) : null}
                     <p className="text-slate-500">
-                      Cancelamento em: <span className="text-slate-300">{formatDateTime(adjustment.occurredAt)}</span>
+                      Lançamento em: <span className="text-slate-300">{formatDateTime(adjustment.occurredAt)}</span>
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">

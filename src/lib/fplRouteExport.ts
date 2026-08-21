@@ -1,5 +1,5 @@
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
-import { formatCompactAviationCoord, haversineM } from "./flightPlanningRoute";
+import { calcTrueBearing, formatCompactAviationCoord, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
 import type { LegCorridorInfo } from "./legCorridor";
 
 const NM_IN_M = 1852;
@@ -40,18 +40,20 @@ function formatFplPointSpeedLevel(
   return `${formatCompactAviationCoord(wp.lat, wp.lng)}/${formatFplSpeed(speedKt)}${formatFplLevel(levelFt)}`;
 }
 
-/** Nível voado A PARTIR deste ponto: VFR se o próximo trecho é REA; no AD, o teto do próximo ponto enroute. */
+/** Nível voado A PARTIR deste ponto: VFR se o próximo trecho é REA; A055/A065 quando sai para DCT. */
 function levelFlownFrom(
   waypoints: FlightPlanWaypoint[],
   legIdx: number,
   nextInside: boolean | null,
+  currentInside = false,
 ): number | null | undefined {
   if (nextInside === true) return null;
   const to = waypoints[legIdx]!;
   const next = waypoints[legIdx + 1];
-  if (isAirportLike(to) && next && !isAirportLike(next) && next.altitudeFt != null && Number.isFinite(next.altitudeFt)) {
-    return next.altitudeFt;
-  }
+  if (to.outboundAltitudeFt != null && Number.isFinite(to.outboundAltitudeFt)) return to.outboundAltitudeFt;
+  if ((currentInside || isAirportLike(to)) && next) return semicircularCruiseFt(calcTrueBearing(to, next));
+  if (to.altitudeFt != null && Number.isFinite(to.altitudeFt)) return to.altitudeFt;
+  if (next) return semicircularCruiseFt(calcTrueBearing(to, next));
   return to.altitudeFt;
 }
 
@@ -298,7 +300,7 @@ export function buildFplRouteText(
     for (let legIdx = 1; legIdx < waypoints.length - 1; legIdx++) {
       const to = waypoints[legIdx]!;
       const nextInside = false;
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside, false)));
       pushFplToken(tokens, "DCT");
     }
     return tokens.join(" ");
@@ -349,12 +351,12 @@ export function buildFplRouteText(
       if (nextInside === false) {
         const next = waypoints[legIdx + 1];
         if (next && next === dest && endsInside) continue;
-        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
+        pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside, true)));
         pushFplToken(tokens, "DCT");
       } else if (isLastLeg && !endsInside) {
         const from = waypoints[legIdx - 1];
         if (from && from !== origin) {
-          pushFplToken(tokens, formatFplPointSpeedLevel(from, speedKt, levelFlownFrom(waypoints, legIdx - 1, false)));
+          pushFplToken(tokens, formatFplPointSpeedLevel(from, speedKt, levelFlownFrom(waypoints, legIdx - 1, false, true)));
           pushFplToken(tokens, "DCT");
         }
       }
@@ -362,13 +364,13 @@ export function buildFplRouteText(
     }
 
     if (nextInside === true) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, true)));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, true, false)));
       pushFplToken(tokens, "REA");
       continue;
     }
 
     if (!isLastLeg) {
-      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside)));
+      pushFplToken(tokens, formatFplPointSpeedLevel(to, speedKt, levelFlownFrom(waypoints, legIdx, nextInside, false)));
       pushFplToken(tokens, "DCT");
     }
   }

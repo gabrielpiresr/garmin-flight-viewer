@@ -9,6 +9,7 @@ const adminClient = new sdk.Client().setEndpoint(endpoint).setProject(projectId)
 const databases = new sdk.Databases(adminClient);
 const users = new sdk.Users(adminClient);
 const storage = new sdk.Storage(adminClient);
+const functions = new sdk.Functions(adminClient);
 
 const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
@@ -17,6 +18,7 @@ const AUDIT_EVENTS_COLLECTION_ID =
   process.env.APPWRITE_AUDIT_EVENTS_COLLECTION_ID ||
   process.env.APPWRITE_AUDIT_EVENTS_COL_ID ||
   "audit_events";
+const ADMIN_USERS_FUNCTION_ID = process.env.APPWRITE_ADMIN_USERS_FUNCTION_ID || "admin-users";
 const PROFILES_COLLECTION_ID = process.env.APPWRITE_PROFILES_COLLECTION_ID || process.env.APPWRITE_PROFILES_COL_ID;
 const BUCKET_ID = process.env.APPWRITE_BUCKET_ID || "";
 const SCHOOL_ID = process.env.SCHOOL_ID || process.env.APPWRITE_SCHOOL_ID || "escola_principal";
@@ -231,6 +233,19 @@ async function createAuditEvent(actorUserId, input = {}) {
   );
 }
 
+async function triggerNightSurcharge(flightId, actorUserId) {
+  if (!ADMIN_USERS_FUNCTION_ID) return;
+  try {
+    await functions.createExecution(
+      ADMIN_USERS_FUNCTION_ID,
+      JSON.stringify({ action: "ensureNightSurchargeForFlight", flightId, actorUserId }),
+      true,
+    );
+  } catch {
+    // Financial adjustment sync is best-effort; signing the flight must remain authoritative.
+  }
+}
+
 module.exports = async ({ req, res, log, error }) => {
   try {
     if (!endpoint || !projectId || !apiKey || !DATABASE_ID || !FLIGHTS_COLLECTION_ID || !SIGNATURES_COLLECTION_ID) {
@@ -293,6 +308,9 @@ module.exports = async ({ req, res, log, error }) => {
     }
     if (signerRole === "admin_operator") patch.admin_operator_signed = true;
     await databases.updateDocument(DATABASE_ID, FLIGHTS_COLLECTION_ID, flightId, patch);
+    if (signerRole === "instructor" && flightDoc.flight_status !== "Realizado") {
+      await triggerNightSurcharge(flightId, actorUserId);
+    }
     await createAuditEvent(actorUserId, {
       eventType: "flight_signed",
       entityType: "flight",

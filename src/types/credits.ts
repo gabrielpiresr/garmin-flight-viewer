@@ -66,6 +66,7 @@ export type StudentCreditStatement = {
   adjustments: Array<{
     id: string;
     flightId: string | null;
+    adjustmentType: string;
     aircraftModelId: string;
     aircraftIdent: string;
     hours: number;
@@ -91,6 +92,13 @@ export type StudentCreditStatement = {
     anyDayAvailableHours: number;
     amountPaid: number;
   };
+};
+
+export type StudentCreditAdjustmentInput = {
+  userId: string;
+  hours: number;
+  percentage?: number | null;
+  reason?: string;
 };
 
 export type StudentCreditInput = {

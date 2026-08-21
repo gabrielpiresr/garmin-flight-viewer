@@ -79,6 +79,7 @@ function compactWaypoint(wp) {
     kind: wp.kind || "fix",
     ...(wp.reaName ? { reaName: wp.reaName } : {}),
     ...(wp.altitudeFt != null && Number.isFinite(wp.altitudeFt) ? { altitudeFt: Math.round(wp.altitudeFt) } : {}),
+    ...(wp.outboundAltitudeFt != null && Number.isFinite(wp.outboundAltitudeFt) ? { outboundAltitudeFt: Math.round(wp.outboundAltitudeFt) } : {}),
     ...(wp.fieldElevFt != null && Number.isFinite(wp.fieldElevFt) ? { fieldElevFt: Math.round(wp.fieldElevFt) } : {}),
     altitudeRef: wp.altitudeRef || "bs",
     ...(wp.note ? { note: String(wp.note).slice(0, 80) } : {}),

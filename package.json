@@ -21,6 +21,7 @@
     "test:rea-lo": "node --test scripts/rea-lo-corridors.test.mjs",
     "test:route-profile": "node --test scripts/route-performance-profile.test.mjs",
     "test:capacity": "node --experimental-strip-types --test src/lib/capacityProjection.test.ts",
+    "test:night-surcharge": "node scripts/simulate-night-surcharge.mjs",
     "pwa:assets": "node scripts/generate-pwa-assets.mjs",
     "appwrite:deploy-admin-function": "node scripts/deploy-admin-function.mjs",
     "appwrite:deploy-admin-users": "node scripts/deploy-admin-users-function.mjs",

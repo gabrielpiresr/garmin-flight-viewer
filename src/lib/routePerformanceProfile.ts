@@ -119,6 +119,13 @@ function plannedAlt(wp: FlightPlanWaypoint | undefined, fallback: number): numbe
   return Math.round(fallback);
 }
 
+function outboundAlt(wp: FlightPlanWaypoint | undefined, fallback: number): number {
+  if (wp?.outboundAltitudeFt != null && Number.isFinite(wp.outboundAltitudeFt)) {
+    return Math.round(wp.outboundAltitudeFt);
+  }
+  return plannedAlt(wp, fallback);
+}
+
 function isAirportKind(wp: FlightPlanWaypoint | undefined): boolean {
   return wp?.kind === "airport" || wp?.kind === "origin" || wp?.kind === "destination";
 }
@@ -373,7 +380,7 @@ export function buildRoutePerformanceProfile(
     const toMode = altitudeRefMode(toWp);
     const nextMode = nextWp ? altitudeRefMode(nextWp) : null;
     const nextIsDest = i + 1 === waypoints.length - 1;
-    const fromAlt = waypointProfileAlt(fromWp, alt, i > 1);
+    const fromAlt = fromMode === "ae" ? outboundAlt(fromWp, alt) : waypointProfileAlt(fromWp, alt, i > 1);
     const toAlt = waypointProfileAlt(toWp, alt, !isLast);
     const nextAlt = nextWp ? waypointProfileAlt(nextWp, alt, !nextIsDest) : toAlt;
 
