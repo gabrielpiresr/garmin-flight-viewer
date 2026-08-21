@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ScheduleFlightsTab } from "./ScheduleFlightsTab";
 import { WeeklyConfigTab } from "./WeeklyConfigTab";
 import { ScheduleGenerationTab } from "./ScheduleGenerationTab";
+import { CapacityProjectionTab } from "./CapacityProjectionTab";
 import { ScheduleSettingsPanel } from "./ScheduleSettingsPanel";
 import { Tabs } from "../ui/Tabs";
 import { useOpenedTabs } from "../../lib/routedTabs";
@@ -10,7 +11,7 @@ import { usePermissions } from "../../contexts/PermissionsContext";
 import { getCachedSchoolRules, getSchoolRules } from "../../lib/schoolRulesDb";
 import type { AdminTabKey } from "../../types/rolePermissions";
 
-export type ScheduleSubTab = "flights" | "weekly" | "generator" | "settings";
+export type ScheduleSubTab = "flights" | "weekly" | "generator" | "projections" | "settings";
 
 const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode; disabled?: boolean; disabledTooltip?: string }> = [
   {
@@ -41,6 +42,16 @@ const SUB_TABS: Array<{ id: ScheduleSubTab; label: string; icon: ReactNode; disa
     ),
   },
   {
+    id: "projections",
+    label: "Projeções",
+    icon: (
+      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M3.5 3.75A.75.75 0 014.25 3h11.5a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75H4.25a.75.75 0 01-.75-.75V3.75zM5.5 6.5v7h9v-7h-9z" />
+        <path d="M6.75 12.5l2.1-2.4 1.7 1.5 2.7-3.1v4h-6.5z" />
+      </svg>
+    ),
+  },
+  {
     id: "settings",
     label: "Configurações",
     icon: (
@@ -55,6 +66,7 @@ const SCHEDULE_SUB_TAB_KEY: Record<ScheduleSubTab, AdminTabKey> = {
   flights:   "schedule.voos",
   weekly:    "schedule.disponibilidades",
   generator: "schedule.gerador",
+  projections: "schedule.projecoes",
   settings: "schedule.configuracoes",
 };
 
@@ -140,6 +152,11 @@ export function ScheduleAdminTab({ subTab: controlledSubTab, onSubTabChange, vis
       {openedSubTabs.has("generator") ? (
         <div hidden={activeSubTab !== "generator"}>
           <ScheduleGenerationTab onScalePublished={handleScalePublished} />
+        </div>
+      ) : null}
+      {openedSubTabs.has("projections") ? (
+        <div hidden={activeSubTab !== "projections"}>
+          <CapacityProjectionTab />
         </div>
       ) : null}
       {openedSubTabs.has("settings") ? (

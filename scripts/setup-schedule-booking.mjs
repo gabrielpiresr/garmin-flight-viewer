@@ -245,6 +245,7 @@ async function updateRoles() {
     if (doc.portal_type === "admin") {
       permissions.tabs.schedule = permissions.tabs.schedule ?? true;
       permissions.tabs["schedule.configuracoes"] = permissions.tabs["schedule.configuracoes"] ?? true;
+      permissions.tabs["schedule.projecoes"] = permissions.tabs["schedule.projecoes"] ?? true;
     }
     await databases.updateDocument(databaseId, roles.$id, doc.$id, {
       permissions_json: JSON.stringify(permissions),

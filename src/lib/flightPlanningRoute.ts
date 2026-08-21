@@ -320,6 +320,12 @@ export function calcTrueBearing(
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+/** ICA 100-12 VFR: proa 000–179 → 5500 ft; 180–359 → 6500 ft. */
+export function semicircularCruiseFt(bearingDeg: number): number {
+  const hdg = ((bearingDeg % 360) + 360) % 360;
+  return hdg < 180 ? 5500 : 6500;
+}
+
 export function summarizeFlightPlanRoute(
   waypoints: FlightPlanWaypoint[],
   options?: { cruiseSpeedKt?: number | null; fuelBurnPerHour?: number | null },

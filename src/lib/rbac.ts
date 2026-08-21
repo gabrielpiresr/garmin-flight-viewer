@@ -51,6 +51,7 @@ export type ProfileDocumentType =
   | "schoolCertificate"
   | "transferDocument";
 export type ProfileDocumentAttachment = {
+  docId?: string;
   fileId: string;
   fileName: string;
   mimeType: string;
@@ -296,34 +297,47 @@ function parseProfileDocuments(value: unknown): ProfileDocumentAttachments {
       mimeType: String(item.mimeType || "application/octet-stream"),
       size: Number(item.size || 0),
       uploadedAt: String(item.uploadedAt || ""),
+      docId: typeof item.docId === "string" ? item.docId : undefined,
     };
   }
   return documents;
 }
 
+function documentTypeToProfileDocumentType(type: string | undefined): ProfileDocumentType | null {
+  if (
+    type === "identification" ||
+    type === "voterTitle" ||
+    type === "proofOfResidence" ||
+    type === "militaryCertificate" ||
+    type === "enrollmentForm" ||
+    type === "schoolCertificate" ||
+    type === "transferDocument"
+  ) {
+    return type;
+  }
+  if (type?.startsWith("transferDocument:")) return "transferDocument";
+  return null;
+}
+
+function profileDocumentDocToAttachment(doc: ProfileDocumentDoc): ProfileDocumentAttachment | null {
+  if (!doc.file_id) return null;
+  return {
+    docId: doc.$id,
+    fileId: doc.file_id,
+    fileName: doc.file_name || "Documento",
+    mimeType: doc.mime_type || "application/octet-stream",
+    size: typeof doc.file_size === "number" ? doc.file_size : 0,
+    uploadedAt: doc.uploaded_at || "",
+  };
+}
+
 function toProfileDocuments(docs: ProfileDocumentDoc[]): ProfileDocumentAttachments {
   const documents: ProfileDocumentAttachments = {};
   for (const doc of docs) {
-    const type = doc.document_type as ProfileDocumentType | undefined;
-    if (
-      type !== "identification" &&
-      type !== "voterTitle" &&
-      type !== "proofOfResidence" &&
-      type !== "militaryCertificate" &&
-      type !== "enrollmentForm" &&
-      type !== "schoolCertificate" &&
-      type !== "transferDocument"
-    ) {
-      continue;
-    }
-    if (!doc.file_id) continue;
-    documents[type] = {
-      fileId: doc.file_id,
-      fileName: doc.file_name || "Documento",
-      mimeType: doc.mime_type || "application/octet-stream",
-      size: typeof doc.file_size === "number" ? doc.file_size : 0,
-      uploadedAt: doc.uploaded_at || "",
-    };
+    const type = documentTypeToProfileDocumentType(doc.document_type);
+    const attachment = profileDocumentDocToAttachment(doc);
+    if (!type || !attachment) continue;
+    documents[type] = attachment;
   }
   return documents;
 }
@@ -349,6 +363,21 @@ async function getProfileDocumentDoc(userId: string, type: ProfileDocumentType):
     Query.limit(1),
   ]);
   return (res.documents[0] as unknown as ProfileDocumentDoc | undefined) ?? null;
+}
+
+export async function listProfileDocumentAttachments(
+  userId: string,
+  type?: ProfileDocumentType,
+): Promise<ProfileDocumentAttachment[]> {
+  const docs = await listProfileDocumentDocs(userId);
+  return docs
+    .filter((doc) => {
+      const normalizedType = documentTypeToProfileDocumentType(doc.document_type);
+      return normalizedType && (!type || normalizedType === type);
+    })
+    .map(profileDocumentDocToAttachment)
+    .filter((doc): doc is ProfileDocumentAttachment => Boolean(doc))
+    .sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
 }
 
 function toStudentOption(doc: ProfileDoc): StudentOption | null {
@@ -802,6 +831,87 @@ export async function uploadProfileDocumentAttachment(
   }
 }
 
+export async function uploadProfileDocumentAttachments(
+  profile: Pick<PilotProfile, "docId" | "userId" | "documents">,
+  type: ProfileDocumentType,
+  files: File[],
+  options: { maxFiles?: number } = {},
+): Promise<{ data: ProfileDocumentAttachment[] | null; documents: ProfileDocumentAttachments | null; error: Error | null }> {
+  if (!isAppwriteConfigured || !databases || !storage || !DB_ID || !PROFILE_DOCUMENTS_COL_ID || !BUCKET_ID) {
+    return { data: null, documents: null, error: new Error("Appwrite Storage nao configurado.") };
+  }
+  if (!files.length) {
+    return { data: null, documents: null, error: new Error("Selecione ao menos um arquivo.") };
+  }
+  const db = databases;
+  const storageClient = storage;
+  const databaseId = DB_ID;
+  const collectionId = PROFILE_DOCUMENTS_COL_ID;
+  const bucketId = BUCKET_ID;
+
+  const uploadedFileIds: string[] = [];
+  const createdDocumentIds: string[] = [];
+
+  try {
+    const existingAttachments = await listProfileDocumentAttachments(profile.userId, type);
+    const maxFiles = options.maxFiles ?? Number.POSITIVE_INFINITY;
+    if (existingAttachments.length + files.length > maxFiles) {
+      return {
+        data: null,
+        documents: null,
+        error: new Error(`Voce pode anexar ate ${maxFiles} documento(s) nesta etapa.`),
+      };
+    }
+
+    const existingExactDoc = await getProfileDocumentDoc(profile.userId, type);
+    let shouldUseExactType = !existingExactDoc;
+
+    for (const [index, file] of files.entries()) {
+      const uploaded = await storageClient.createFile(bucketId, ID.unique(), file, profileDocumentPermissions(profile.userId));
+      uploadedFileIds.push(uploaded.$id);
+      const uploadedAt = new Date().toISOString();
+      const documentType =
+        shouldUseExactType
+          ? type
+          : type === "transferDocument"
+            ? `transferDocument:${Date.now()}-${index}`
+            : type;
+      shouldUseExactType = false;
+
+      const payload = {
+        school_id: DEFAULT_SCHOOL_ID,
+        user_id: profile.userId,
+        document_type: documentType,
+        file_id: uploaded.$id,
+        file_name: file.name,
+        mime_type: file.type || "application/octet-stream",
+        file_size: file.size,
+        uploaded_at: uploadedAt,
+      };
+
+      const created = await db.createDocument(
+        databaseId,
+        collectionId,
+        ID.unique(),
+        payload,
+        profileDocumentPermissions(profile.userId),
+      );
+      createdDocumentIds.push(created.$id);
+    }
+
+    const attachments = await listProfileDocumentAttachments(profile.userId, type);
+    const documents: ProfileDocumentAttachments = { ...profile.documents };
+    const newestAttachment = attachments[0];
+    if (newestAttachment) documents[type] = newestAttachment;
+
+    return { data: attachments, documents, error: null };
+  } catch (error) {
+    await Promise.all(createdDocumentIds.map((docId) => db.deleteDocument(databaseId, collectionId, docId).catch(() => undefined)));
+    await Promise.all(uploadedFileIds.map((fileId) => storageClient.deleteFile(bucketId, fileId).catch(() => undefined)));
+    return { data: null, documents: null, error: error as Error };
+  }
+}
+
 export async function deleteProfileDocumentAttachment(
   profile: Pick<PilotProfile, "userId" | "documents">,
   type: ProfileDocumentType,
@@ -990,9 +1100,9 @@ export async function listStudentIdentitiesForSchedule(_actorUserId: string): Pr
   return res.documents
     .filter((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";
-      const role = normalizeUserRole((doc.role as string | undefined) ?? null);
       if (!userId || doc.is_active === false) return false;
-      return role !== "admin";
+      const roles = resolveProfileRoles(doc as unknown as ProfileDoc).roles;
+      return roles.includes("aluno") || roles.includes("instrutor");
     })
     .map((doc) => {
       const userId = (doc.user_id as string | undefined) ?? "";

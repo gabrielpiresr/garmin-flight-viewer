@@ -279,6 +279,25 @@ function parseAnacHtml(html) {
   return { ratings, licenses, medical, photoUrl };
 }
 
+function extractAnacFailureMessage(html) {
+  const text = cheerio
+    .load(html || "")("body")
+    .text()
+    .replace(/\s+/g, " ")
+    .trim();
+  const source = `${text} ${String(html || "")}`;
+  if (/registro[\s\S]{0,120}localizado/i.test(source)) {
+    return "Registro não foi localizado na ANAC para o Código ANAC/CPF informados.";
+  }
+  if (/new\s+session\s+failed/i.test(source)) {
+    return "ANAC retornou erro de sessão. Tente novamente em alguns instantes.";
+  }
+  if (/informe\s+o\s+seu\s+c[oó]digo\s+anac/i.test(source) && !/tipo\s+validade|licen[cç]as|certificado/i.test(source)) {
+    return "ANAC retornou a tela de consulta sem dados do piloto.";
+  }
+  return "";
+}
+
 async function uploadPhoto(photoUrl, userId, cookieHeader = "") {
   if (!photoUrl || !BUCKET_ID) return null;
   let buffer = Buffer.alloc(0);
@@ -401,7 +420,7 @@ module.exports = async ({ req, res, error, log }) => {
     const parsed = parseAnacHtml(html);
 
     if (!parsed.ratings.length && !parsed.licenses.length && !parsed.medical.classe && !parsed.photoUrl) {
-      throw new Error("No ANAC pilot data detected in response.");
+      throw new Error(extractAnacFailureMessage(html) || "Nenhum dado de piloto foi encontrado na resposta da ANAC.");
     }
 
     let photoFileId = "";

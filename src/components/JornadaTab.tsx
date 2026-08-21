@@ -9,9 +9,12 @@ import { listJourneyTelemetrySummaries } from "../lib/flightTelemetryMetricsDb";
 import { listGroundAircraftIdents } from "../lib/aircraftDb";
 import { SCHOOL_ID } from "../lib/appwrite";
 import { listManeuverCatalog } from "../lib/maneuversDb";
+import { listProvaJourneyRequirements } from "../lib/provasJourneyDb";
+import { listMyProvas } from "../lib/provasStudentDb";
 import { completedStagesForTrack, evaluateRewards, normalizeAircraftIdent } from "../lib/rewardEvaluation";
 import { listJourneyRewards } from "../lib/rewardsDb";
 import { listStudentTrainingTracks } from "../lib/trainingTracksDb";
+import type { ProvaAssignment, ProvaJourneyRequirement } from "../types/provas";
 import type { EvaluatedJourneyReward, JourneyReward } from "../types/rewards";
 import type { ManeuverArticle, ManeuverCatalog } from "../types/maneuver";
 import type { StudentTrainingTrack, TrainingMission, TrainingStage, TrainingTrack } from "../types/trainingTrack";
@@ -43,6 +46,21 @@ type MissionTimelineItem = {
   mission: TrainingMission;
   index: number;
   status: "done" | "next" | "locked";
+};
+
+type JourneyProvaState = {
+  requirements: ProvaJourneyRequirement[];
+  assignments: ProvaAssignment[];
+  loading: boolean;
+};
+
+type JourneyProvaItem = {
+  requirement: ProvaJourneyRequirement;
+  assignment: ProvaAssignment | null;
+  satisfied: boolean;
+  startIndex: number;
+  endIndex: number;
+  endStageId: string;
 };
 
 type MissionLayoutMode = "carousel" | "grid";
@@ -293,6 +311,83 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function assignmentRank(assignment: ProvaAssignment): number {
+  if (assignment.status === "submitted" && assignment.passed !== false) return 60;
+  if (assignment.status === "in_progress") return 50;
+  if (assignment.status === "pending") return 40;
+  if (assignment.status === "submitted") return 30;
+  if (assignment.status === "expired") return 20;
+  return 0;
+}
+
+function pickBestProvaAssignment(assignments: ProvaAssignment[], provaId: string): ProvaAssignment | null {
+  return (
+    assignments
+      .filter((assignment) => assignment.provaId === provaId)
+      .sort(
+        (a, b) =>
+          assignmentRank(b) - assignmentRank(a) ||
+          Date.parse(b.releasedAt || "") - Date.parse(a.releasedAt || ""),
+      )[0] ?? null
+  );
+}
+
+function isProvaRequirementSatisfied(assignments: ProvaAssignment[], provaId: string): boolean {
+  return assignments.some(
+    (assignment) => assignment.provaId === provaId && assignment.status === "submitted" && assignment.passed !== false,
+  );
+}
+
+function provaStatusMeta(item: JourneyProvaItem): { label: string; className: string; detail: string } {
+  const assignment = item.assignment;
+  if (item.satisfied) {
+    return {
+      label: "Concluída",
+      className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+      detail:
+        assignment?.scorePercent == null
+          ? "Resultado registrado"
+          : `${assignment.scorePercent.toFixed(0)}% · Aprovado`,
+    };
+  }
+  if (!assignment) {
+    return {
+      label: "Planejada",
+      className: "border-slate-700 bg-slate-950/40 text-slate-400",
+      detail: "Ainda sem liberação individual",
+    };
+  }
+  if (assignment.status === "in_progress") {
+    return {
+      label: "Em andamento",
+      className: "border-amber-400/50 bg-amber-400/10 text-amber-200",
+      detail: "Tentativa iniciada",
+    };
+  }
+  if (assignment.status === "pending") {
+    return {
+      label: "Liberada",
+      className: "border-sky-400/40 bg-sky-400/10 text-sky-300",
+      detail: "Disponível na aba Provas",
+    };
+  }
+  if (assignment.status === "submitted") {
+    return {
+      label: "Refazer",
+      className: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+      detail:
+        assignment.scorePercent == null
+          ? "Mínimo não atingido"
+          : `${assignment.scorePercent.toFixed(0)}% · Mínimo não atingido`,
+    };
+  }
+  return {
+    label: "Expirada",
+    className: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+    detail: "Prazo encerrado",
+  };
+}
+
 
 function formatFlightDate(dateStr: string | null): string {
   if (!dateStr) return "";
@@ -493,6 +588,68 @@ function AchievementCard({ reward }: { reward: EvaluatedJourneyReward }) {
   );
 }
 
+function JourneyProvasPanel({
+  items,
+  loading,
+  blockingItem,
+}: {
+  items: JourneyProvaItem[];
+  loading: boolean;
+  blockingItem: JourneyProvaItem | null;
+}) {
+  if (loading) {
+    return (
+      <SectionCard title="Provas da jornada" subtitle="Provas posicionadas dentro da trilha.">
+        <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <Skeleton key={index} className="h-28 rounded-2xl" />
+          ))}
+        </div>
+      </SectionCard>
+    );
+  }
+
+  if (!items.length) return null;
+
+  return (
+    <SectionCard title="Provas da jornada" subtitle="Provas posicionadas dentro da trilha.">
+      {blockingItem ? (
+        <div className="mb-3 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+          Para avançar após {blockingItem.requirement.endMissionName}, conclua {blockingItem.requirement.provaTitle}.
+        </div>
+      ) : null}
+      <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        {items.map((item) => {
+          const meta = provaStatusMeta(item);
+          return (
+            <article key={item.requirement.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/30 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="line-clamp-2 text-sm font-bold text-slate-100">{item.requirement.provaTitle}</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {item.requirement.startMissionName} até {item.requirement.endMissionName}
+                  </p>
+                </div>
+                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${meta.className}`}>
+                  {meta.label}
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="text-slate-400">{meta.detail}</span>
+                {item.requirement.requiredToAdvance ? (
+                  <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-500">
+                    Obrigatória
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
+}
+
 function AchievementsSkeleton() {
   return (
     <SectionCard title="Conquistas" subtitle="Objetivos liberados conforme seu avanco na trilha.">
@@ -609,6 +766,11 @@ function FormationJourney({
   const [maneuverCatalog, setManeuverCatalog] = useState<ManeuverCatalog>({ sections: [], subsections: [], articles: [] });
   const [drillView, setDrillView] = useState<FormationDrillView>({ kind: "timeline" });
   const [missionLayout, setMissionLayout] = useState<MissionLayoutMode>(() => readMissionLayoutMode());
+  const [journeyProvas, setJourneyProvas] = useState<JourneyProvaState>({
+    requirements: [],
+    assignments: [],
+    loading: false,
+  });
   const visibleTimelineScrollerRef = useRef<HTMLDivElement | null>(null);
   const deepLinkedMissionRef = useRef("");
   const activeTracks = useMemo(
@@ -627,10 +789,44 @@ function FormationJourney({
   );
   const approvedMissionIds = state.approvedMissionIds;
   const missionRows = useMemo(() => (track ? flattenTrackMissions(track) : []), [track]);
-  const firstOpenIndex = findNextOpenMissionIndex(
+  const journeyProvaItems = useMemo<JourneyProvaItem[]>(() => {
+    const missionIndexById = new Map(missionRows.map((row, index) => [row.mission.id, index]));
+    const endStageByMissionId = new Map(missionRows.map((row) => [row.mission.id, row.stage.id]));
+    return journeyProvas.requirements
+      .filter((requirement) => requirement.isActive && (!track || requirement.trackId === track.id))
+      .map((requirement) => {
+        const assignment = pickBestProvaAssignment(journeyProvas.assignments, requirement.provaId);
+        return {
+          requirement,
+          assignment,
+          satisfied: isProvaRequirementSatisfied(journeyProvas.assignments, requirement.provaId),
+          startIndex: missionIndexById.get(requirement.startMissionId) ?? 0,
+          endIndex: missionIndexById.get(requirement.endMissionId) ?? missionRows.length - 1,
+          endStageId: endStageByMissionId.get(requirement.endMissionId) ?? "",
+        };
+      })
+      .filter((item) => missionRows.length === 0 || item.endIndex >= item.startIndex)
+      .sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex || a.requirement.provaTitle.localeCompare(b.requirement.provaTitle, "pt-BR"));
+  }, [journeyProvas.assignments, journeyProvas.requirements, missionRows, track]);
+  const baseFirstOpenIndex = findNextOpenMissionIndex(
     missionRows.map((row) => row.mission.id),
     approvedMissionIds,
   );
+  const blockingProva = useMemo(() => {
+    const targetIndex = baseFirstOpenIndex >= 0 ? baseFirstOpenIndex : missionRows.length;
+    return (
+      journeyProvaItems
+        .filter(
+          (item) =>
+            item.requirement.requiredToAdvance &&
+            !item.satisfied &&
+            approvedMissionIds.has(item.requirement.endMissionId) &&
+            item.endIndex < targetIndex,
+        )
+        .sort((a, b) => a.endIndex - b.endIndex)[0] ?? null
+    );
+  }, [approvedMissionIds, baseFirstOpenIndex, journeyProvaItems, missionRows.length]);
+  const firstOpenIndex = blockingProva ? -1 : baseFirstOpenIndex;
   const nextIndex = firstOpenIndex >= 0 ? firstOpenIndex : missionRows.length - 1;
   const timeline: MissionTimelineItem[] = missionRows.map((row, index) => ({
     ...row,
@@ -639,7 +835,7 @@ function FormationJourney({
   }));
   const completedCount = timeline.filter((item) => item.status === "done").length;
   const nextMission = timeline.find((item) => item.status === "next") ?? null;
-  const currentStageId = nextMission?.stage.id ?? timeline[timeline.length - 1]?.stage.id ?? track?.stages[0]?.id ?? "";
+  const currentStageId = blockingProva?.endStageId || nextMission?.stage.id || timeline[timeline.length - 1]?.stage.id || track?.stages[0]?.id || "";
   const currentStageSelectionKey = `${selectedAssignment?.trackId ?? ""}:${currentStageId}`;
   const visibleStageId = track?.stages.some((stage) => stage.id === selectedStageId) ? selectedStageId : currentStageId;
   const visibleStage = track?.stages.find((stage) => stage.id === visibleStageId) ?? null;
@@ -763,6 +959,35 @@ function FormationJourney({
     if (selectedStageId && track.stages.some((stage) => stage.id === selectedStageId)) return;
     setSelectedStageId(currentStageId);
   }, [autoSelectedStageKey, currentStageId, currentStageSelectionKey, selectedStageId, track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!configured || !user || !track) {
+      setJourneyProvas({ requirements: [], assignments: [], loading: false });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setJourneyProvas((prev) => ({ ...prev, loading: true }));
+    void Promise.all([
+      listProvaJourneyRequirements({ trackId: track.id }),
+      listMyProvas(),
+    ])
+      .then(([requirementsRes, assignments]) => {
+        if (cancelled) return;
+        setJourneyProvas({
+          requirements: requirementsRes.error ? [] : requirementsRes.data,
+          assignments,
+          loading: false,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setJourneyProvas({ requirements: [], assignments: [], loading: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, track, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -890,9 +1115,15 @@ function FormationJourney({
         <div className="mt-4 grid gap-2 md:grid-cols-3">
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
             <p className="text-xs uppercase tracking-widest text-emerald-300/90">Próxima missão</p>
-            <p className="mt-1 line-clamp-2 text-xl font-black leading-tight text-white">{nextMission?.mission.name ?? "Trilha completa"}</p>
+            <p className="mt-1 line-clamp-2 text-xl font-black leading-tight text-white">
+              {blockingProva ? `Prova pendente: ${blockingProva.requirement.provaTitle}` : nextMission?.mission.name ?? "Trilha completa"}
+            </p>
             <p className="mt-1 text-xs text-emerald-50/70">
-              {nextMission ? `${nextMission.stage.name} · ${nextMission.mission.durationMinutes} min · ${nextMission.mission.type}` : "Todas as missões foram marcadas."}
+              {blockingProva
+                ? `Após ${blockingProva.requirement.endMissionName}, conclua a prova para liberar a sequência.`
+                : nextMission
+                  ? `${nextMission.stage.name} · ${nextMission.mission.durationMinutes} min · ${nextMission.mission.type}`
+                  : "Todas as missões foram marcadas."}
             </p>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
@@ -993,6 +1224,11 @@ function FormationJourney({
           </div>
         )}
       </SectionCard>
+      <JourneyProvasPanel
+        items={journeyProvaItems}
+        loading={journeyProvas.loading}
+        blockingItem={blockingProva}
+      />
       {trackRewardsLoading ? (
         <AchievementsSkeleton />
       ) : evaluatedAchievements.length > 0 ? (

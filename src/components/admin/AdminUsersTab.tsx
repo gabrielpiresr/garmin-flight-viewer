@@ -3,6 +3,7 @@ import {
   assignAdminUserTrainingTrack,
   createAdminUser,
   deleteAdminUserCascade,
+  forceAdminUserAnacSync,
   getAdminUserDetail,
   listAdminUserSummaries,
   removeAdminUserTrainingTrack,
@@ -391,6 +392,7 @@ export function AdminUsersTab() {
   const [savingRole, setSavingRole] = useState(false);
   const [savingActiveState, setSavingActiveState] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [syncingAnac, setSyncingAnac] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus | null>(null);
   const [approvingAccess, setApprovingAccess] = useState(false);
   const [savingInstructorPrefs, setSavingInstructorPrefs] = useState(false);
@@ -718,6 +720,30 @@ export function AdminUsersTab() {
       setError((e as Error).message);
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleForceAnacSync() {
+    if (!selectedDetail) return;
+    setSyncingAnac(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await forceAdminUserAnacSync(selectedDetail.userId);
+      setSelectedDetail(result.user);
+      replaceSummary(result.user);
+      if (result.anacSync.pending) {
+        showToast({
+          variant: "warning",
+          message: result.anacSync.message || "Consulta ANAC executada, mas ficou pendente.",
+        });
+      } else {
+        setSuccess(`Dados ANAC de ${displayName(result.user)} atualizados.`);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSyncingAnac(false);
     }
   }
 
@@ -1304,6 +1330,19 @@ export function AdminUsersTab() {
                     </div>
                     {canAction("users.manage") ? (
                     <div className="flex flex-wrap items-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleForceAnacSync()}
+                        disabled={syncingAnac || !selectedDetail.profile.cpf || !selectedDetail.profile.anacCode}
+                        className="rounded-lg border border-cyan-700/60 bg-cyan-950/30 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={
+                          !selectedDetail.profile.cpf || !selectedDetail.profile.anacCode
+                            ? "Preencha CPF e Código ANAC antes de atualizar."
+                            : "Consulta novamente a ANAC e atualiza licenças, habilitações, CMA e foto."
+                        }
+                      >
+                        {syncingAnac ? "Atualizando ANAC..." : "Atualizar ANAC"}
+                      </button>
                       <button
                         type="button"
                         onClick={() => void handleToggleActiveState()}

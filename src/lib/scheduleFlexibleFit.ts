@@ -48,8 +48,15 @@ function validatePacked(
     })),
   ].sort((a, b) => a.start - b.start || a.end - b.end);
 
+  // Só exige horário da escala em peers que realmente movemos.
+  // Eventos já existentes fora do dia (ex.: após 18:00) não podem bloquear
+  // um encaixe livre no meio do dia.
+  const movedIds = new Set(
+    peers.filter((peer) => peer.start !== peer.originalStart).map((peer) => peer.id),
+  );
   for (const block of blocks) {
     if (block.id === "__new__") continue;
+    if (!movedIds.has(block.id)) continue;
     if (block.start < dayStart || block.end > dayEnd) {
       return "Um evento vizinho sairia do horário da escala.";
     }

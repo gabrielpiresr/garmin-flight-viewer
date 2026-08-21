@@ -78,6 +78,25 @@ export type FlightReviewClubCheckout = {
   flownHours: number;
 };
 
+export type RegistrationCheckoutProduct = {
+  id: string;
+  name: string;
+  price: number;
+  kind?: "ground" | "enrollment" | "transfer";
+  description?: string;
+};
+
+export type RegistrationCheckout = {
+  proposalId: string;
+  paymentUrl: string;
+  publicToken?: string;
+  paymentStatus?: "pending" | "created" | "paid" | "failed";
+  provider?: string;
+  amount?: number;
+  products?: RegistrationCheckoutProduct[];
+  paid?: boolean;
+};
+
 export type FlightReviewClubQuote = {
   amount: number;
   discountPercent: number;

@@ -95,6 +95,7 @@ import type {
   InstructorIdentity,
   ScheduleWeekData,
   ScheduleWeekOption,
+  StudentIdentity,
 } from "../../types/schedule";
 import type { Aircraft } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
@@ -150,6 +151,8 @@ const schoolId = SCHOOL_ID ?? "escola_principal";
 function normalizeAircraftIdent(value: string | null | undefined): string {
   return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
+
+const STUDENT_ALWAYS_VISIBLE_EXTRA_AIRCRAFT_IDENTS = new Set(["SM001"]);
 
 type SagaScheduleSyncLogItem = SagaScheduleSyncResult & {
   id: string;
@@ -246,11 +249,30 @@ const FLIGHT_CANCELLATION_REASONS = [
 
 const SAGA_EVENT_ID_PREFIX = "saga_evt_";
 const SAGA_STUDENT_ID_PREFIX = "saga:";
+const SAGA_NO_STUDENT_ID = "0";
+const NO_STUDENT_OPTION_ID = `${SAGA_STUDENT_ID_PREFIX}${SAGA_NO_STUDENT_ID}`;
+const NO_STUDENT_LABEL = "Ninguém";
+const NO_STUDENT_OPTION: StudentIdentity = {
+  userId: NO_STUDENT_OPTION_ID,
+  label: NO_STUDENT_LABEL,
+  email: null,
+  anacCode: null,
+  weightKg: null,
+  heightCm: null,
+};
 
 // Usuário "bloqueio" no SAGA (piresr.gabriel+bloqueio@gmail.com, ID 139) — entra como
 // aluno E instrutor dos eventos de bloqueio de agenda criados pelo admin.
 const SAGA_BLOCK_USER_ID = "139";
 const SAGA_BLOCK_USER_NAME = "Bloqueio de agenda";
+
+function isNoStudentId(studentId: string | null | undefined): boolean {
+  return studentId === NO_STUDENT_OPTION_ID;
+}
+
+function isRealStudentId(studentId: string | null | undefined): studentId is string {
+  return Boolean(studentId && !studentId.startsWith(SAGA_STUDENT_ID_PREFIX) && !isNoStudentId(studentId));
+}
 
 function isSagaEventRowId(id: string): boolean {
   return id.startsWith(SAGA_EVENT_ID_PREFIX);
@@ -293,11 +315,13 @@ function sagaEventsToScheduledFlights(item: SagaDirectScheduleItem): ExistingSch
   if (segments.length === 0) return [];
   const blocked = sagaEventIsBlock(item);
   const status = sagaEventStatusLabel(item);
+  const studentId = item.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${item.studentSagaId}`;
+  const studentLabel = isNoStudentId(studentId) ? NO_STUDENT_LABEL : item.studentName || null;
   return segments.map((segment, index) => ({
     id: `${SAGA_EVENT_ID_PREFIX}${item.id}${index > 0 ? `__${segment.date}` : ""}`,
     demandId: `saga-${item.id}`,
-    studentId: item.studentUserId || `${SAGA_STUDENT_ID_PREFIX}${item.studentSagaId}`,
-    studentLabel: item.studentName || null,
+    studentId,
+    studentLabel,
     instructorId: item.instructorUserId || null,
     instructorLabel: item.instructorName || null,
     instructorAnac: null,
@@ -822,7 +846,7 @@ function formatFlexibleShiftLabel(fromMinute: number, toMinute: number): string 
   return `${minutesToScheduleHHMM(fromMinute)} → ${minutesToScheduleHHMM(toMinute)} (${sign}${delta} min)`;
 }
 
-/** Colunas de avião real (type=aviao) ficam visíveis mesmo sem eventos; ground/espera/visita só com eventos. */
+/** Colunas operacionais do aluno ficam visíveis mesmo sem eventos; ground/espera/visita só com eventos. */
 function scheduleColumnAlwaysVisible(column: ScheduleColumn, alwaysVisibleAircraftIdents: ReadonlySet<string>): boolean {
   if (isWeatherScheduleColumn(column)) return true;
   if (column.groupBy === "none") return true;
@@ -1464,7 +1488,7 @@ export function CalendarGrid({
   onDayHeaderClick?: (day: number) => void;
   /** Preview semi-transparente ao passar o mouse em espaço vazio (horas do bloco completo). */
   slotPreviewDurationHours?: number | null;
-  /** Idents de aviões reais que devem manter coluna mesmo sem eventos. */
+  /** Idents operacionais do aluno que devem manter coluna mesmo sem eventos. */
   alwaysVisibleAircraftIdents?: ReadonlySet<string>;
   /** Quando definido, avalia encaixe flexível no hover do preview. */
   resolveFlexibleFit?: (
@@ -1505,7 +1529,7 @@ export function CalendarGrid({
       aircraftRegistration: registration,
     }));
   }, [colorByAircraft, columns, items]);
-  // Aviões reais (type=aviao) sempre aparecem; ground/espera/visita só no dia em que há eventos.
+  // Colunas operacionais do aluno sempre aparecem; ground/espera/visita só no dia em que há eventos.
   const alwaysVisibleIdents = alwaysVisibleAircraftIdents;
   const gridColumns = useMemo<Array<{ day: number; column: ScheduleColumn }>>(() => {
     const buildDayAircraft = (day: number): ScheduleColumn[] => {
@@ -3608,7 +3632,8 @@ export function ScheduleFlightsTab({
   const [showWeather, setShowWeather] = useState(() => readShowWeatherPref(true));
   const [weatherBundle, setWeatherBundle] = useState<MeteoblueForecastBundle | null>(null);
   const [agendaBlockSize, setAgendaBlockSize] = useState<AgendaBlockSize>("off");
-  const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(true);
+  const [flexibleAdjustEnabled, setFlexibleAdjustEnabled] = useState(false);
+  const [confirmConflictSaveEnabled, setConfirmConflictSaveEnabled] = useState(false);
   const [pendingFlexibleShifts, setPendingFlexibleShifts] = useState<FlexibleFitShift[]>([]);
   const [selectedMonthKey, setSelectedMonthKey] = useState(() => {
     const now = new Date();
@@ -4392,7 +4417,7 @@ export function ScheduleFlightsTab({
     [aircraftOnlyFilter, airplaneOnlyIdents, colorByAircraft, visibleAircraft],
   );
 
-  /** Só aviões reais (type=aviao) mantêm coluna vazia; ground/espera/visita só com eventos. */
+  /** Aviões reais e exceções operacionais mantêm coluna vazia; ground/espera/visita só com eventos. */
   const alwaysVisibleAircraftIdents = useMemo(() => {
     const excluded = new Set<string>([
       ...(scheduleRules.studentHiddenAircraftIdents ?? []).map((ident) => normalizeAircraftIdent(ident)),
@@ -4400,8 +4425,8 @@ export function ScheduleFlightsTab({
     ]);
     const idents = new Set<string>();
     for (const aircraft of activeAircrafts) {
-      if (aircraft.type !== "aviao") continue;
       const ident = normalizeAircraftIdent(aircraft.registration);
+      if (aircraft.type !== "aviao" && !STUDENT_ALWAYS_VISIBLE_EXTRA_AIRCRAFT_IDENTS.has(ident)) continue;
       if (!ident || excluded.has(ident)) continue;
       idents.add(ident);
     }
@@ -4548,7 +4573,7 @@ export function ScheduleFlightsTab({
 
   useEffect(() => {
     const studentId = formDraft?.studentId;
-    if (!formDraft || !studentId || !user?.id || !user?.role) {
+    if (!formDraft || !studentId || isNoStudentId(studentId) || !user?.id || !user?.role) {
       setFormStudentCreditTotals(null);
       setFormStudentCreditsLoading(false);
       setFormStudentSagaScheduledFlights(null);
@@ -4617,7 +4642,7 @@ export function ScheduleFlightsTab({
 
   const formStudentScheduledFlights = useMemo((): FormStudentScheduledFlight[] | null => {
     const studentId = formDraft?.studentId;
-    if (!studentId) return null;
+    if (!studentId || isNoStudentId(studentId)) return null;
     if (scheduleRules.sagaOnlySchedule) return formStudentSagaScheduledFlights;
 
     const now = Date.now();
@@ -5678,13 +5703,17 @@ export function ScheduleFlightsTab({
     });
     // Com ajuste flexível bem-sucedido, conflitos de overlap/min_gap na aeronave já foram resolvidos;
     // ainda bloqueamos blocked/student/instructor/other.
-    const blockingConflicts = flexiblePlan?.ok
+    const blockingConflictsRaw = flexiblePlan?.ok
       ? conflicts.filter((item) => item.type === "aircraft_blocked" || item.type === "other")
       : conflicts;
-    if (blockingConflicts.length > 0 && !forceSaveWithConflict) {
+    const blockingConflicts = isNoStudentId(formDraft.studentId)
+      ? blockingConflictsRaw.filter((item) => item.message !== "Aluno já possui voo sobreposto no mesmo dia.")
+      : blockingConflictsRaw;
+    if (blockingConflicts.length > 0 && confirmConflictSaveEnabled && !forceSaveWithConflict) {
       setFormConflicts(blockingConflicts);
       return;
     }
+    if (!confirmConflictSaveEnabled) setFormConflicts([]);
 
     setFormSaving(true);
     try {
@@ -5879,19 +5908,22 @@ export function ScheduleFlightsTab({
           sagaScheduleId: formDraft.sagaScheduleId ?? null,
           notes: formDraft.notes,
         });
-        void dispatchNotificationEvent({
-          eventType: "flight.updated",
-          flightId: formDraft.id,
-          dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
-          recipientUserIds: [formDraft.studentId],
-          actorUserId: user.id,
-          data: {
-            aircraft: formDraft.aircraftRegistration,
-            flightDate: nextDate,
-            startTime: nextStartTime,
-            studentUserId: formDraft.studentId,
-          },
-        });
+        const recipientUserIds = [formDraft.studentId].filter(isRealStudentId);
+        if (recipientUserIds.length > 0) {
+          void dispatchNotificationEvent({
+            eventType: "flight.updated",
+            flightId: formDraft.id,
+            dedupeKey: `flight.updated:${formDraft.id}:${Date.now()}`,
+            recipientUserIds,
+            actorUserId: user.id,
+            data: {
+              aircraft: formDraft.aircraftRegistration,
+              flightDate: nextDate,
+              startTime: nextStartTime,
+              studentUserId: formDraft.studentId,
+            },
+          });
+        }
         showToast({ variant: "success", message: "Voo atualizado com sucesso." });
       } else {
         const result = await insertFlight(payload);
@@ -5899,19 +5931,22 @@ export function ScheduleFlightsTab({
         if (result.id) {
           void syncFlightCalendarEvent(result.id, "upsert");
           void runSagaScheduleSync(result.id, "upsert", { allowCreate: true, notes: formDraft.notes });
-          void dispatchNotificationEvent({
-            eventType: "flight.scheduled",
-            flightId: result.id,
-            dedupeKey: `flight.scheduled:${result.id}:${Date.now()}`,
-            recipientUserIds: [formDraft.studentId],
-            actorUserId: user.id,
-            data: {
-              aircraft: formDraft.aircraftRegistration,
-              flightDate: formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
-              startTime: formDraft.startTime,
-              studentUserId: formDraft.studentId,
-            },
-          });
+          const recipientUserIds = [formDraft.studentId].filter(isRealStudentId);
+          if (recipientUserIds.length > 0) {
+            void dispatchNotificationEvent({
+              eventType: "flight.scheduled",
+              flightId: result.id,
+              dedupeKey: `flight.scheduled:${result.id}:${Date.now()}`,
+              recipientUserIds,
+              actorUserId: user.id,
+              data: {
+                aircraft: formDraft.aircraftRegistration,
+                flightDate: formDraft.dateIso || weekDateFromStart(weekData.week.weekStart, formDraft.dayOfWeek),
+                startTime: formDraft.startTime,
+                studentUserId: formDraft.studentId,
+              },
+            });
+          }
         }
         showToast({ variant: "success", message: "Voo criado com sucesso." });
       }
@@ -6066,17 +6101,20 @@ export function ScheduleFlightsTab({
       await syncFlightCalendarEvent(row.id, "cancel");
       const result = await deleteSavedFlight(row.id);
       if (result.error) throw result.error;
-      void dispatchNotificationEvent({
-        eventType: "flight.cancelled",
-        dedupeKey: `flight.cancelled:${row.id}:${Date.now()}`,
-        recipientUserIds: [row.studentId, row.instructorId].filter((id): id is string => Boolean(id)),
-        actorUserId: user?.id ?? null,
-        data: {
-          aircraft: row.aircraftRegistration,
-          flightDate: row.date,
-          startTime: row.startTime,
-        },
-      });
+      const recipientUserIds = [row.studentId, row.instructorId].filter(isRealStudentId);
+      if (recipientUserIds.length > 0) {
+        void dispatchNotificationEvent({
+          eventType: "flight.cancelled",
+          dedupeKey: `flight.cancelled:${row.id}:${Date.now()}`,
+          recipientUserIds,
+          actorUserId: user?.id ?? null,
+          data: {
+            aircraft: row.aircraftRegistration,
+            flightDate: row.date,
+            startTime: row.startTime,
+          },
+        });
+      }
       showToast({ variant: "success", message: "Voo excluído com sucesso." });
       if (selectedWeekStart) await loadWeek(selectedWeekStart, undefined, { showSkeleton: false, force: true });
     } catch (e) {
@@ -6552,6 +6590,27 @@ export function ScheduleFlightsTab({
                       type="checkbox"
                       checked={flexibleAdjustEnabled}
                       onChange={(event) => setFlexibleAdjustEnabled(event.target.checked)}
+                      className="h-3.5 w-3.5 accent-sky-500"
+                    />
+                  </label>
+                </div>
+                ) : null}
+                {!readOnlyDisplay ? (
+                <div className="flex flex-col gap-1" title="Quando desligado, conflitos de intervalo aparecem na escala, mas o voo é salvo sem pedir a segunda confirmação.">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Confirmar conflitos</span>
+                  <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-lg border border-slate-700 bg-slate-900/50 px-3 text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={confirmConflictSaveEnabled}
+                      onChange={(event) => {
+                        setConfirmConflictSaveEnabled(event.target.checked);
+                        if (!event.target.checked) {
+                          setForceSaveWithConflict(true);
+                          setFormConflicts([]);
+                        } else {
+                          setForceSaveWithConflict(false);
+                        }
+                      }}
                       className="h-3.5 w-3.5 accent-sky-500"
                     />
                   </label>
@@ -7195,8 +7254,9 @@ export function ScheduleFlightsTab({
               <StudentSearchSelect
                 label="Aluno"
                 students={
-                  formDraft.studentId.startsWith(SAGA_STUDENT_ID_PREFIX)
+                  formDraft.studentId.startsWith(SAGA_STUDENT_ID_PREFIX) && !isNoStudentId(formDraft.studentId)
                     ? [
+                        NO_STUDENT_OPTION,
                         {
                           userId: formDraft.studentId,
                           label: formDraft.studentLabel || "Aluno (SAGA)",
@@ -7207,7 +7267,7 @@ export function ScheduleFlightsTab({
                         },
                         ...weekData.students,
                       ]
-                    : weekData.students
+                    : [NO_STUDENT_OPTION, ...weekData.students]
                 }
                 value={formDraft.studentId}
                 onChange={(student) =>

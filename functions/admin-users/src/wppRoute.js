@@ -293,6 +293,47 @@ function formatLimit(value) {
   return value ? String(value) : "—";
 }
 
+function parseLimitFt(value) {
+  const raw = String(value || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  if (!raw || raw === "—" || raw === "-") return null;
+  if (/UNL|UNLIMITED/.test(raw)) return 999999;
+  if (/SUPERF|SFC|GND/.test(raw)) return 0;
+  const fl = raw.match(/FL\s*0*(\d+)/);
+  if (fl) return Number(fl[1]) * 100;
+  const num = raw.match(/(\d+(?:\.\d+)?)/);
+  if (!num) return null;
+  const n = Number(num[1]);
+  if (!Number.isFinite(n)) return null;
+  if (/\bFL\b/.test(raw) && n < 1000) return n * 100;
+  return n;
+}
+
+function filterAirspacesByAltitude(hits, waypoints, performance) {
+  const list = Array.isArray(hits) ? hits : [];
+  const alts = [];
+  for (const p of performance?.profile || []) {
+    if (p?.altFt != null && Number.isFinite(p.altFt)) alts.push(p.altFt);
+  }
+  for (const wp of waypoints || []) {
+    if (wp?.altitudeFt != null && Number.isFinite(wp.altitudeFt)) alts.push(wp.altitudeFt);
+  }
+  if (!alts.length) return list;
+  const minA = Math.min(...alts);
+  const maxA = Math.max(...alts);
+  return list.filter((hit) => {
+    const lo = parseLimitFt(hit.lower);
+    const hi = parseLimitFt(hit.upper);
+    if (lo == null && hi == null) return true;
+    const bandLo = lo ?? 0;
+    const bandHi = hi ?? 999999;
+    return maxA >= bandLo - 50 && minA <= bandHi + 50;
+  });
+}
+
 function svgCard(width, height, title, body) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -430,11 +471,11 @@ function altitudeAtNm(profile, xNm) {
 
 function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terrain, performance) {
   const width = 1180;
-  const height = 520;
+  const height = 560;
   const padL = 70;
-  const padR = 30;
-  const padT = 90;
-  const padB = 50;
+  const padR = 96;
+  const padT = 100;
+  const padB = 64;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
   const totalNm = performance?.totalDistanceNm || legs[legs.length - 1]?.cumulativeDistanceNm || 1;
@@ -462,7 +503,8 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
     if (p?.elevFt != null) maxFt = Math.max(maxFt, p.elevFt);
   }
   maxFt += 400;
-  const xScale = (nm) => padL + (nm / totalNm) * plotW;
+  const xInset = 10;
+  const xScale = (nm) => padL + xInset + (nm / totalNm) * (plotW - xInset * 2);
   const yScale = (ft) => padT + plotH - ((ft - minFt) / (maxFt - minFt || 1)) * plotH;
 
   const corridorRects = [];
@@ -484,6 +526,14 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
   const plannedPts = profile.length
     ? profile.map((p) => `${xScale(p.xNm).toFixed(1)},${yScale(p.altFt).toFixed(1)}`)
     : marks.filter((m) => m.alt != null).map((m) => `${xScale(m.xNm).toFixed(1)},${yScale(m.alt).toFixed(1)}`);
+  const lastMark = marks[marks.length - 1];
+  if (profile.length && lastMark) {
+    const lastProf = profile[profile.length - 1];
+    const destAlt = lastMark.alt ?? lastProf?.altFt;
+    if (lastProf && destAlt != null && lastProf.xNm < lastMark.xNm - 0.05) {
+      plannedPts.push(`${xScale(lastMark.xNm).toFixed(1)},${yScale(destAlt).toFixed(1)}`);
+    }
+  }
   const planned = plannedPts.join(" ");
   const terrainPts = (terrain || [])
     .map((p, i, arr) => {
@@ -495,12 +545,14 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
     .join(" ");
 
   const wpLabels = marks
-    .map((m) => {
-      const x = xScale(m.xNm);
+    .map((m, idx) => {
+      const x = Math.min(padL + plotW - 8, Math.max(padL + 8, xScale(m.xNm)));
       const alt = profile.length ? altitudeAtNm(profile, m.xNm) : m.alt;
       const y = alt != null ? yScale(alt) : padT + plotH;
+      const stagger = idx % 2 === 0 ? -12 : -26;
+      const anchor = idx === marks.length - 1 ? "end" : idx === 0 ? "start" : "middle";
       return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#22d3ee" stroke="#fff" stroke-width="1.4"/>
-        <text x="${x.toFixed(1)}" y="${padT - 10}" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="ui-monospace,monospace">${escapeXml(String(m.label || "").slice(0, 10))}</text>`;
+        <text x="${x.toFixed(1)}" y="${padT + stagger}" text-anchor="${anchor}" fill="#94a3b8" font-size="11" font-family="ui-monospace,monospace">${escapeXml(String(m.label || "").slice(0, 10))}</text>`;
     })
     .join("");
 
@@ -527,14 +579,14 @@ function buildVerticalProfileSvg(origin, dest, waypoints, legs, corridors, terra
     .join("");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" overflow="visible">
   <rect width="${width}" height="${height}" rx="28" fill="#020617"/>
   <text x="40" y="58" fill="#67e8f9" font-size="22" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">Perfil vertical · ${escapeXml(origin)} → ${escapeXml(dest)}</text>
   <rect x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="#020617" stroke="#1e293b"/>
   ${yGrid}
   ${corridorRects.join("")}
   ${terrainPts ? `<polyline fill="none" stroke="#b45309" stroke-width="1.6" points="${terrainPts}"/>` : ""}
-  ${planned ? `<polyline fill="none" stroke="#22d3ee" stroke-width="3" points="${planned}"/>` : ""}
+  ${planned ? `<polyline fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${planned}"/>` : ""}
   ${wpLabels}
   ${phaseMarks}
   <text x="${padL}" y="${height - 18}" fill="#64748b" font-size="12" font-family="ui-sans-serif,system-ui,sans-serif">0 NM</text>
@@ -631,43 +683,185 @@ function buildAirportsSvg(airports, bbox, width, height, hideIcaos, scale = 1) {
     .join("");
 }
 
+function isAirportKind(wp) {
+  return wp?.kind === "airport" || wp?.kind === "origin" || wp?.kind === "destination";
+}
+
+function looksLikeCoordLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return true;
+  if (/^SNAP\b/i.test(raw)) return true;
+  if (/^REA\s+-?\d/i.test(raw)) return true;
+  if (/^-?\d+(\.\d+)?\s*[,/]\s*-?\d+/.test(raw)) return true;
+  if (/^\d{4}[NS]\d{5}[EW]$/i.test(raw.replace(/\s/g, ""))) return true;
+  return false;
+}
+
+function mapPointLabel(wp, idx, lastIdx) {
+  if (idx === 0 || idx === lastIdx || isAirportKind(wp)) {
+    return String(wp.label || wp.raw || "").trim().slice(0, 6);
+  }
+  const raw = String(wp.reaName || wp.label || wp.raw || "").trim();
+  if (looksLikeCoordLabel(raw)) return "";
+  return raw.slice(0, 16);
+}
+
+function labelBoxSize(text, font, scale) {
+  const padX = 10 * scale;
+  const padY = 6 * scale;
+  return {
+    w: Math.max(28 * scale, String(text).length * font * 0.62 + padX * 2),
+    h: font + padY * 2,
+  };
+}
+
+function boxesOverlap(a, b, gap) {
+  return a.x < b.x + b.w + gap && a.x + a.w + gap > b.x && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
+}
+
+function placeMapLabel(px, py, text, font, scale, width, height, occupied, preferred) {
+  const { w, h } = labelBoxSize(text, font, scale);
+  const gap = 6 * scale;
+  const candidates = preferred || [
+    [0, -22],
+    [0, 24],
+    [20, -8],
+    [-20, -8],
+    [18, 18],
+    [-18, 18],
+    [28, 4],
+    [-28, 4],
+    [0, -38],
+    [0, 40],
+    [36, -22],
+    [-36, -22],
+    [36, 26],
+    [-36, 26],
+  ];
+  for (const [dx, dy] of candidates) {
+    let x = px + dx * scale - w / 2;
+    let y = py + dy * scale - h / 2;
+    x = Math.max(4, Math.min(width - w - 4, x));
+    y = Math.max(4, Math.min(height - h - 4, y));
+    const box = { x, y, w, h };
+    if (occupied.some((other) => boxesOverlap(box, other, gap))) continue;
+    occupied.push(box);
+    return box;
+  }
+  return null;
+}
+
+function renderPlacedLabel(box, text, fill, scale, font) {
+  const rx = 6 * scale;
+  return `<g>
+      <rect x="${box.x.toFixed(1)}" y="${box.y.toFixed(1)}" width="${box.w.toFixed(1)}" height="${box.h.toFixed(1)}" rx="${rx.toFixed(1)}" fill="rgb(2 6 23)" fill-opacity="0.86"/>
+      <text x="${(box.x + box.w / 2).toFixed(1)}" y="${(box.y + box.h * 0.72).toFixed(1)}" text-anchor="middle" fill="${fill}" font-size="${font}" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${escapeXml(text)}</text>
+    </g>`;
+}
+
+function nearbyAirportOccupied(airports, bbox, width, height, hideIcaos, scale) {
+  const skip = new Set((hideIcaos || []).map((code) => String(code || "").toUpperCase()));
+  const font = Math.round(10 * scale);
+  const occupied = [];
+  for (const ad of airports || []) {
+    if (skip.has(ad.icao)) continue;
+    const [x, y] = project(ad.lat, ad.lng, bbox, width, height);
+    const { w, h } = labelBoxSize(ad.icao, font, scale);
+    occupied.push({ x: x + 5 * scale, y: y - 5 * scale - h, w, h });
+  }
+  return occupied;
+}
+
+function corridorLabelRuns(waypoints, corridors) {
+  const runs = [];
+  let i = 1;
+  while (i < waypoints.length) {
+    const name = String(corridors?.[i]?.name || "").trim();
+    if (!name) {
+      i += 1;
+      continue;
+    }
+    const fromIdx = i - 1;
+    while (i + 1 < waypoints.length && String(corridors[i + 1]?.name || "").trim() === name) i += 1;
+    runs.push({ name, fromIdx, toIdx: i });
+    i += 1;
+  }
+  return runs;
+}
+
 function buildRouteOverlaySvg(waypoints, bbox, width, height, extras = {}) {
   const scale = extras.scale || 1;
   const pts = waypoints.map((wp) => project(wp.lat, wp.lng, bbox, width, height));
   if (pts.length < 2) return null;
   const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const reaLines = buildReaLinesSvg(extras.reaFeatures, bbox, width, height, scale);
-  const airportMarks = buildAirportsSvg(
-    extras.airports || [],
-    bbox,
-    width,
-    height,
-    [waypoints[0]?.label, waypoints[waypoints.length - 1]?.label],
-    scale,
-  );
-  const font = Math.round(11 * scale);
-  const labels = waypoints
-    .map((wp, idx) => {
-      const [x, y] = pts[idx];
-      const label = escapeXml(wp.label || "");
-      const isEnd = idx === 0 || idx === waypoints.length - 1;
-      if (!isEnd && wp.kind !== "airport") {
-        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(4 * scale).toFixed(1)}" fill="#22d3ee" stroke="#fff" stroke-width="${(1.5 * scale).toFixed(1)}"/>`;
-      }
-      const boxW = 56 * scale;
-      const boxH = 18 * scale;
-      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(7 * scale).toFixed(1)}" fill="${idx === 0 ? "#22c55e" : "#f97316"}" stroke="#fff" stroke-width="${(2 * scale).toFixed(1)}"/>
-        <rect x="${(x - boxW / 2).toFixed(1)}" y="${(y - 28 * scale).toFixed(1)}" width="${boxW.toFixed(1)}" height="${boxH.toFixed(1)}" rx="${(6 * scale).toFixed(1)}" fill="rgb(2 6 23)" fill-opacity="0.82"/>
-        <text x="${x.toFixed(1)}" y="${(y - 15 * scale).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="${font}" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="700">${label}</text>`;
-    })
-    .join("");
+  const hideIcaos = waypoints.filter(isAirportKind).map((wp) => wp.label || wp.raw);
+  const airportMarks = buildAirportsSvg(extras.airports || [], bbox, width, height, hideIcaos, scale);
+  const occupied = nearbyAirportOccupied(extras.airports || [], bbox, width, height, hideIcaos, scale);
+  const pointFont = Math.round(11 * scale);
+  const corridorFont = Math.round(10 * scale);
+  const lastIdx = waypoints.length - 1;
+  const pointMarks = [];
+  waypoints.forEach((wp, idx) => {
+    const [x, y] = pts[idx];
+    const isEnd = idx === 0 || idx === lastIdx;
+    const isAd = isAirportKind(wp);
+    if (isEnd || isAd) {
+      pointMarks.push(
+        `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(7 * scale).toFixed(1)}" fill="${idx === 0 ? "#22c55e" : idx === lastIdx ? "#f97316" : "#38bdf8"}" stroke="#fff" stroke-width="${(2 * scale).toFixed(1)}"/>`,
+      );
+    } else {
+      pointMarks.push(
+        `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(4 * scale).toFixed(1)}" fill="#22d3ee" stroke="#fff" stroke-width="${(1.5 * scale).toFixed(1)}"/>`,
+      );
+    }
+    occupied.push({ x: x - 8 * scale, y: y - 8 * scale, w: 16 * scale, h: 16 * scale });
+  });
+  const pointLabels = [];
+  waypoints.forEach((wp, idx) => {
+    const [x, y] = pts[idx];
+    const text = mapPointLabel(wp, idx, lastIdx);
+    if (!text) return;
+    const isEnd = idx === 0 || idx === lastIdx || isAirportKind(wp);
+    const preferred = isEnd ? [[0, -22], [22, -8], [-22, -8], [0, 24]] : [[0, 22], [0, -20], [18, 8], [-18, 8]];
+    const box = placeMapLabel(x, y, text, pointFont, scale, width, height, occupied, preferred);
+    if (box) pointLabels.push(renderPlacedLabel(box, text, "#fff", scale, pointFont));
+  });
+  const corridorLabels = corridorLabelRuns(waypoints, extras.corridors || []).flatMap((run) => {
+    const a = pts[run.fromIdx];
+    const b = pts[run.toIdx];
+    if (!a || !b) return [];
+    const x = (a[0] + b[0]) / 2;
+    const y = (a[1] + b[1]) / 2;
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = (-dy / len) * 16 * scale;
+    const ny = (dx / len) * 16 * scale;
+    const side = y + ny < y ? 1 : -1;
+    const box = placeMapLabel(x + nx * side, y + ny * side, run.name, corridorFont, scale, width, height, occupied, [
+      [0, 0],
+      [0, -16],
+      [0, 16],
+      [18, -8],
+      [-18, -8],
+      [18, 12],
+      [-18, 12],
+      [0, -28],
+      [0, 28],
+    ]);
+    if (!box) return [];
+    return [renderPlacedLabel(box, run.name, "#fbbf24", scale, corridorFont)];
+  });
   return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   ${reaLines}
   ${airportMarks}
   <polyline fill="none" stroke="rgb(15 23 42)" stroke-width="${(8 * scale).toFixed(1)}" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
   <polyline fill="none" stroke="rgb(34 211 238)" stroke-width="${(4 * scale).toFixed(1)}" stroke-linejoin="round" stroke-linecap="round" points="${line}"/>
-  ${labels}
+  ${pointMarks.join("")}
+  ${corridorLabels.join("")}
+  ${pointLabels.join("")}
 </svg>`);
 }
 
@@ -716,6 +910,7 @@ async function buildRouteMapJpeg(waypoints, sharpFactory, extras = {}) {
   const overlaySvg = buildRouteOverlaySvg(waypoints, bbox, width, height, {
     reaFeatures: extras.reaFeatures,
     airports,
+    corridors: extras.corridors,
     scale,
   });
   const layers = [];
@@ -861,6 +1056,7 @@ async function handleWppRouteCommand(deps, command) {
   if (snap.ok) waypoints = snap.waypoints;
   let corridors = rea.matchLegCorridors(waypoints, features);
   waypoints = rea.applyCorridorAltitudes(waypoints, corridors);
+  waypoints = rea.applySemicircularCruiseAltitudes(waypoints, corridors);
   corridors = rea.matchLegCorridors(waypoints, features);
   waypoints = waypoints.map((wp, idx) =>
     idx === 0 || idx === waypoints.length - 1 ? wp : { ...wp, altitudeRef: wp.altitudeRef || "bs" },
@@ -875,14 +1071,13 @@ async function handleWppRouteCommand(deps, command) {
     console.warn(`[wppRoute] airspace failed ${origin}-${dest} ${String(err?.message || err).slice(0, 180)}`);
   }
   const totalNm = legs[legs.length - 1]?.cumulativeDistanceNm;
-  const tmaKnown = rea.hasTmaAirspaceData(airspaces);
-  const originTma = tmaKnown ? rea.originReaTmaId(airportWps[0], airspaces) : null;
-  const destTma = tmaKnown ? rea.destReaTmaId(airportWps[airportWps.length - 1], airspaces, totalNm) : null;
+  const originTma = rea.originReaTmaId(airportWps[0], airspaces);
+  const destTma = rea.destReaTmaId(airportWps[airportWps.length - 1], airspaces, totalNm);
   const routeText = rea.buildFplRouteText(waypoints, corridors, CRUISE_KT, {
-    originInsideTma: tmaKnown ? originTma != null : undefined,
-    destInsideTma: tmaKnown ? destTma != null : undefined,
-    originReaTmaId: tmaKnown ? originTma : undefined,
-    destReaTmaId: tmaKnown ? destTma : undefined,
+    originInsideTma: originTma != null ? true : undefined,
+    destInsideTma: destTma != null ? true : undefined,
+    originReaTmaId: originTma,
+    destReaTmaId: destTma,
   });
   const rmkText = rea.buildFplRmkText(waypoints, corridors);
 
@@ -902,6 +1097,7 @@ async function handleWppRouteCommand(deps, command) {
     const mapJpeg = await buildRouteMapJpeg(waypoints, deps.getSharp?.(), {
       reaFeatures: features,
       airports,
+      corridors,
     });
     if (mapJpeg) {
       const link = await deps.uploadPngBuffer(mapJpeg, `wpp-rota-map-${stamp}.jpg`);
@@ -939,7 +1135,7 @@ async function handleWppRouteCommand(deps, command) {
     await sendImageFromSvg(
       deps,
       incoming.from,
-      buildAirspacesSvg(origin, dest, airspaces),
+      buildAirspacesSvg(origin, dest, filterAirspacesByAltitude(airspaces, waypoints, performance)),
       `wpp-rota-airspace-${stamp}.png`,
       `✈️ Espaços aéreos · ${routeTitle}`,
     );
@@ -987,12 +1183,15 @@ async function handleWppRouteCommand(deps, command) {
 
   if (typeof deps.sendButtons === "function") {
     try {
+      const uniqueIcaos = [...new Set(icaos)].slice(0, 9);
+      const manyStops = icaos.length > 2;
       await deps.sendButtons(deps.settings, {
         to: incoming.from,
-        body: "Próximos passos:",
+        body: manyStops ? "METAR de cada aeródromo da rota e abrir na plataforma:" : "Próximos passos:",
+        listButtonText: "Aeródromos",
+        listSectionTitle: "Rota",
         buttons: [
-          { id: `metar_${origin}`, title: `Metar ${origin}` },
-          { id: `metar_${dest}`, title: `Metar ${dest}` },
+          ...uniqueIcaos.map((code) => ({ id: `metar_${code}`, title: `Metar ${code}` })),
           { id: "wpp_open_route", title: "Ver na plataforma" },
         ],
       });

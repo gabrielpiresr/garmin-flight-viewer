@@ -33,9 +33,6 @@ import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
 const STEPS = ["Voo da escala", "Aeródromos", "Critérios manuais", "Resumo"] as const;
-const DEFAULT_SCHOOL_ORIGIN_ICAO = "SBJD";
-const DEFAULT_DESTINATION_ICAO = "SDCO";
-const DEFAULT_ALTERNATE_ICAO = "SDPW";
 type Mode = "history" | "flow";
 type SoloAgendaFlight = SavedFlightListItem & {
   soloStudentName?: string;
@@ -399,8 +396,8 @@ export function InstructorSoloFlightTab() {
   const [startTime, setStartTime] = useState("");
   const [cutoffTime, setCutoffTime] = useState("");
   const [originIcaos, setOriginIcaos] = useState<string[]>([]);
-  const [destinationIcaos, setDestinationIcaos] = useState<string[]>([DEFAULT_DESTINATION_ICAO]);
-  const [alternateIcaos, setAlternateIcaos] = useState<string[]>([DEFAULT_ALTERNATE_ICAO]);
+  const [destinationIcaos, setDestinationIcaos] = useState<string[]>([]);
+  const [alternateIcaos, setAlternateIcaos] = useState<string[]>([]);
   const [manualChecks, setManualChecks] = useState<SoloFlightManualCheck[]>(() =>
     SOLO_FLIGHT_DEFAULT_MANUAL_CHECKS.map((item) => ({ ...item })),
   );
@@ -511,8 +508,8 @@ export function InstructorSoloFlightTab() {
     setEndorsementUploadNotes("");
     setIsPrivatePilotStudent(null);
     setOriginIcaos([]);
-    setDestinationIcaos([DEFAULT_DESTINATION_ICAO]);
-    setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
+    setDestinationIcaos([]);
+    setAlternateIcaos([]);
   }
 
   function pickFlight(flight: SoloAgendaFlight) {
@@ -521,9 +518,9 @@ export function InstructorSoloFlightTab() {
     setFlightDate(flight.flight_date || isoToday());
     setStartTime((flight.start_time || "").slice(0, 5));
     setCutoffTime(cutoffTimeForFlight(flight, debriefingMinutes));
-    setOriginIcaos([DEFAULT_SCHOOL_ORIGIN_ICAO]);
-    setDestinationIcaos([DEFAULT_DESTINATION_ICAO]);
-    setAlternateIcaos([DEFAULT_ALTERNATE_ICAO]);
+    setOriginIcaos([]);
+    setDestinationIcaos([]);
+    setAlternateIcaos([]);
     setEndorsements([]);
     setEndorsementUploadNotes("");
     setIsPrivatePilotStudent(null);
@@ -829,9 +826,9 @@ export function InstructorSoloFlightTab() {
             Horários em Zulu (UTC). O corte é calculado antes do debriefing; limite solo: até {cutoffLimitZulu}Z{isPrivatePilotStudent === true ? " (piloto privado)" : ""}.
           </p>
           <div className="mt-5 grid gap-5 lg:grid-cols-3">
-            <AiswebAerodromePicker label="Origem" value={originIcaos} onChange={(next) => { setOriginIcaos(next); setEvaluation(null); }} multiple={false} helper="SBJD é usado como padrão, mas pode ser alterado." />
-            <AiswebAerodromePicker label="Aeródromos de destino solo" value={destinationIcaos} onChange={(next) => { setDestinationIcaos(next); setEvaluation(null); }} helper="Padrão: SDCO. Use um ou mais aeródromos onde haverá operação solo." />
-            <AiswebAerodromePicker label="Aeródromos alternativos" value={alternateIcaos} onChange={(next) => { setAlternateIcaos(next); setEvaluation(null); }} helper="Padrão: SDPW. Informe os alternativos previstos para o checklist." />
+            <AiswebAerodromePicker label="Origem" value={originIcaos} onChange={(next) => { setOriginIcaos(next); setEvaluation(null); }} multiple={false} helper="Informe o aeródromo de origem do voo solo." />
+            <AiswebAerodromePicker label="Aeródromos de destino solo" value={destinationIcaos} onChange={(next) => { setDestinationIcaos(next); setEvaluation(null); }} helper="Use um ou mais aeródromos onde haverá operação solo." />
+            <AiswebAerodromePicker label="Aeródromos alternativos" value={alternateIcaos} onChange={(next) => { setAlternateIcaos(next); setEvaluation(null); }} helper="Informe os alternativos previstos para o checklist." />
           </div>
           <div className="mt-5 flex justify-between gap-3">
             <button type="button" onClick={() => setStep(0)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Voltar</button>

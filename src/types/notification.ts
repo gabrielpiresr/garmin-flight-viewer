@@ -46,6 +46,14 @@ export type EmailBrandSettings = {
   supportEmail: string;
   footerText: string;
   faviconUrl?: string | null;
+  registrationDirectionsTitle?: string;
+  registrationDirectionsPlace?: string;
+  registrationDirectionsText?: string;
+  registrationDirectionsMapsUrl?: string;
+  registrationNextStepsTitle?: string;
+  registrationNextStepsItems?: string[];
+  registrationMaterialsTitle?: string;
+  registrationMaterialsItems?: string[];
   updatedAt: string | null;
 };
 
@@ -59,6 +67,14 @@ export type EmailBrandSettingsInput = {
   supportEmail?: string | null;
   footerText?: string | null;
   faviconUrl?: string | null;
+  registrationDirectionsTitle?: string | null;
+  registrationDirectionsPlace?: string | null;
+  registrationDirectionsText?: string | null;
+  registrationDirectionsMapsUrl?: string | null;
+  registrationNextStepsTitle?: string | null;
+  registrationNextStepsItems?: string[];
+  registrationMaterialsTitle?: string | null;
+  registrationMaterialsItems?: string[];
 };
 
 export type PushSubscriptionInput = {

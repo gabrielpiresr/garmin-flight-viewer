@@ -323,13 +323,12 @@ export function buildFplRouteText(
       break;
     }
   }
-  // Destino “dentro” só engole o DCT final se o AD está no corredor, o snap é curto,
-  // ou a REA do destino veio depois de um DCT (outra TMA). Saída da REA para DCT = campo 15 completo.
+  // Destino no corredor ou snap curto até o AD = termina em REA, mesmo se o WPP não detectar TMA.
   const endsInside =
-    destInside === false
-      ? false
-      : destOnRea || tinyTrailingSnap
-        ? destInside !== false
+    destOnRea || tinyTrailingSnap
+      ? true
+      : destInside === false
+        ? false
         : destInside === true && !continuousRea;
   const sameReaTma = originTmaId && destTmaId ? originTmaId === destTmaId : true;
   if (startsInside && endsInside && continuousRea && sameReaTma && (destOnRea || tinyTrailingSnap)) {

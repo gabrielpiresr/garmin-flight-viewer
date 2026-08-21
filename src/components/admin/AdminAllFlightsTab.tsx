@@ -220,6 +220,7 @@ export function AdminAllFlightsTab() {
         ].join(" ").toLowerCase();
         if (!text.includes(q)) return false;
       }
+      if (statusFilter === "all" && isScheduledFlight(item, info)) return false;
       if (statusFilter !== "all" && item.flight_status !== statusFilter) return false;
       if (dateFrom && iso < dateFrom) return false;
       if (dateTo && iso > dateTo) return false;

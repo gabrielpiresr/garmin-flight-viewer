@@ -183,6 +183,22 @@ export type InstructorAdmissionFieldValue =
 
 export type InstructorAdmissionCandidateSource = "manual" | "form" | "instructor";
 
+export type RegistrationLinkOptions = {
+  allowCheckout: boolean;
+  chargeGround: boolean;
+  chargeEnrollment: boolean;
+  chargeTransfer: boolean;
+  allowFirstFlightBooking: boolean;
+};
+
+export const DEFAULT_REGISTRATION_LINK_OPTIONS: RegistrationLinkOptions = {
+  allowCheckout: false,
+  chargeGround: false,
+  chargeEnrollment: false,
+  chargeTransfer: false,
+  allowFirstFlightBooking: false,
+};
+
 export type InstructorAdmissionCandidate = {
   id: string;
   stageId: string;

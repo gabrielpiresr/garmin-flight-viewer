@@ -7,6 +7,11 @@ import {
   normalizeFlightEvaluationRules,
   type FlightEvaluationRules,
 } from "./flightEvaluation";
+import {
+  DEFAULT_CAPACITY_PROJECTION_SETTINGS,
+  normalizeCapacityProjectionSettings,
+  type CapacityProjectionSettings,
+} from "./capacityProjection";
 
 export type FlightReviewClubLpType = "internal_public_page" | "external_url";
 
@@ -280,10 +285,13 @@ export type SchoolRules = {
   flightReviewClub: FlightReviewClubRules;
   flightEvaluation: FlightEvaluationRules;
   soloFlight: SoloFlightRules;
+  capacityProjection: CapacityProjectionSettings;
   updatedAt: string | null;
 };
 
-export type SchoolRulesInput = Omit<SchoolRules, "updatedAt">;
+export type SchoolRulesInput = Omit<SchoolRules, "updatedAt" | "capacityProjection"> & {
+  capacityProjection?: CapacityProjectionSettings;
+};
 
 export const STUDENT_PORTAL_TAB_OPTIONS: Array<{ id: StudentPortalTab; label: string; defaultEnabled?: boolean }> = [
   { id: "home", label: "Home" },
@@ -713,6 +721,7 @@ export const DEFAULT_SCHOOL_RULES: SchoolRules = {
   flightReviewClub: DEFAULT_FLIGHT_REVIEW_CLUB_RULES,
   flightEvaluation: DEFAULT_FLIGHT_EVALUATION_RULES,
   soloFlight: DEFAULT_SOLO_FLIGHT_RULES,
+  capacityProjection: DEFAULT_CAPACITY_PROJECTION_SETTINGS,
   updatedAt: null,
 };
 
@@ -1040,6 +1049,10 @@ export function normalizeSchoolRules(input: unknown): SchoolRules {
     })(),
     flightEvaluation: normalizeFlightEvaluationRules(raw.flightEvaluation),
     soloFlight: normalizeSoloFlightRules(raw.soloFlight),
+    capacityProjection: normalizeCapacityProjectionSettings(
+      raw.capacityProjection,
+      raw.schedule?.maintenanceAvgHoursPerDay ?? DEFAULT_FLIGHT_SCHEDULE_RULES.maintenanceAvgHoursPerDay,
+    ),
     updatedAt: raw.updatedAt ?? null,
   };
 }

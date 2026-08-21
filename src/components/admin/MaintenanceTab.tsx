@@ -13,12 +13,7 @@ import {
   uploadWorkOrderAttachment,
   type WorkOrderPayload,
 } from "../../lib/maintenanceDb";
-import {
-  discrepancyLabel,
-  linkDiscrepancyToWorkOrder,
-  listFlightDiscrepancies,
-  type FlightDiscrepancy,
-} from "../../lib/flightDiscrepanciesDb";
+import { linkDiscrepancyToWorkOrder } from "../../lib/flightDiscrepanciesDb";
 import { getFlightRecordMetaBatch, listAllFlightsByAircraft, type SavedFlightListItem } from "../../lib/flightsDb";
 import { flightAircraftHours } from "../../lib/flightHours";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
@@ -37,66 +32,7 @@ import { useToast } from "../ui/ToastProvider";
 
 const schoolId = SCHOOL_ID ?? "escola_principal";
 
-const WORK_ORDER_TYPES = ["scheduled", "unscheduled", "corrective", "preventive", "inspection", "overhaul", "migration_baseline"] as const;
-const WORK_ORDER_STATUS = ["open", "in_progress", "completed", "released", "canceled"] as const;
-const REFERENCE_TYPES = ["", "MM", "AMM", "IPC", "SB", "AD", "ICA", "OEM", "LEGACY_RECORD"] as const;
-const LICENSE_TYPES = ["", "MMA", "CEL", "GMP"] as const;
-const DATA_ORIGINS = ["native", "migration", "imported", "corrected"] as const;
-const SOURCE_CONFIDENCE = ["", "low", "medium", "high"] as const;
 const ATTACHMENT_TYPES = ["pdf", "image", "invoice", "certificate", "CRS", "AD", "SB", "logbook", "legacy_record", "migration_evidence"] as const;
-
-const WORK_ORDER_TYPE_LABELS: Record<string, string> = {
-  scheduled: "Programada",
-  unscheduled: "Não programada",
-  corrective: "Corretiva",
-  preventive: "Preventiva",
-  inspection: "Inspeção",
-  overhaul: "Overhaul",
-  migration_baseline: "Baseline técnico inicial",
-};
-const STATUS_LABELS: Record<string, string> = {
-  open: "Aberta",
-  in_progress: "Em andamento",
-  completed: "Concluída",
-  released: "Liberada",
-  canceled: "Cancelada",
-};
-const STATUS_BADGE_CLASSES: Record<string, string> = {
-  open: "border-sky-500/40 bg-sky-500/10 text-sky-300",
-  in_progress: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  completed: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-  released: "border-violet-500/40 bg-violet-500/10 text-violet-300",
-  canceled: "border-slate-600/60 bg-slate-700/30 text-slate-400",
-};
-const REFERENCE_LABELS: Record<string, string> = {
-  "": "Não informado",
-  MM: "Manual de Manutenção (MM)",
-  AMM: "Aircraft Maintenance Manual (AMM)",
-  IPC: "Catálogo Ilustrado de Peças (IPC)",
-  SB: "Boletim de Serviço (SB)",
-  AD: "Diretriz de Aeronavegabilidade (AD)",
-  ICA: "Instruções de Aeronavegabilidade Continuada (ICA)",
-  OEM: "Fabricante original (OEM)",
-  LEGACY_RECORD: "Registro legado",
-};
-const LICENSE_LABELS: Record<string, string> = {
-  "": "Não informado",
-  MMA: "Mecânico de Manutenção Aeronáutica (MMA)",
-  CEL: "Célula (CEL)",
-  GMP: "Grupo Motopropulsor (GMP)",
-};
-const DATA_ORIGIN_LABELS: Record<string, string> = {
-  native: "Nativo",
-  migration: "Migração",
-  imported: "Importado",
-  corrected: "Corrigido",
-};
-const CONFIDENCE_LABELS: Record<string, string> = {
-  "": "Não informado",
-  low: "Baixa",
-  medium: "Média",
-  high: "Alta",
-};
 const ATTACHMENT_LABELS: Record<string, string> = {
   pdf: "PDF",
   image: "Imagem",
@@ -167,8 +103,8 @@ const emptyForm: WorkOrderForm = {
   aircraft_id: "",
   maintenance_program_item_id: "",
   work_order_type: "scheduled",
-  status: "open",
-  opened_at: new Date().toISOString().slice(0, 16),
+  status: "released",
+  opened_at: "",
   started_at: "",
   completed_at: "",
   released_at: "",
@@ -191,10 +127,10 @@ const emptyForm: WorkOrderForm = {
   mechanic_license_type: "",
   mechanic_signature: "",
   mechanic_is_current_user: false,
-  approved_return_to_service: false,
+  approved_return_to_service: true,
   release_statement: "",
-  aircraft_released: false,
-  grounding_removed: false,
+  aircraft_released: true,
+  grounding_removed: true,
   legacy_update: false,
   data_origin: "native",
   source_confidence: "",
@@ -231,14 +167,6 @@ function numberInput(value: string, integerOnly = false): string {
   const firstDot = normalized.indexOf(".");
   if (firstDot === -1) return normalized;
   return `${normalized.slice(0, firstDot + 1)}${normalized.slice(firstDot + 1).replace(/\./g, "")}`;
-}
-
-function moneyValue(value: string): number {
-  return decimal(value) ?? 0;
-}
-
-function moneyLabel(value: number): string {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
 function formatNumberValue(value: number | null | undefined): string {
@@ -345,7 +273,8 @@ function toDatetimeLocal(value: string | null): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toISOString().slice(0, 16);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function nextWorkOrderNumber(): string {
@@ -356,7 +285,76 @@ function nextWorkOrderNumber(): string {
 }
 
 function nowDatetimeLocal(): string {
-  return new Date().toISOString().slice(0, 16);
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
+
+function datePart(value: string): string {
+  return value.slice(0, 10);
+}
+
+function applySameDate(form: WorkOrderForm, date: string): WorkOrderForm {
+  const time = (form.opened_at.split("T")[1] || "12:00").slice(0, 5);
+  const dt = date ? `${date}T${time}` : "";
+  return {
+    ...form,
+    opened_at: dt,
+    started_at: dt,
+    completed_at: dt,
+    released_at: dt,
+  };
+}
+
+function workOrderTypeFromItem(item: MaintenanceProgramItem | undefined): MaintenanceWorkOrder["work_order_type"] {
+  if (!item) return "scheduled";
+  if (item.item_type === "corrective") return "corrective";
+  if (item.item_type === "preventive") return "preventive";
+  if (item.item_type === "overhaul") return "overhaul";
+  if (item.item_type === "inspection") return "inspection";
+  return "scheduled";
+}
+
+function applyCalculationDefaults(
+  form: WorkOrderForm,
+  params: { userId: string; userName: string; programItem?: MaintenanceProgramItem },
+): WorkOrderForm {
+  const now = nowDatetimeLocal();
+  const dateTime = form.opened_at || now;
+  const userName = params.userName.trim() || "Sistema";
+  const userId = form.created_by.trim() || params.userId;
+  const item = params.programItem;
+  const maintenanceLabel = item ? `${item.code} — ${item.title}` : "Manutenção";
+  return {
+    ...form,
+    work_order_number: form.work_order_number.trim() || nextWorkOrderNumber(),
+    work_order_type: form.work_order_type || workOrderTypeFromItem(item),
+    status: "released",
+    opened_at: dateTime,
+    started_at: form.started_at || dateTime,
+    completed_at: form.completed_at || dateTime,
+    released_at: form.released_at || dateTime,
+    description_performed: form.description_performed.trim() || maintenanceLabel,
+    reference_type: form.reference_type || item?.reference_type || "MM",
+    reference_document: form.reference_document.trim() || item?.reference_document || "Programa de manutenção",
+    reference_revision: form.reference_revision.trim() || item?.reference_revision || "",
+    reference_section: form.reference_section.trim() || item?.reference_section || "",
+    mechanic_name: form.mechanic_name.trim() || userName,
+    mechanic_canac: form.mechanic_canac.trim() || "N/A",
+    mechanic_license_type: form.mechanic_license_type || "MMA",
+    mechanic_signature: form.mechanic_signature.trim() || "N/A",
+    approved_return_to_service: true,
+    aircraft_released: true,
+    grounding_removed: true,
+    release_statement: form.release_statement.trim() || "Registro operacional para cálculo de horas.",
+    data_origin: form.legacy_update ? form.data_origin : "native",
+    created_by: userId,
+    released_by_user_id: form.released_by_user_id.trim() || userId,
+    released_by_name: form.released_by_name.trim() || userName,
+    released_by_canac: form.released_by_canac.trim() || "N/A",
+    released_by_license_type: form.released_by_license_type || "MMA",
+    checklist_execution: form.checklist_execution.map((task) => ({ ...task, done: true })),
+  };
 }
 
 function checklistFromProgramItem(item: MaintenanceProgramItem | undefined): MaintenanceWorkOrderChecklistTask[] {
@@ -376,10 +374,6 @@ function mergeChecklistWithProgram(
 ): MaintenanceWorkOrderChecklistTask[] {
   if (current.length > 0) return current;
   return checklistFromProgramItem(item);
-}
-
-function hasPendingChecklistTasks(form: WorkOrderForm): boolean {
-  return form.checklist_execution.some((task) => !task.done);
 }
 
 function formToPayload(form: WorkOrderForm): WorkOrderPayload {
@@ -505,10 +499,9 @@ export function MaintenanceTab() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [form, setForm] = useState<WorkOrderForm>(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [filter, setFilter] = useState({ aircraft: "", status: "", type: "", origin: "", mechanic: "" });
+  const [filterAircraft, setFilterAircraft] = useState("");
   const [attachmentType, setAttachmentType] = useState<MaintenanceAttachmentType>("legacy_record");
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
-  const [discrepancies, setDiscrepancies] = useState<FlightDiscrepancy[]>([]);
   const [invalidFields, setInvalidFields] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
@@ -519,9 +512,15 @@ export function MaintenanceTab() {
         listAircrafts(schoolId),
         listModels(),
       ]);
+      const planes = aircraftRows.filter((a) => a.type === "aviao");
+      const uniqueModelIds = [...new Set(planes.map((aircraft) => aircraft.model_id).filter(Boolean))];
+      const itemRows = (
+        await Promise.all(uniqueModelIds.map((modelId) => listProgramItemsByModel(modelId).catch(() => [] as MaintenanceProgramItem[])))
+      ).flat();
       setOrders(orderRows);
-      setAircrafts(aircraftRows.filter((a) => a.type === "aviao"));
+      setAircrafts(planes);
       setModels(modelRows);
+      setProgramItems(itemRows);
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
@@ -540,19 +539,10 @@ export function MaintenanceTab() {
   const selectedAircraft = aircraftMap.get(form.aircraft_id);
   const selectedProgramItem = form.maintenance_program_item_id ? itemMap.get(form.maintenance_program_item_id) : undefined;
 
-  useEffect(() => {
-    if (!selectedAircraft?.model_id) {
-      setProgramItems([]);
-      setDiscrepancies([]);
-      return;
-    }
-    listProgramItemsByModel(selectedAircraft.model_id)
-      .then(setProgramItems)
-      .catch((e: Error) => showToast({ variant: "error", message: e.message }));
-    listFlightDiscrepancies(selectedAircraft.registration)
-      .then(setDiscrepancies)
-      .catch((e: Error) => showToast({ variant: "error", message: e.message }));
-  }, [selectedAircraft?.model_id, selectedAircraft?.registration, showToast]);
+  const programItemsForAircraft = useMemo(
+    () => (selectedAircraft?.model_id ? programItems.filter((item) => item.aircraft_model_id === selectedAircraft.model_id) : []),
+    [programItems, selectedAircraft?.model_id],
+  );
 
   useEffect(() => {
     if (!showForm || !form.maintenance_program_item_id || !selectedProgramItem || form.checklist_execution.length > 0) return;
@@ -590,15 +580,9 @@ export function MaintenanceTab() {
   }, [editingId, form.opened_at, orders, selectedAircraft, showForm, showToast]);
 
   const visibleOrders = orders.filter((order) => {
-    if (filter.aircraft && order.aircraft_id !== filter.aircraft) return false;
-    if (filter.status && order.status !== filter.status) return false;
-    if (filter.type && order.work_order_type !== filter.type) return false;
-    if (filter.origin && order.data_origin !== filter.origin) return false;
-    if (filter.mechanic && !(order.mechanic_name ?? "").toLowerCase().includes(filter.mechanic.toLowerCase())) return false;
+    if (filterAircraft && order.aircraft_id !== filterAircraft) return false;
     return true;
   });
-
-  const budgetTotal = moneyValue(form.parts_cost) + moneyValue(form.labor_cost) + moneyValue(form.other_costs);
 
   function required(value: string | null | undefined): boolean {
     return Boolean(value?.trim());
@@ -612,128 +596,56 @@ export function MaintenanceTab() {
     };
 
     check("aircraft_id", required(form.aircraft_id), "Selecione a aeronave.");
-    check("work_order_type", required(form.work_order_type), "Selecione o tipo da OS.");
-    check("status", required(form.status), "Selecione o status.");
-    check("opened_at", required(form.opened_at), "Data/hora de abertura nao foi definida pelo fluxo da OS.");
-    if (!required(form.created_by || user?.id)) errors.push("Não foi possível identificar o usuário que abriu a OS.");
-
-    if (form.work_order_type === "scheduled") {
-      check("maintenance_program_item_id", required(form.maintenance_program_item_id), "OS programada exige item do programa de manutenção.");
-    }
-
-    if (form.status === "in_progress") {
-      check("started_at", required(form.started_at), "OS em andamento exige data/hora de início.");
-      check("aircraft_ttaf", decimal(form.aircraft_ttaf) != null, "OS em andamento exige Total de horas aeronave (TTAF).");
-    }
-
-    const baseline = form.work_order_type === "migration_baseline";
-    if (baseline && form.aircraft_id) {
-      const existingBaseline = orders.some(
-        (order) =>
-          order.aircraft_id === form.aircraft_id &&
-          order.work_order_type === "migration_baseline" &&
-          order.id !== editingId
-      );
-      if (!existingBaseline === false) errors.push("Esta aeronave já possui um baseline técnico inicial cadastrado.");
-      check("aircraft_total_landings", integer(form.aircraft_total_landings) != null, "Baseline técnico exige total de pousos da aeronave.");
-    }
-
-    if (form.status === "completed" || form.status === "released") {
-      check("aircraft_ttaf", decimal(form.aircraft_ttaf) != null, "Para concluir, informe Total de horas aeronave (TTAF).");
-      check("description_performed", required(form.description_performed), "Para concluir, informe a descrição executada.");
-      if (form.legacy_update) check("data_origin", required(form.data_origin), "Para concluir, informe a origem do dado.");
-
-      if (baseline) {
-        if (form.data_origin !== "migration") errors.push("Baseline técnico deve ter origem do dado igual a migração.");
-        check("source_confidence", required(form.source_confidence), "Baseline técnico exige nível de confiança.");
-        check("source_notes", required(form.source_notes), "Baseline técnico exige notas da origem.");
-      } else {
-        check("completed_at", required(form.completed_at), "Para concluir, informe data/hora de conclusão.");
-        check("reference_type", required(form.reference_type), "Para concluir, informe o tipo de referência.");
-        check("reference_document", required(form.reference_document), "Para concluir, informe o documento de referência.");
-        check("mechanic_name", required(form.mechanic_name), "Para concluir, informe o mecânico responsável.");
-        check("mechanic_canac", required(form.mechanic_canac), "Para concluir, informe CANAC/licença.");
-        check("mechanic_license_type", required(form.mechanic_license_type), "Para concluir, informe o tipo de licença.");
-      }
-
-      if (form.linked_discrepancy_id) {
-        check("discrepancy_reported", required(form.discrepancy_reported), "OS corretiva concluída exige discrepância reportada.");
-        check("corrective_action", required(form.corrective_action), "OS corretiva concluída exige ação corretiva.");
-      }
-    }
-
-    if (form.status === "released") {
-      check("released_at", required(form.released_at), "Para liberar, informe data/hora da liberação.");
-      check("approved_return_to_service", form.approved_return_to_service, "Para liberar, marque retorno ao serviço aprovado.");
-      check("aircraft_released", form.aircraft_released, "Para liberar, marque aeronave liberada.");
-      check("release_statement", required(form.release_statement), "Para liberar, informe a declaração de retorno ao serviço.");
-      check("mechanic_signature", required(form.mechanic_signature), "Para liberar, informe assinatura/hash ou referência.");
-      if (!required(form.released_by_user_id)) errors.push("Para liberar, marque a flag de usuario responsavel pela liberacao.");
-      check("released_by_name", required(form.released_by_name), "Para liberar, informe o nome do responsável pela liberação.");
-      check("released_by_canac", required(form.released_by_canac), "Para liberar, informe o CANAC/licença do responsável pela liberação.");
-      check("released_by_license_type", required(form.released_by_license_type), "Para liberar, informe a habilitação do responsável pela liberação.");
-    }
+    check("opened_at", required(form.opened_at), "Informe a data da manutenção.");
+    check("aircraft_ttaf", decimal(form.aircraft_ttaf) != null, "Informe as horas da aeronave no momento da manutenção.");
+    check("maintenance_program_item_id", required(form.maintenance_program_item_id), "Selecione a manutenção realizada.");
+    if (!required(form.created_by || user?.id)) errors.push("Não foi possível identificar o usuário que lançou a manutenção.");
 
     return { errors, keys };
   }
 
-  function applyStatusFlow(status: WorkOrderForm["status"]) {
+  const openCreate = useCallback((aircraftId?: string) => {
     const now = nowDatetimeLocal();
-    setForm((current) => ({
-      ...current,
-      status,
-      opened_at: current.opened_at || now,
-      started_at: ["in_progress", "completed", "released"].includes(status) ? current.started_at || now : "",
-      completed_at: ["completed", "released"].includes(status) ? current.completed_at || now : "",
-      released_at: status === "released" ? current.released_at || now : "",
-    }));
-  }
-
-  function applyCurrentUserAsMechanic(checked: boolean) {
-    setForm((current) => ({
-      ...current,
-      mechanic_is_current_user: checked,
-      mechanic_name: checked ? user?.name || current.mechanic_name : current.mechanic_name,
-    }));
-  }
-
-  function applyCurrentUserAsReleaseResponsible(checked: boolean) {
-    setForm((current) => ({
-      ...current,
-      release_is_current_user: checked,
-      released_by_user_id: checked ? user?.id || current.released_by_user_id : "",
-      released_by_name: checked ? user?.name || current.released_by_name : current.released_by_name,
-    }));
-  }
-
-  function updateChecklistTask(taskId: string, patch: Partial<MaintenanceWorkOrderChecklistTask>) {
-    setForm((current) => ({
-      ...current,
-      checklist_execution: current.checklist_execution.map((task) => (task.id === taskId ? { ...task, ...patch } : task)),
-    }));
-  }
-
-  function openCreate(type: MaintenanceWorkOrder["work_order_type"] = "scheduled") {
-    const aircraft = aircrafts[0];
+    const aircraft = aircraftId ? aircrafts.find((row) => row.id === aircraftId) : undefined;
     setForm({
       ...fillEmptyAircraftHours(emptyForm, aircraft),
       work_order_number: nextWorkOrderNumber(),
       created_by: user?.id ?? "",
-      work_order_type: type,
-      data_origin: type === "migration_baseline" ? "migration" : "native",
-      legacy_update: type === "migration_baseline",
-      reference_type: type === "migration_baseline" ? "LEGACY_RECORD" : "",
+      opened_at: now,
+      started_at: now,
+      completed_at: now,
+      released_at: now,
+      status: "released",
+      work_order_type: "scheduled",
+      approved_return_to_service: true,
+      aircraft_released: true,
+      grounding_removed: true,
       aircraft_id: aircraft?.id ?? "",
-      description_performed:
-        type === "migration_baseline"
-          ? "Baseline tecnico inicial criado com base em registros antigos."
-          : "",
     });
     setInvalidFields(new Set());
     setEditingId(null);
     setDetailId(null);
     setShowForm(true);
-  }
+  }, [aircrafts, user?.id]);
+
+  const [launchNonce, setLaunchNonce] = useState(0);
+  useEffect(() => {
+    const onPop = () => setLaunchNonce((n) => n + 1);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  useEffect(() => {
+    if (loading || aircrafts.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("new") !== "1") return;
+    const aircraftId = params.get("aircraft")?.trim() || "";
+    openCreate(aircraftId || undefined);
+    params.delete("new");
+    params.delete("aircraft");
+    const search = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`);
+  }, [aircrafts.length, launchNonce, loading, openCreate]);
 
   async function openEdit(order: MaintenanceWorkOrder) {
     setForm(workOrderToForm(order));
@@ -760,16 +672,14 @@ export function MaintenanceTab() {
       showToast({ variant: "error", message: validationErrors[0] });
       return;
     }
-    if ((form.status === "completed" || form.status === "released") && hasPendingChecklistTasks(form)) {
-      showToast({ variant: "warning", message: "Checklist com tarefas pendentes. A OS sera salva mesmo assim." });
-    }
     setInvalidFields(new Set());
     setSaving(true);
     try {
-      const payload = formToPayload({
-        ...form,
-        created_by: form.created_by || user?.id || "",
-      });
+      const payload = formToPayload(applyCalculationDefaults(form, {
+        userId: user?.id ?? "",
+        userName: user?.name ?? "",
+        programItem: selectedProgramItem,
+      }));
       if (editingId) {
         const updated = await updateWorkOrder(editingId, payload);
         setOrders((prev) => prev.map((order) => (order.id === editingId ? updated : order)));
@@ -794,9 +704,6 @@ export function MaintenanceTab() {
           responsibleCanac: created.released_by_canac ?? created.mechanic_canac,
           picCanac: created.released_by_canac,
         });
-      }
-      if (selectedAircraft?.registration) {
-        setDiscrepancies(await listFlightDiscrepancies(selectedAircraft.registration));
       }
       setShowForm(false);
       setAttachmentFile(null);
@@ -830,199 +737,96 @@ export function MaintenanceTab() {
   }
 
   const detailOrder = detailId ? orders.find((order) => order.id === detailId) ?? null : null;
+  const detailProgramItem = detailOrder?.maintenance_program_item_id
+    ? itemMap.get(detailOrder.maintenance_program_item_id) ?? null
+    : null;
 
   return (
     <div className="w-full space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Ordens de Serviço</h2>
-          <p className="text-xs text-slate-500">OS por aeronave, baseline tecnico inicial e evidencias anexas.</p>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Manutenções</h2>
+          <p className="text-xs text-slate-500">Lançamento simplificado para cálculo de horas. Preencha avião, data, horas e o serviço realizado.</p>
         </div>
         {!showForm ? (
           <div className="flex flex-wrap gap-2">
             {canAction("os.create") && (
               <button type="button" onClick={() => openCreate()} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500">
-                Nova OS
+                Lançar manutenção
               </button>
             )}
           </div>
         ) : null}
       </div>
 
-      {!showForm ? <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3 md:grid-cols-5">
-        <FilterSelect label="Aeronave" value={filter.aircraft} options={["", ...aircrafts.map((a) => a.id)]} labels={Object.fromEntries(aircrafts.map((a) => [a.id, a.registration]))} onChange={(value) => setFilter((f) => ({ ...f, aircraft: value }))} />
-        <FilterSelect label="Status" value={filter.status} options={["", ...WORK_ORDER_STATUS]} labels={STATUS_LABELS} onChange={(value) => setFilter((f) => ({ ...f, status: value }))} />
-        <FilterSelect label="Tipo" value={filter.type} options={["", ...WORK_ORDER_TYPES]} labels={WORK_ORDER_TYPE_LABELS} onChange={(value) => setFilter((f) => ({ ...f, type: value }))} />
-        <FilterSelect label="Origem" value={filter.origin} options={["", ...DATA_ORIGINS]} labels={DATA_ORIGIN_LABELS} onChange={(value) => setFilter((f) => ({ ...f, origin: value }))} />
-        <label>
-          <span className="mb-1 block text-xs text-slate-500">Mecânico</span>
-          <input value={filter.mechanic} onChange={(event) => setFilter((f) => ({ ...f, mechanic: event.target.value }))} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-        </label>
-      </div> : null}
+      {!showForm ? (
+        <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3 md:grid-cols-3">
+          <FilterSelect
+            label="Aeronave"
+            value={filterAircraft}
+            options={["", ...aircrafts.map((a) => a.id)]}
+            labels={{ "": "Todas", ...Object.fromEntries(aircrafts.map((a) => [a.id, a.registration])) }}
+            onChange={setFilterAircraft}
+          />
+        </div>
+      ) : null}
 
       {showForm ? (
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-200">{editingId ? "Editar OS" : "Nova OS"}</h3>
-          <div className="space-y-4">
-            {/* Seção 1 — Identificação */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Identificação</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <ReadOnly label="Número da OS" value={form.work_order_number || "Gerado ao salvar"} tooltip="Gerado automaticamente pelo sistema." />
-                <Select label="Aeronave *" value={form.aircraft_id} options={aircrafts.map((a) => a.id)} labels={Object.fromEntries(aircrafts.map((a) => [a.id, `${a.registration} - ${modelMap.get(a.model_id)?.name ?? "Modelo"}`]))} onChange={(value) => setForm((f) => fillEmptyAircraftHours({ ...f, aircraft_id: value, maintenance_program_item_id: "", checklist_execution: [] }, aircraftMap.get(value)))} tooltip="A aeronave específica à qual a OS ficará vinculada." invalid={invalidFields.has("aircraft_id")} />
-                <Select label="Tipo *" value={form.work_order_type} options={editingId ? WORK_ORDER_TYPES : WORK_ORDER_TYPES.filter((t) => t !== "migration_baseline")} labels={WORK_ORDER_TYPE_LABELS} onChange={(value) => setForm((f) => ({ ...f, work_order_type: value as WorkOrderForm["work_order_type"], data_origin: value === "migration_baseline" ? "migration" : f.data_origin }))} tooltip="Tipo de ordem de serviço." invalid={invalidFields.has("work_order_type")} />
-                <Select label="Status *" value={form.status} options={WORK_ORDER_STATUS} labels={STATUS_LABELS} onChange={(value) => applyStatusFlow(value as WorkOrderForm["status"])} tooltip="Status administrativo da OS." invalid={invalidFields.has("status")} />
-                <Select label="Item do programa" value={form.maintenance_program_item_id} options={["", ...programItems.map((item) => item.id)]} labels={Object.fromEntries(programItems.map((item) => [item.id, `${item.code} - ${item.title}`]))} onChange={(value) => { const item = programItems.find((row) => row.id === value); setForm((f) => ({ ...f, maintenance_program_item_id: value, checklist_execution: value ? checklistFromProgramItem(item) : [] })); }} tooltip="Lista apenas itens do programa do modelo da aeronave selecionada." invalid={invalidFields.has("maintenance_program_item_id")} />
-              </div>
-              <div className="mt-3">
-                <Check label="Atualizacao antiga" checked={form.legacy_update} onChange={(value) => setForm((f) => ({ ...f, legacy_update: value, data_origin: value ? f.data_origin : "native" }))} />
-              </div>
-            </section>
-
-            {/* Seção 2 — Datas e horários */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Datas e horários</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <DateField label="Abertura *" value={form.opened_at} onChange={(value) => setForm((f) => ({ ...f, opened_at: value }))} invalid={invalidFields.has("opened_at")} readOnly={!form.legacy_update} />
-                <DateField label="Inicio" value={form.started_at} onChange={(value) => setForm((f) => ({ ...f, started_at: value }))} invalid={invalidFields.has("started_at")} readOnly={!form.legacy_update} />
-                <DateField label="Conclusao" value={form.completed_at} onChange={(value) => setForm((f) => ({ ...f, completed_at: value }))} invalid={invalidFields.has("completed_at")} readOnly={!form.legacy_update} />
-                <DateField label="Liberacao" value={form.released_at} onChange={(value) => setForm((f) => ({ ...f, released_at: value }))} invalid={invalidFields.has("released_at")} readOnly={!form.legacy_update} />
-              </div>
-            </section>
-
-            {/* Seção 3 — Horas da aeronave */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Horas da aeronave</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <NumberField label="TTAF *" value={form.aircraft_ttaf} onChange={(value) => setForm((f) => ({ ...f, aircraft_ttaf: numberInput(value) }))} suffix="h" tooltip="Horas totais da aeronave no momento da OS." invalid={invalidFields.has("aircraft_ttaf")} />
-                <NumberField label="Pousos totais" value={form.aircraft_total_landings} onChange={(value) => setForm((f) => ({ ...f, aircraft_total_landings: numberInput(value, true) }))} integerOnly invalid={invalidFields.has("aircraft_total_landings")} />
-                <NumberField label="Horas motor" value={form.engine_time} onChange={(value) => setForm((f) => ({ ...f, engine_time: numberInput(value) }))} suffix="h" />
-                <NumberField label="Horas hélice" value={form.propeller_time} onChange={(value) => setForm((f) => ({ ...f, propeller_time: numberInput(value) }))} suffix="h" />
-                <NumberField label="Horas tacômetro" value={form.tach_time} onChange={(value) => setForm((f) => ({ ...f, tach_time: numberInput(value) }))} suffix="h" />
-                <NumberField label="Ciclos" value={form.cycles} onChange={(value) => setForm((f) => ({ ...f, cycles: numberInput(value, true) }))} integerOnly />
-              </div>
-            </section>
-
-            {/* Seção 4 — Execução */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Execução</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <TextArea label="Descrição executada *" value={form.description_performed} onChange={(value) => setForm((f) => ({ ...f, description_performed: value }))} invalid={invalidFields.has("description_performed")} />
-                {form.checklist_execution.length > 0 ? (
-                  <>
-                    <div className="md:col-span-4 flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Checklist da manutencao</p>
-                      <p className="text-xs text-slate-500">
-                        {form.checklist_execution.filter((task) => task.done).length}/{form.checklist_execution.length} feitas
-                      </p>
-                    </div>
-                    {form.checklist_execution.map((task) => (
-                      <div key={task.id} className="md:col-span-4 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
-                        <label className="flex items-start gap-3">
-                          <input type="checkbox" checked={task.done} onChange={(event) => updateChecklistTask(task.id, { done: event.target.checked })} className="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-800" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-medium text-slate-200">{task.title}</span>
-                            {task.description ? <span className="mt-1 block whitespace-pre-wrap text-xs text-slate-500">{task.description}</span> : null}
-                          </span>
-                        </label>
-                        <label className="mt-3 block">
-                          <span className="mb-1 block text-xs text-slate-500">OBS</span>
-                          <textarea value={task.observation} onChange={(event) => updateChecklistTask(task.id, { observation: event.target.value })} rows={2} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500" />
-                        </label>
-                      </div>
-                    ))}
-                  </>
-                ) : null}
-                <Select label="Discrepancia vinculada" value={form.linked_discrepancy_id} options={["", ...discrepancies.map((item) => item.id)]} labels={Object.fromEntries(discrepancies.map((item) => [item.id, discrepancyLabel(item)]))} onChange={(value) => { const item = discrepancies.find((row) => row.id === value); setForm((f) => ({ ...f, linked_discrepancy_id: value, discrepancy_reported: value ? f.discrepancy_reported || item?.discrepancy_text || "" : "", corrective_action: value ? f.corrective_action : "" })); }} tooltip="Opcional: liga esta OS a uma discrepância registrada no diário." />
-                {form.linked_discrepancy_id ? (
-                  <>
-                    <TextArea label="Discrepancia reportada" value={form.discrepancy_reported} onChange={(value) => setForm((f) => ({ ...f, discrepancy_reported: value }))} invalid={invalidFields.has("discrepancy_reported")} />
-                    <TextArea label="Acao corretiva" value={form.corrective_action} onChange={(value) => setForm((f) => ({ ...f, corrective_action: value }))} invalid={invalidFields.has("corrective_action")} />
-                  </>
-                ) : null}
-              </div>
-            </section>
-
-            {/* Seção 5 — Referência técnica */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Referência técnica</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <Select label="Tipo de referência" value={form.reference_type} options={REFERENCE_TYPES} labels={REFERENCE_LABELS} onChange={(value) => setForm((f) => ({ ...f, reference_type: value as WorkOrderForm["reference_type"] }))} tooltip="Documento técnico ou registro legado usado como referência." invalid={invalidFields.has("reference_type")} />
-                <Field label="Documento/referência" value={form.reference_document} onChange={(value) => setForm((f) => ({ ...f, reference_document: value }))} invalid={invalidFields.has("reference_document")} />
-                <Field label="Revisão" value={form.reference_revision} onChange={(value) => setForm((f) => ({ ...f, reference_revision: value }))} />
-                <Field label="Seção" value={form.reference_section} onChange={(value) => setForm((f) => ({ ...f, reference_section: value }))} />
-              </div>
-            </section>
-
-            {/* Seção 6 — Mecânico responsável */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Mecânico responsável</h4>
-              <div className="mb-3">
-                <Check label="Sou o mecanico responsavel" checked={form.mechanic_is_current_user} onChange={applyCurrentUserAsMechanic} />
-              </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <Field label="Nome do mecânico" value={form.mechanic_name} onChange={(value) => setForm((f) => ({ ...f, mechanic_name: value }))} invalid={invalidFields.has("mechanic_name")} />
-                <Field label="CANAC/licença" value={form.mechanic_canac} onChange={(value) => setForm((f) => ({ ...f, mechanic_canac: value }))} invalid={invalidFields.has("mechanic_canac")} />
-                <Select label="Tipo de licença" value={form.mechanic_license_type} options={LICENSE_TYPES} labels={LICENSE_LABELS} onChange={(value) => setForm((f) => ({ ...f, mechanic_license_type: value as WorkOrderForm["mechanic_license_type"] }))} tooltip="Habilitação relacionada ao serviço." invalid={invalidFields.has("mechanic_license_type")} />
-                <Field label="Assinatura/hash" value={form.mechanic_signature} onChange={(value) => setForm((f) => ({ ...f, mechanic_signature: value }))} invalid={invalidFields.has("mechanic_signature")} />
-              </div>
-            </section>
-
-            {/* Seção 7 — Responsável pela liberação */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Responsável pela liberação</h4>
-              <div className="mb-3">
-                <Check label="Sou o responsavel pela liberacao" checked={form.release_is_current_user} onChange={applyCurrentUserAsReleaseResponsible} />
-              </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <Field label="Nome do responsável" value={form.released_by_name} onChange={(value) => setForm((f) => ({ ...f, released_by_name: value }))} tooltip="Obrigatório quando o status for liberada." invalid={invalidFields.has("released_by_name")} />
-                <Field label="CANAC/licença do responsável" value={form.released_by_canac} onChange={(value) => setForm((f) => ({ ...f, released_by_canac: value }))} tooltip="Obrigatório quando o status for liberada." invalid={invalidFields.has("released_by_canac")} />
-                <Select label="Habilitação do responsável" value={form.released_by_license_type} options={LICENSE_TYPES} labels={LICENSE_LABELS} onChange={(value) => setForm((f) => ({ ...f, released_by_license_type: value as WorkOrderForm["released_by_license_type"] }))} tooltip="Obrigatório quando o status for liberada." invalid={invalidFields.has("released_by_license_type")} />
-                <ReadOnly label="Usuário responsável" value={form.released_by_user_id || "Nao selecionado"} tooltip="Identificador interno do usuário autorizado que liberou." />
-              </div>
-            </section>
-
-            {form.legacy_update ? (
-              <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-                <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Dados de origem</h4>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                  <Select label="Origem do dado" value={form.data_origin} options={DATA_ORIGINS} labels={DATA_ORIGIN_LABELS} onChange={(value) => setForm((f) => ({ ...f, data_origin: value as WorkOrderForm["data_origin"] }))} tooltip="Origem do registro: nativo, migracao, importacao ou correcao." invalid={invalidFields.has("data_origin")} />
-                  <Select label="Confianca" value={form.source_confidence} options={SOURCE_CONFIDENCE} labels={CONFIDENCE_LABELS} onChange={(value) => setForm((f) => ({ ...f, source_confidence: value as WorkOrderForm["source_confidence"] }))} tooltip="Nivel de confiabilidade do dado migrado/importado." invalid={invalidFields.has("source_confidence")} />
-                  <TextArea label="Notas da origem" value={form.source_notes} onChange={(value) => setForm((f) => ({ ...f, source_notes: value }))} invalid={invalidFields.has("source_notes")} />
-                  <Field label="Referencia legada" value={form.legacy_reference} onChange={(value) => setForm((f) => ({ ...f, legacy_reference: value }))} />
-                  <DateField label="Migrado em" value={form.migrated_at} onChange={(value) => setForm((f) => ({ ...f, migrated_at: value }))} />
-                  <Field label="Migrado por" value={form.migrated_by} onChange={(value) => setForm((f) => ({ ...f, migrated_by: value }))} />
-                </div>
-              </section>
-            ) : null}
-
-            {/* Seção 9 — Orçamento */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Orçamento</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <MoneyField label="Valor peças" value={form.parts_cost} onChange={(value) => setForm((f) => ({ ...f, parts_cost: numberInput(value) }))} />
-                <MoneyField label="Valor mão de obra" value={form.labor_cost} onChange={(value) => setForm((f) => ({ ...f, labor_cost: numberInput(value) }))} />
-                <MoneyField label="Outros gastos" value={form.other_costs} onChange={(value) => setForm((f) => ({ ...f, other_costs: numberInput(value) }))} />
-                <ReadOnly label="Valor total" value={moneyLabel(budgetTotal)} tooltip="Soma automática de peças, mão de obra e outros gastos." />
-              </div>
-            </section>
-
-            {/* Seção 10 — Liberação */}
-            <section className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Liberação</h4>
-              <div className="flex flex-wrap gap-4">
-                <Check label="Retorno ao serviço aprovado" checked={form.approved_return_to_service} onChange={(value) => setForm((f) => ({ ...f, approved_return_to_service: value }))} invalid={invalidFields.has("approved_return_to_service")} />
-                <Check label="Aeronave liberada" checked={form.aircraft_released} onChange={(value) => setForm((f) => ({ ...f, aircraft_released: value }))} invalid={invalidFields.has("aircraft_released")} />
-                <Check label="Grounding removido" checked={form.grounding_removed} onChange={(value) => setForm((f) => ({ ...f, grounding_removed: value }))} />
-              </div>
-              <div className="mt-3 grid grid-cols-1 gap-3">
-                <TextArea label="Declaração de retorno ao serviço" value={form.release_statement} onChange={(value) => setForm((f) => ({ ...f, release_statement: value }))} invalid={invalidFields.has("release_statement")} />
-              </div>
-            </section>
+          <h3 className="mb-1 text-sm font-semibold text-slate-200">{editingId ? "Editar manutenção" : "Lançar manutenção"}</h3>
+          <p className="mb-4 text-xs text-slate-500">Os demais campos da OS são preenchidos automaticamente para o cálculo de horas.</p>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <Select
+              label="Avião *"
+              value={form.aircraft_id}
+              options={["", ...aircrafts.map((a) => a.id)]}
+              labels={{ "": "Selecione o avião", ...Object.fromEntries(aircrafts.map((a) => [a.id, `${a.registration} - ${modelMap.get(a.model_id)?.name ?? "Modelo"}`])) }}
+              onChange={(value) => setForm((f) => fillEmptyAircraftHours({ ...f, aircraft_id: value, maintenance_program_item_id: "", checklist_execution: [] }, aircraftMap.get(value)))}
+              tooltip="Aeronave na qual a manutenção foi feita."
+              invalid={invalidFields.has("aircraft_id")}
+            />
+            <DateOnlyField
+              label="Data *"
+              value={datePart(form.opened_at)}
+              onChange={(value) => setForm((f) => applySameDate(f, value))}
+              invalid={invalidFields.has("opened_at")}
+            />
+            <NumberField
+              label="Horas da aeronave *"
+              value={form.aircraft_ttaf}
+              onChange={(value) => setForm((f) => ({ ...f, aircraft_ttaf: numberInput(value) }))}
+              suffix="h"
+              tooltip="Horas totais da aeronave no momento da manutenção. Sugeridas automaticamente a partir dos voos."
+              invalid={invalidFields.has("aircraft_ttaf")}
+            />
+            <Select
+              label="Manutenção realizada *"
+              value={form.maintenance_program_item_id}
+              options={["", ...programItemsForAircraft.map((item) => item.id)]}
+              labels={{ "": selectedAircraft ? "Selecione a manutenção" : "Selecione o avião primeiro", ...Object.fromEntries(programItemsForAircraft.map((item) => [item.id, `${item.code} - ${item.title}`])) }}
+              onChange={(value) => {
+                const item = programItemsForAircraft.find((row) => row.id === value);
+                setForm((f) => ({
+                  ...f,
+                  maintenance_program_item_id: value,
+                  work_order_type: workOrderTypeFromItem(item),
+                  checklist_execution: value ? checklistFromProgramItem(item) : [],
+                  reference_type: item?.reference_type ?? f.reference_type,
+                  reference_document: item?.reference_document ?? f.reference_document,
+                }));
+              }}
+              tooltip="Item do programa de manutenção do modelo da aeronave."
+              invalid={invalidFields.has("maintenance_program_item_id")}
+            />
+            <TextArea
+              label="Observação"
+              value={form.description_performed}
+              onChange={(value) => setForm((f) => ({ ...f, description_performed: value }))}
+            />
           </div>
           <div className="mt-4 flex gap-2">
             <button type="button" onClick={() => void saveOrder()} disabled={saving} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
-              {saving ? "Salvando..." : "Salvar OS"}
+              {saving ? "Salvando..." : "Salvar"}
             </button>
             <button type="button" onClick={() => setShowForm(false)} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400">
               Cancelar
@@ -1032,36 +836,29 @@ export function MaintenanceTab() {
       ) : null}
 
       {!showForm ? <div className="overflow-x-auto rounded-xl border border-slate-700/60">
-        <table className="min-w-[1250px] text-sm">
+        <table className="min-w-[900px] text-sm">
           <thead className="border-b border-slate-700/60 bg-slate-900/60 text-xs uppercase tracking-wider text-slate-500">
             <tr>
-              <th className="px-4 py-3 text-left">OS</th>
               <th className="px-4 py-3 text-left">Aeronave</th>
-              <th className="px-4 py-3 text-left">Item do programa</th>
-              <th className="px-4 py-3 text-left">Tipo</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-left">Abertura</th>
-              <th className="px-4 py-3 text-left">Conclusao</th>
-              <th className="px-4 py-3 text-left">Liberacao</th>
-              <th className="px-4 py-3 text-left">Origem</th>
-              <th className="px-4 py-3 text-left">Mecânico</th>
-              <th className="px-4 py-3 text-left">Liberada</th>
+              <th className="px-4 py-3 text-left">Manutenção</th>
+              <th className="px-4 py-3 text-left">Data</th>
+              <th className="px-4 py-3 text-left">Horas</th>
+              <th className="px-4 py-3 text-left">Observação</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading ? (
               Array.from({ length: 4 }).map((_, index) => (
-                <tr key={index}><td colSpan={12} className="px-4 py-3"><Skeleton className="h-5 w-full" /></td></tr>
+                <tr key={index}><td colSpan={6} className="px-4 py-3"><Skeleton className="h-5 w-full" /></td></tr>
               ))
             ) : visibleOrders.length === 0 ? (
-              <tr><td colSpan={12} className="px-4 py-8 text-center text-slate-500">Nenhuma OS encontrada.</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">Nenhuma manutenção lançada.</td></tr>
             ) : visibleOrders.map((order) => {
               const aircraft = aircraftMap.get(order.aircraft_id);
               const programItem = order.maintenance_program_item_id ? itemMap.get(order.maintenance_program_item_id) : null;
               return (
                 <tr key={order.id} className="hover:bg-slate-800/30">
-                  <td className="px-4 py-3 font-mono text-slate-200">{order.work_order_number}</td>
                   <td className="px-4 py-3 text-slate-300">{aircraft?.registration ?? "Aeronave"}</td>
                   <td className="px-4 py-3 text-slate-400">
                     {programItem ? (
@@ -1070,18 +867,9 @@ export function MaintenanceTab() {
                       </span>
                     ) : "-"}
                   </td>
-                  <td className="px-4 py-3 text-slate-400">{WORK_ORDER_TYPE_LABELS[order.work_order_type] ?? order.work_order_type}</td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_CLASSES[order.status] ?? "border-slate-700 bg-slate-800 text-slate-400"}`}>
-                      {STATUS_LABELS[order.status] ?? order.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">{formatDate(order.opened_at)}</td>
-                  <td className="px-4 py-3 text-slate-500">{formatDate(order.completed_at)}</td>
-                  <td className="px-4 py-3 text-slate-500">{formatDate(order.released_at)}</td>
-                  <td className="px-4 py-3 text-slate-400">{DATA_ORIGIN_LABELS[order.data_origin] ?? order.data_origin}</td>
-                  <td className="px-4 py-3 text-slate-400">{order.mechanic_name ?? "-"}</td>
-                  <td className="px-4 py-3 text-slate-400">{order.aircraft_released ? "Sim" : "Não"}</td>
+                  <td className="px-4 py-3 text-slate-500">{formatDate(order.completed_at ?? order.opened_at)}</td>
+                  <td className="px-4 py-3 text-slate-300">{order.aircraft_ttaf} h</td>
+                  <td className="max-w-xs truncate px-4 py-3 text-slate-400" title={order.description_performed}>{order.description_performed || "-"}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
                       <button type="button" onClick={() => { setDetailId(order.id); void loadOrderAttachments(order.id); }} className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">Detalhes</button>
@@ -1100,44 +888,19 @@ export function MaintenanceTab() {
         <section className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="font-mono text-sm font-semibold text-slate-100">{detailOrder.work_order_number}</h3>
-              <p className="mt-1 text-xs text-slate-500">
-                {aircraftMap.get(detailOrder.aircraft_id)?.registration} · {detailOrder.work_order_type} · {detailOrder.status}
+              <h3 className="text-sm font-semibold text-slate-100">
+                {aircraftMap.get(detailOrder.aircraft_id)?.registration ?? "Aeronave"}
+              </h3>
+              <p className="mt-1 text-xs text-sky-300">
+                {detailProgramItem ? `${detailProgramItem.code} - ${detailProgramItem.title}` : "Manutenção"}
               </p>
-              {detailOrder.maintenance_program_item_id ? (
-                <p className="mt-1 text-xs text-sky-300">
-                  Item: {itemMap.get(detailOrder.maintenance_program_item_id)?.code ?? detailOrder.maintenance_program_item_id}
-                </p>
-              ) : null}
             </div>
             <button type="button" onClick={() => setDetailId(null)} className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400">Fechar</button>
           </div>
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-            <Info label="TTAF" value={`${detailOrder.aircraft_ttaf} h`} />
-            <Info label="Pousos totais" value={detailOrder.aircraft_total_landings == null ? "-" : String(detailOrder.aircraft_total_landings)} />
-            <Info label="Origem" value={detailOrder.data_origin} />
-            <Info label="Referência legada" value={detailOrder.legacy_reference ?? "-"} />
-            <Info label="Discrepância vinculada" value={detailOrder.linked_discrepancy_id ?? "-"} />
-            <Info label="Descrição" value={detailOrder.description_performed} className="md:col-span-3" />
-            {detailOrder.checklist_execution.length > 0 ? (
-              <div className="md:col-span-3 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
-                <p className="text-xs text-slate-500">Checklist</p>
-                <div className="mt-2 space-y-2">
-                  {detailOrder.checklist_execution.map((task) => (
-                    <div key={task.id} className="rounded border border-slate-800 bg-slate-900/50 p-2">
-                      <p className="text-sm font-medium text-slate-200">{task.done ? "Feito" : "Pendente"} - {task.title}</p>
-                      {task.description ? <p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">{task.description}</p> : null}
-                      {task.observation ? <p className="mt-1 whitespace-pre-wrap text-xs text-slate-300">OBS: {task.observation}</p> : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            <Info
-              label="Orçamento"
-              value={moneyLabel((detailOrder.parts_cost ?? 0) + (detailOrder.labor_cost ?? 0) + (detailOrder.other_costs ?? 0))}
-            />
-            <Info label="Notas da origem" value={detailOrder.source_notes ?? "-"} className="md:col-span-3" />
+            <Info label="Data" value={formatDate(detailOrder.completed_at ?? detailOrder.opened_at)} />
+            <Info label="Horas da aeronave" value={`${detailOrder.aircraft_ttaf} h`} />
+            <Info label="Observação" value={detailOrder.description_performed || "-"} className="md:col-span-3" />
           </div>
           <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/30 p-4">
             <h4 className="text-sm font-semibold text-slate-200">Anexos e evidencias</h4>
@@ -1171,15 +934,6 @@ export function MaintenanceTab() {
 function formatDate(value: string | null): string {
   if (!value) return "-";
   return new Date(value).toLocaleDateString("pt-BR");
-}
-
-function Field({ label, value, onChange, placeholder = "", tooltip, invalid }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; tooltip?: string; invalid?: boolean }) {
-  return (
-    <label title={tooltip ?? label}>
-      <span className={`mb-1 block text-xs ${invalid ? "text-red-400" : "text-slate-500"}`}>{label}</span>
-      <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 ${invalid ? "border-red-500" : "border-slate-700"}`} />
-    </label>
-  );
 }
 
 function NumberField({
@@ -1218,40 +972,11 @@ function NumberField({
   );
 }
 
-function MoneyField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <label title={label}>
-      <span className="mb-1 block text-xs text-slate-500">{label}</span>
-      <div className="relative">
-        <span className="pointer-events-none absolute left-3 top-2 text-xs text-slate-500">R$</span>
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          inputMode="decimal"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pl-9 text-sm text-slate-100 outline-none focus:border-sky-500"
-        />
-      </div>
-    </label>
-  );
-}
-
-function ReadOnly({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
-  return (
-    <label title={tooltip ?? label}>
-      <span className="mb-1 block text-xs text-slate-500">{label}</span>
-      <input value={value} readOnly className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-300 outline-none" />
-    </label>
-  );
-}
-
-function DateField({ label, value, onChange, invalid, readOnly = false }: { label: string; value: string; onChange: (value: string) => void; invalid?: boolean; readOnly?: boolean }) {
+function DateOnlyField({ label, value, onChange, invalid }: { label: string; value: string; onChange: (value: string) => void; invalid?: boolean }) {
   return (
     <label title={label}>
       <span className={`mb-1 block text-xs ${invalid ? "text-red-400" : "text-slate-500"}`}>{label}</span>
-      <input type="datetime-local" value={value} readOnly={readOnly} disabled={readOnly} onChange={(event) => onChange(event.target.value)} className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:border-sky-500 ${readOnly ? "bg-slate-950 text-slate-400" : "bg-slate-800 text-slate-100"} ${invalid ? "border-red-500" : "border-slate-700"}`} />
+      <input type="date" value={value} onChange={(event) => onChange(event.target.value)} className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 ${invalid ? "border-red-500" : "border-slate-700"}`} />
     </label>
   );
 }
@@ -1276,15 +1001,6 @@ function TextArea({ label, value, onChange, invalid }: { label: string; value: s
     <label className="md:col-span-2" title={label}>
       <span className={`mb-1 block text-xs ${invalid ? "text-red-400" : "text-slate-500"}`}>{label}</span>
       <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 ${invalid ? "border-red-500" : "border-slate-700"}`} />
-    </label>
-  );
-}
-
-function Check({ label, checked, onChange, invalid }: { label: string; checked: boolean; onChange: (value: boolean) => void; invalid?: boolean }) {
-  return (
-    <label className="flex items-center gap-2 text-xs text-slate-400">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 rounded border-slate-700 bg-slate-800" />
-      <span className={invalid ? "text-red-400" : ""}>{label}</span>
     </label>
   );
 }

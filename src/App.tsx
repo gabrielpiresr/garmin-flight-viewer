@@ -105,7 +105,7 @@ export default function App() {
   const isPublicFlightReviewRoute = window.location.pathname.startsWith("/share/flight-review/");
   const isFlightReviewClubRoute = window.location.pathname === "/flight-review-club";
   const isQualificacaoRoute = window.location.pathname === "/qualificacao";
-  const isCadastroRoute = window.location.pathname === "/cadastro";
+  const isCadastroRoute = window.location.pathname === "/cadastro" || window.location.pathname.startsWith("/cadastro/");
   const isProposalRoute = window.location.pathname.startsWith("/proposta/");
   const isApresentacaoRoute = window.location.pathname === "/apresentacao";
   const isInstructorAdmissionRoute = window.location.pathname === "/admissao-instrutor";

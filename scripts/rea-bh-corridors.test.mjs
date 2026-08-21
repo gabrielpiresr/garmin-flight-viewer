@@ -91,11 +91,19 @@ test("SBJD → SBBH entra na REA local de BH depois da rede nacional", () => {
   const result = rea.snapRouteToVisualCorridors([SBJD, SBBH], features);
   assert.equal(result.ok, true, result.error);
   const labels = names(result.waypoints).join(" > ");
+  const corridors = (result.corridorNames || []).join(" | ");
+  const spFixes = ["LAGOA", "JARINU", "ATIBAIA", "JOANÓPOLIS", "CAMANDUCAIA", "CAMBUÍ"];
+  assert.ok(
+    spFixes.some((fix) => labels.includes(fix)),
+    `ignorou a REA de SP: ${labels}`,
+  );
+  assert.ok(/KILO|LIMA|PORT[AÃ]O LAGOA/i.test(corridors), `corredores SP ausentes: ${corridors}`);
   const bhFixes = ["ITAGUARA", "MANSO", "IGARAPÉ", "IBIRITÉ", "MANNESMANN", "JUATUBA", "FLORES", "CEASA"];
   assert.ok(
     bhFixes.some((fix) => labels.includes(fix)),
     labels,
   );
+  assert.ok(/JULIET|NOVEMBER|SIERRA|ROMEU/i.test(corridors), `corredores BH ausentes: ${corridors}`);
   const afterCambui = labels.includes("CAMBUÍ") ? labels.split("CAMBUÍ").pop() || "" : labels;
   assert.ok(!/^[\s>]*SBBH$/.test(afterCambui.trim()), `DCT after Cambuí: ${labels}`);
 });
@@ -372,4 +380,66 @@ test("TMA sem REA não conta como origem/destino dentro da TMA", () => {
   assert.equal(rea.reaTmaCodeFromIdentName("SBXP_02", "TMA SAO PAULO"), "XP");
   assert.equal(rea.reaTmaCodeFromIdentName("SBWH", "BELO HORIZONTE"), "WH");
   assert.equal(rea.reaTmaCodeFromIdentName("SBKP", "CAMPINAS"), null);
+});
+
+test("export FPL SBJD → SDRK → SBJD termina em REA e usa A055/A065", () => {
+  const nationalPath = path.join(root, "public/geo/cv-rea-br.json");
+  let national = { features: [] };
+  try {
+    national = JSON.parse(readFileSync(nationalPath, "utf8"));
+  } catch {
+    return;
+  }
+  const SBJD = {
+    lat: -23.1806,
+    lng: -46.9444,
+    label: "SBJD",
+    raw: "SBJD",
+    kind: "origin",
+    fieldElevFt: 2080,
+    altitudeFt: 2080,
+  };
+  const SDRK = {
+    lat: -22.3964,
+    lng: -47.5603,
+    label: "SDRK",
+    raw: "SDRK",
+    kind: "airport",
+    fieldElevFt: 1991,
+    altitudeFt: 1991,
+  };
+  const dest = { ...SBJD, kind: "destination" };
+  const snapped = rea.snapRouteToVisualCorridors([SBJD, SDRK, dest], national.features || []);
+  assert.equal(snapped.ok, true, snapped.error);
+  const corridors = rea.matchLegCorridors(snapped.waypoints, national.features || []);
+  const withAlt = rea.applySemicircularCruiseAltitudes(
+    rea.applyCorridorAltitudes(snapped.waypoints, corridors),
+    corridors,
+  );
+  const route = rea.buildFplRouteText(withAlt, corridors, 90, { destInsideTma: false });
+  assert.match(route, /^REA\b/, route);
+  assert.match(route, /2249S04734W\/N0090VFR REA$/, route);
+  assert.doesNotMatch(route, /2311S04657W/);
+  assert.doesNotMatch(route, /\bDCT$/);
+  assert.match(route, /2236S04719W\/N0090A0\d{2} DCT/, route);
+  const tgl = withAlt.find((wp, idx) => idx > 0 && idx < withAlt.length - 1 && wp.kind === "airport");
+  assert.ok(tgl, "SDRK deve permanecer como AD intermediário (TGL)");
+  assert.equal(tgl.altitudeFt, Math.round(tgl.fieldElevFt), "TGL usa a elevação do aeródromo no perfil");
+  for (let i = 1; i < withAlt.length - 1; i++) {
+    const wp = withAlt[i];
+    const alt = wp.altitudeFt;
+    if (wp.kind === "airport") continue;
+    if (!corridors[i]) {
+      assert.ok(alt === 5500 || alt === 6500, `DCT ${wp.label} deve ser A055/A065, veio ${alt}`);
+    } else if (corridors[i].altMax != null) {
+      assert.equal(alt, Math.round(corridors[i].altMax), `REA ${wp.label} deve respeitar o teto do corredor`);
+    }
+  }
+  const platformLike = rea.buildFplRouteText(withAlt, corridors, 90, {
+    originInsideTma: true,
+    destInsideTma: true,
+    originReaTmaId: "XP",
+    destReaTmaId: "XP",
+  });
+  assert.equal(platformLike, route, platformLike);
 });

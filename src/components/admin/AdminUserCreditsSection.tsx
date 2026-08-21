@@ -14,7 +14,7 @@ function formatExpiration(purchaseDate: string, validityDays: string): string | 
   d.setDate(d.getDate() + days);
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(d);
 }
-import { createAdminUserCredit, deleteAdminUserCredit, updateAdminUserCredit } from "../../lib/adminUsersDb";
+import { createAdminUserCredit, deleteAdminUserCredit, deleteAdminUserCreditAdjustment, updateAdminUserCredit } from "../../lib/adminUsersDb";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { listModels } from "../../lib/aircraftModelsDb";
@@ -75,6 +75,7 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingAdjustmentId, setDeletingAdjustmentId] = useState<string | null>(null);
 
   useEffect(() => {
     setLoadingModels(true);
@@ -217,6 +218,20 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
       showToast({ variant: "error", message: (e as Error).message });
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleDeleteAdjustment(adjustment: StudentCreditStatement["adjustments"][number]) {
+    if (!window.confirm(`Remover esta multa de ${Math.abs(adjustment.hours).toFixed(2)}h?`)) return;
+    setDeletingAdjustmentId(adjustment.id);
+    try {
+      await deleteAdminUserCreditAdjustment(adjustment.id, studentUserId);
+      showToast({ variant: "success", message: "Multa removida." });
+      await load();
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setDeletingAdjustmentId(null);
     }
   }
 
@@ -404,6 +419,16 @@ export function AdminUserCreditsSection({ studentUserId, studentName, anacCode }
                 {deletingId === purchase.id ? "Removendo..." : "Remover"}
               </button>
             </>
+          )}
+          renderAdjustmentActions={(adjustment) => (
+            <button
+              type="button"
+              onClick={() => void handleDeleteAdjustment(adjustment)}
+              disabled={deletingAdjustmentId === adjustment.id}
+              className="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/30 disabled:opacity-50"
+            >
+              {deletingAdjustmentId === adjustment.id ? "Removendo..." : "Remover multa"}
+            </button>
           )}
         />
       ) : null}

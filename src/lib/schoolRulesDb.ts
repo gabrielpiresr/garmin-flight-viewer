@@ -119,6 +119,12 @@ export async function getSchoolRules(): Promise<SchoolRules> {
       flightReviewClub: overlayFrcLpContent(direct.flightReviewClub, rules.flightReviewClub),
     };
   }
+  if (direct && !(response.schoolRules as { capacityProjection?: unknown } | undefined)?.capacityProjection) {
+    rules = {
+      ...rules,
+      capacityProjection: direct.capacityProjection,
+    };
+  }
   if (direct) {
     rules = {
       ...rules,
@@ -162,7 +168,11 @@ export async function getSchoolRules(): Promise<SchoolRules> {
 }
 
 export async function saveSchoolRules(rules: SchoolRulesInput): Promise<SchoolRules> {
-  const intended = normalizeSchoolRules({ ...rules, updatedAt: null });
+  const intended = normalizeSchoolRules({
+    ...rules,
+    capacityProjection: rules.capacityProjection ?? getCachedSchoolRules()?.capacityProjection,
+    updatedAt: null,
+  });
   try {
     await saveFrcLandingSettings(intended.flightReviewClub);
   } catch {
@@ -170,7 +180,7 @@ export async function saveSchoolRules(rules: SchoolRulesInput): Promise<SchoolRu
   }
   await saveFrcTrainingSnapshot(intended.flightReviewClub.trainingCourses);
   void saveFrcLandingSnapshot(intended.flightReviewClub).catch(() => undefined);
-  const compactRules = schoolRulesWithoutFrcTraining(rules);
+  const compactRules = schoolRulesWithoutFrcTraining(intended);
   const response = await executeSchoolRules({ action: "saveSchoolRules", rules: compactRules });
   if (!response.schoolRules) throw new Error(response.message || "Regras da escola não retornadas.");
   const fromFn = normalizeSchoolRules(response.schoolRules);

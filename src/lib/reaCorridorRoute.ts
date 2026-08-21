@@ -1,5 +1,5 @@
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
-import { haversineM } from "./flightPlanningRoute";
+import { calcTrueBearing, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
 import {
   corridorDisplayName,
   endpointA,
@@ -46,7 +46,7 @@ export type ReaCorridorSnapErr = { ok: false; error: string };
 export type ReaCorridorSnapResult = ReaCorridorSnapOk | ReaCorridorSnapErr;
 
 type LatLng = { lat: number; lng: number };
-type GraphNode = { id: string; lat: number; lng: number; name: string; gate: boolean };
+type GraphNode = { id: string; lat: number; lng: number; name: string; gate: boolean; carta: string };
 type GraphEdge = {
   to: string;
   meters: number;
@@ -77,8 +77,9 @@ type RidePoint = {
   corridorName: string | null;
 };
 
-function nodeId(name: string, lat: number, lng: number): string {
-  return pointKey(lat, lng, name);
+function nodeId(name: string, lat: number, lng: number, carta = ""): string {
+  const key = pointKey(lat, lng, name);
+  return carta ? `${carta}|${key}` : key;
 }
 
 function isPortaoName(name: string | null | undefined): boolean {
@@ -95,10 +96,11 @@ function fallbackName(name: string, lat: number, lng: number): string {
   return `REA ${lat.toFixed(3)}/${lng.toFixed(3)}`;
 }
 
-function findMergeNode(nodes: GraphNode[], lat: number, lng: number): GraphNode | null {
+function findMergeNode(nodes: GraphNode[], lat: number, lng: number, carta: string): GraphNode | null {
   let best: GraphNode | null = null;
   let bestDist = MERGE_M;
   for (const node of nodes) {
+    if ((node.carta || "") !== carta) continue;
     const d = haversineM({ lat, lng }, node);
     if (d < bestDist) {
       best = node;
@@ -185,10 +187,17 @@ function buildGraph(features: ReaRouteFeature[]): {
     if (ra !== rb) parent.set(rb, ra);
   };
 
-  const addNode = (name: string, lat: number, lng: number): GraphNode => {
-    const existing = findMergeNode(nodeList, lat, lng);
+  const addNode = (name: string, lat: number, lng: number, carta: string): GraphNode => {
+    const existing = findMergeNode(nodeList, lat, lng, carta);
     if (existing) return existing;
-    const node: GraphNode = { id: nodeId(name, lat, lng), lat, lng, name: name.trim().toUpperCase(), gate: false };
+    const node: GraphNode = {
+      id: nodeId(name, lat, lng, carta),
+      lat,
+      lng,
+      name: name.trim().toUpperCase(),
+      gate: false,
+      carta,
+    };
     nodeList.push(node);
     nodes.set(node.id, node);
     if (!adj.has(node.id)) adj.set(node.id, []);
@@ -213,8 +222,9 @@ function buildGraph(features: ReaRouteFeature[]): {
     if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
     const aName = fallbackName(a.name, a.lat, a.lon);
     const bName = fallbackName(b.name, b.lat, b.lon);
-    const from = addNode(aName, a.lat, a.lon);
-    const to = addNode(bName, b.lat, b.lon);
+    const carta = String(props.carta_nome || "").trim().toUpperCase();
+    const from = addNode(aName, a.lat, a.lon, carta);
+    const to = addNode(bName, b.lat, b.lon, carta);
     const dirs = reaCorridorDirections(props);
     const name = corridorDisplayName(props.nome) || `${from.name}–${to.name}`;
     const oneWay = dirs.ab !== dirs.ba;
@@ -234,7 +244,7 @@ function buildGraph(features: ReaRouteFeature[]): {
       altAb,
       altBa,
       componentId: "",
-      carta: String(props.carta_nome || "").trim().toUpperCase(),
+      carta,
     });
   }
 
@@ -281,7 +291,14 @@ function attachSnap(
   const adj = cloneAdj(baseAdj);
   const nodes = new Map(baseNodes);
   const id = `SNAP|${snap.lat.toFixed(5)}|${snap.lng.toFixed(5)}`;
-  const node: GraphNode = { id, lat: snap.lat, lng: snap.lng, name: (seg.name || "REA").toUpperCase(), gate: false };
+  const node: GraphNode = {
+    id,
+    lat: snap.lat,
+    lng: snap.lng,
+    name: (seg.name || "REA").toUpperCase(),
+    gate: false,
+    carta: seg.carta || "",
+  };
   nodes.set(id, node);
   if (!adj.has(id)) adj.set(id, []);
 
@@ -305,6 +322,8 @@ type Ride = {
   exitDistToDestM: number;
   pathMeters: number;
   points: RidePoint[];
+  originTma?: boolean;
+  destTma?: boolean;
 };
 
 function rideTotalCost(ride: Ride): number {
@@ -669,11 +688,25 @@ function snapCorridorPair(
       });
       if (!ride) continue;
       if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
+      ride.originTma = originTma;
+      ride.destTma = destTma;
       ridesFound.push(ride);
       if (localTma) mandatory.push(ride);
     }
-    const nearby = ridesFound.filter((ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M);
-    const pool = mandatory.length && rides > 0 ? mandatory : nearby.length ? nearby : ridesFound;
+    const originPool = ridesFound.filter((ride) => ride.originTma);
+    const nearby = (rides === 0 && originPool.length ? originPool : ridesFound).filter(
+      (ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M,
+    );
+    const pool =
+      rides === 0 && originPool.length
+        ? nearby.length
+          ? nearby
+          : originPool
+        : mandatory.length && rides > 0
+          ? mandatory
+          : nearby.length
+            ? nearby
+            : ridesFound;
     let chosen: Ride | null = null;
     for (const ride of pool) {
       if (
@@ -734,6 +767,31 @@ function relabelSnappedRoute(waypoints: FlightPlanWaypoint[]): FlightPlanWaypoin
       kind,
       ...(idx > 0 && isAd ? { altitudeRef: "be" as const } : {}),
     };
+  });
+}
+
+function isAirportLike(wp: FlightPlanWaypoint): boolean {
+  return wp.kind === "airport" || wp.kind === "origin" || wp.kind === "destination";
+}
+
+/** Fora da REA (DCT): A055/A065 pela proa. Dentro do corredor, teto da REA. AD/TGL: elevação do campo. */
+export function applySemicircularCruiseAltitudes(
+  waypoints: FlightPlanWaypoint[],
+  legCorridors?: Array<{ altMax?: number | null } | null>,
+): FlightPlanWaypoint[] {
+  return waypoints.map((wp, idx, arr) => {
+    if (idx === 0) return wp;
+    if (isAirportLike(wp)) {
+      const field = wp.fieldElevFt;
+      if (field != null && Number.isFinite(field)) {
+        const elev = Math.round(field);
+        return wp.altitudeFt === elev ? wp : { ...wp, altitudeFt: elev };
+      }
+      return wp;
+    }
+    if (legCorridors?.[idx]) return wp;
+    const from = arr[idx - 1]!;
+    return { ...wp, altitudeFt: semicircularCruiseFt(calcTrueBearing(from, wp)) };
   });
 }
 

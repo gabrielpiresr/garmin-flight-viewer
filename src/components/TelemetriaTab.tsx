@@ -22,7 +22,6 @@ import {
   formatSpeedKt,
   summarizeFlight,
 } from "../lib/flightStats";
-import { detectFlightSegments } from "../lib/flightSegments";
 import { parseGarminCsv, type ParseResult } from "../lib/parseGarminCsv";
 import { fetchTerrainGrid, sampleGridHeightM, type TerrainGrid } from "../lib/terrainTiles";
 import {
@@ -41,6 +40,7 @@ import { propertyLabel, propertyUnit, type TelemetryAlertProperty } from "../lib
 import type { ChartRow } from "../lib/telemetryCharts";
 import type { FlightPoint, FlightSegment, FlightSummary } from "../types/flight";
 import CsvWorker from "../workers/csvWorker?worker";
+import SegmentWorker from "../workers/segmentWorker?worker";
 import { FlightCharts } from "./FlightCharts";
 import { FlightMap } from "./FlightMap";
 import { FlightReviewClubGate } from "./FlightReviewClubGate";
@@ -167,6 +167,8 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   const [flightAlerts, setFlightAlerts] = useState<FlightTelemetryAlertDoc[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
   const workerRef = useRef<Worker | null>(null);
+  const segmentWorkerRef = useRef<Worker | null>(null);
+  const segmentRequestRef = useRef(0);
 
   const [chartDomain, setChartDomain] = useState<[number, number] | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
@@ -352,7 +354,10 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     setTelemetryDirty(false);
   }, [parsedResult, applyResult]);
 
-  useEffect(() => () => { workerRef.current?.terminate(); }, []);
+  useEffect(() => () => {
+    workerRef.current?.terminate();
+    segmentWorkerRef.current?.terminate();
+  }, []);
 
   useEffect(() => {
     if (!flightId) return;
@@ -707,6 +712,7 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   };
 
   const [segments, setSegments] = useState<FlightSegment[]>([]);
+  const [segmentsLoading, setSegmentsLoading] = useState(false);
   const drawLimits = useMemo(() => telemetryDrawLimits(), [points.length, chartData.length]);
   const mapPoints = useMemo(
     () => downsampleList(points.filter(isPlottablePoint), drawLimits.map),
@@ -765,36 +771,91 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
     return { ...telemetryColumns, terrainFt: "Terreno" };
   }, [telemetryColumns, terrainGrid]);
 
+  const isFr24Telemetry = useMemo(() => {
+    const nameHit = (fileName || "").toLowerCase().startsWith("fr24-");
+    const sourceHit = telemetrySources.some(
+      (source) =>
+        source.name.toLowerCase().startsWith("fr24-") ||
+        source.text.includes("Flightradar24 track export") ||
+        source.text.includes("ADS-B only"),
+    );
+    return nameHit || sourceHit;
+  }, [fileName, telemetrySources]);
+
   useEffect(() => {
-    if (!active || !(chartData.length > 0 && hasChartTime)) {
-      if (!active) return;
-      setSegments([]);
+    segmentWorkerRef.current?.terminate();
+    segmentWorkerRef.current = null;
+    const requestId = segmentRequestRef.current + 1;
+    segmentRequestRef.current = requestId;
+
+    if (!active) {
+      setSegmentsLoading(false);
       return;
     }
-    let cancelled = false;
-    let idleHandle = 0;
-    let timer = 0;
-    const run = () => {
-      if (cancelled) return;
-      setSegments(
-        detectFlightSegments(chartData, chartTimeBaseMs, points, {
-          aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
-        }),
-      );
-    };
-    if (typeof window.requestIdleCallback === "function") {
-      idleHandle = window.requestIdleCallback(run, { timeout: 2_500 });
-    } else {
-      timer = window.setTimeout(run, 700);
+    if (!(chartData.length > 0 && hasChartTime)) {
+      setSegments([]);
+      setSelectedSegmentId(null);
+      setSegmentsLoading(false);
+      return;
     }
-    return () => {
-      cancelled = true;
-      if (idleHandle && typeof window.cancelIdleCallback === "function") {
-        window.cancelIdleCallback(idleHandle);
+    if (isFr24Telemetry) {
+      setSegments([]);
+      setSelectedSegmentId(null);
+      setSegmentsLoading(false);
+      return;
+    }
+
+    setSegments([]);
+    setSelectedSegmentId(null);
+    setSegmentsLoading(true);
+    const worker = new SegmentWorker();
+    segmentWorkerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<{
+      ok: boolean;
+      requestId: number;
+      segments?: FlightSegment[];
+      error?: string;
+    }>) => {
+      if (event.data.requestId !== segmentRequestRef.current) return;
+      worker.terminate();
+      if (segmentWorkerRef.current === worker) segmentWorkerRef.current = null;
+      setSegmentsLoading(false);
+      if (event.data.ok) {
+        setSegments(event.data.segments ?? []);
+      } else {
+        console.warn("Falha ao detectar segmentos de telemetria.", event.data.error);
+        setSegments([]);
       }
-      if (timer) window.clearTimeout(timer);
     };
-  }, [active, chartData, chartTimeBaseMs, flightMeta?.header.aircraft, hasChartTime, parsedResult?.aircraftIdent, points]);
+    worker.onerror = (err) => {
+      if (requestId !== segmentRequestRef.current) return;
+      worker.terminate();
+      if (segmentWorkerRef.current === worker) segmentWorkerRef.current = null;
+      setSegmentsLoading(false);
+      console.warn("Falha ao detectar segmentos de telemetria.", err.message);
+      setSegments([]);
+    };
+    worker.postMessage({
+      requestId,
+      chartData,
+      chartTimeBaseMs,
+      points,
+      aircraftIdent: flightMeta?.header.aircraft ?? parsedResult?.aircraftIdent ?? null,
+    });
+    return () => {
+      worker.terminate();
+      if (segmentWorkerRef.current === worker) segmentWorkerRef.current = null;
+    };
+  }, [
+    active,
+    chartData,
+    chartTimeBaseMs,
+    flightMeta?.header.aircraft,
+    hasChartTime,
+    isFr24Telemetry,
+    parsedResult?.aircraftIdent,
+    points,
+  ]);
 
   const selectedSegment = useMemo(
     () => segments.find((s) => s.id === selectedSegmentId) ?? null,
@@ -878,23 +939,13 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
   const canAddTelemetryFiles = canEditTelemetry && telemetrySources.length < MAX_TELEMETRY_CSV_FILES;
   const isDzaTelemetryFlight = isSegmentedTelemetryAircraft(flightMeta?.header.aircraft);
   const remainingTelemetrySlots = Math.max(0, MAX_TELEMETRY_CSV_FILES - telemetrySources.length);
-  const isFr24Telemetry = useMemo(() => {
-    const nameHit = (fileName || "").toLowerCase().startsWith("fr24-");
-    const sourceHit = telemetrySources.some(
-      (source) =>
-        source.name.toLowerCase().startsWith("fr24-") ||
-        source.text.includes("Flightradar24 track export") ||
-        source.text.includes("ADS-B only"),
-    );
-    return nameHit || sourceHit;
-  }, [fileName, telemetrySources]);
 
   const adsbWarningBanner = isFr24Telemetry ? (
     <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5 text-xs text-amber-100/95">
       <p className="font-semibold text-amber-50">Dados importados do ADS-B (Flightradar24)</p>
       <p className="mt-1 text-amber-100/80">
         A trilha pode estar incompleta ou imprecisa (cobertura ADS-B, amostragem irregular, sem dados de motor/atitude do Garmin).
-        Decolagens, TGLs e pousos detectados automaticamente são estimativas — confira e ajuste no Flight Review se necessário.
+        Segmentos de decolagem, TGL e pouso não são detectados automaticamente para essa fonte.
       </p>
     </div>
   ) : null;
@@ -1115,6 +1166,12 @@ export function TelemetriaTab({ flightId, parsedResult, publicMode = false, club
           {warnings.map((w) => <li key={w}>{w}</li>)}
         </ul>
       )}
+
+      {segmentsLoading ? (
+        <p className="rounded-lg border border-sky-500/20 bg-sky-950/20 px-3 py-2 text-xs text-sky-100/80">
+          Detectando segmentos da telemetria em segundo plano...
+        </p>
+      ) : null}
 
       {segments.length > 0 && (
         <SegmentSelector

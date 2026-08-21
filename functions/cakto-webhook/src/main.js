@@ -14,8 +14,10 @@ const DATABASE_ID = process.env.APPWRITE_DATABASE_ID || "";
 const ADMIN_USERS_FUNCTION_ID = process.env.ADMIN_USERS_FUNCTION_ID || "admin-users";
 const RECEIPTS_COLLECTION_ID = process.env.APPWRITE_CAKTO_RECEIPTS_COLLECTION_ID || "cakto_receipts";
 const PROPOSALS_COLLECTION_ID = process.env.APPWRITE_CRM_PROPOSALS_COLLECTION_ID || "crm_proposals";
+const CRM_LEADS_COLLECTION_ID = process.env.APPWRITE_CRM_LEADS_COLLECTION_ID || process.env.APPWRITE_CRM_LEADS_COL_ID || "crm_leads";
 const STUDENT_CREDITS_COLLECTION_ID = process.env.APPWRITE_STUDENT_CREDITS_COLLECTION_ID || "student_credits";
 const PRODUCT_SALES_COLLECTION_ID = process.env.APPWRITE_PRODUCT_SALES_COLLECTION_ID || process.env.APPWRITE_PRODUCT_SALES_COL_ID || "product_sales";
+const AIRCRAFTS_COLLECTION_ID = process.env.APPWRITE_AIRCRAFTS_COLLECTION_ID || process.env.APPWRITE_AIRCRAFTS_COL_ID || "";
 const MARKETPLACE_PRODUCTS_COLLECTION_ID = process.env.APPWRITE_MARKETPLACE_PRODUCTS_COLLECTION_ID || process.env.APPWRITE_MARKETPLACE_PRODUCTS_COL_ID || "marketplace_products";
 const MARKETPLACE_ORDERS_COLLECTION_ID = process.env.APPWRITE_MARKETPLACE_ORDERS_COLLECTION_ID || process.env.APPWRITE_MARKETPLACE_ORDERS_COL_ID || "marketplace_orders";
 const SCHOOL_COSTS_COLLECTION_ID = process.env.APPWRITE_SCHOOL_COSTS_COLLECTION_ID || "school_costs";
@@ -36,6 +38,8 @@ const SAGA_BASE_URL = process.env.SAGA_BASE_URL || "https://epeac.saga.aero";
 const SAGA_CREDIT_BANK_ID = process.env.SAGA_CREDIT_BANK_ID || "6";
 const SAGA_CREDIT_TYPE = process.env.SAGA_CREDIT_TYPE || "GENERIC";
 const SAGA_CREDIT_AIRCRAFT_ICAO = process.env.SAGA_CREDIT_AIRCRAFT_ICAO || "MC01";
+const GROUND_CREDIT_HOURS = Math.max(0.1, Number(process.env.GROUND_CREDIT_HOURS || "2"));
+const GROUND_CREDIT_VALIDITY_DAYS = Math.max(1, Math.round(Number(process.env.GROUND_CREDIT_VALIDITY_DAYS || "365")));
 const SAGA_AUTH_SESSION_KEY = "sagaAuthSession";
 const SAGA_IMPORT_CREDENTIALS_KEY = "sagaImportCredentials";
 const SAGA_IMPORT_MAPPING_KEY = "sagaImportMapping";
@@ -216,8 +220,28 @@ function proposalProducts(metadata) {
     .filter((item) => item.id && item.name && item.price > 0);
 }
 
-async function createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId) {
+function normalizeProductText(value) {
+  return clean(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isGroundSchoolProduct(product) {
+  const text = normalizeProductText(`${product?.name || ""} ${product?.id || ""}`);
+  return /\bground\b/.test(text) || /ground\s*school/.test(text);
+}
+
+function splitGroundProducts(metadata) {
   const products = proposalProducts(metadata);
+  return {
+    groundProducts: products.filter(isGroundSchoolProduct),
+    regularProducts: products.filter((product) => !isGroundSchoolProduct(product)),
+  };
+}
+
+async function createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId) {
+  const { regularProducts: products } = splitGroundProducts(metadata);
   if (!products.length || !PRODUCT_SALES_COLLECTION_ID) return;
 
   await Promise.all(products.map(async (product, index) => {
@@ -250,6 +274,117 @@ async function createProductSalesForProposal(proposal, metadata, normalized, pur
       if (Number(err?.code) !== 409) throw err;
     }
   }));
+}
+
+async function studentUserIdForProposal(proposal, metadata) {
+  const direct = clean(metadata?.studentUserId || proposal?.student_user_id);
+  if (direct) return direct;
+  const leadId = clean(proposal?.lead_id);
+  if (!leadId) return "";
+  if (leadId.startsWith("user_") || leadId.startsWith("saga_")) return leadId;
+  if (!CRM_LEADS_COLLECTION_ID) return "";
+  const lead = await databases.getDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, leadId).catch(() => null);
+  return clean(lead?.user_id);
+}
+
+async function getGroundAircraftForCredit() {
+  if (!AIRCRAFTS_COLLECTION_ID) return null;
+  const result = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("type", ["ground"]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  return result.documents?.[0] || null;
+}
+
+async function fulfillCommercialGroundCreditPurchase(receiptId, proposal, normalized, metadata) {
+  const { groundProducts } = splitGroundProducts(metadata);
+  if (!groundProducts.length) return { applicable: false, creditId: "" };
+
+  const studentUserId = await studentUserIdForProposal(proposal, metadata);
+  if (!studentUserId) throw new Error("Proposta com Ground paga, mas sem aluno vinculado. Conclua o cadastro do lead antes de processar o crédito.");
+
+  const groundAircraft = await getGroundAircraftForCredit();
+  const aircraftModelId = clean(groundAircraft?.model_id);
+  if (!aircraftModelId) throw new Error("Nenhum equipamento Ground ativo com modelo vinculado foi encontrado na frota.");
+
+  const purchaseDate = asIsoDate(normalized.eventAt || normalized.receivedAt);
+  const creditId = `fg_${crypto.createHash("sha256").update(`${proposal.$id}:ground`).digest("hex").slice(0, 29)}`;
+  const amountPaid = Math.round(groundProducts.reduce((sum, product) => sum + product.price, 0) * 100) / 100;
+  const costSnapshotJson = await buildCostSnapshot(amountPaid, normalized.paymentMethod, normalized.eventAt || normalized.receivedAt);
+  const providerLabel = normalized.provider === "lastlink" ? "LastLink" : "Cakto";
+
+  try {
+    await databases.createDocument(
+      DATABASE_ID,
+      STUDENT_CREDITS_COLLECTION_ID,
+      creditId,
+      {
+        school_id: proposal.school_id || SCHOOL_ID,
+        user_id: studentUserId,
+        purchase_date: purchaseDate,
+        aircraft_model_id: aircraftModelId,
+        aircraft_model_name: clean(groundAircraft.nickname) || clean(groundAircraft.registration) || "Ground School",
+        amount_paid: amountPaid,
+        payment_method: normalized.paymentMethod || providerLabel,
+        payment_installments: normalized.paymentInstallments || null,
+        validity_days: GROUND_CREDIT_VALIDITY_DAYS,
+        hours: GROUND_CREDIT_HOURS,
+        expires_at: addDaysIso(purchaseDate, GROUND_CREDIT_VALIDITY_DAYS),
+        notes: `Ground School tratado como crédito de horas. Compra online ${providerLabel}. Proposta ${proposal.$id}${normalized.orderId ? `, pedido ${normalized.orderId}` : ""}.`,
+        is_night: false,
+        weekday_only: false,
+        created_by: "cakto-webhook",
+        updated_by: "cakto-webhook",
+        ...(costSnapshotJson ? { cost_snapshot_json: costSnapshotJson } : {}),
+      },
+      creditPermissions(studentUserId),
+    );
+  } catch (err) {
+    if (Number(err?.code) !== 409) throw err;
+  }
+
+  await updateFulfillment(receiptId, proposal.$id, {
+    status: "pending",
+    error: "",
+    creditId,
+    sagaStatus: "pending",
+    sagaError: "",
+    sagaMarker: `${normalized.provider === "lastlink" ? "GFV-LASTLINK" : "GFV-CAKTO"}:${creditId}`,
+  });
+
+  try {
+    const saga = await createSagaCredit({
+      studentUserId,
+      creditId,
+      purchaseDate,
+      expiresAt: addDaysIso(purchaseDate, GROUND_CREDIT_VALIDITY_DAYS),
+      aircraftModelId,
+      hours: GROUND_CREDIT_HOURS,
+      amountPaid,
+      provider: normalized.provider,
+    });
+    await updateFulfillment(receiptId, proposal.$id, {
+      status: "completed",
+      error: "",
+      creditId,
+      sagaStatus: saga.status,
+      sagaError: "",
+      sagaMarker: saga.marker,
+    });
+    return { applicable: true, creditId, sagaStatus: saga.status };
+  } catch (err) {
+    await updateFulfillment(receiptId, proposal.$id, {
+      status: "failed",
+      error: err?.message || String(err),
+      creditId,
+      sagaStatus: "failed",
+      sagaError: err?.message || String(err),
+      sagaMarker: `${normalized.provider === "lastlink" ? "GFV-LASTLINK" : "GFV-CAKTO"}:${creditId}`,
+    }).catch(() => undefined);
+    throw err;
+  }
 }
 
 function sagaSetCookieHeaders(headers) {
@@ -562,19 +697,25 @@ async function fulfillStudentCreditPurchase(receiptId, proposal, normalized) {
   const validityDays = Math.max(1, Math.round(Number(snapshot.validityDays) || 0));
   const amountPaid = Number(snapshot.totalValue);
   const hours = Number(snapshot.hours);
-  const products = proposalProducts(metadata);
+  const { groundProducts, regularProducts } = splitGroundProducts(metadata);
   if (!Number.isFinite(hours) || hours <= 0) {
-    if (!products.length) throw new Error("Proposta sem horas e sem produtos.");
+    if (!regularProducts.length && !groundProducts.length) throw new Error("Proposta sem horas e sem produtos.");
+    let ground = { applicable: false, creditId: "", sagaStatus: "skipped" };
+    if (groundProducts.length) {
+      ground = await fulfillCommercialGroundCreditPurchase(receiptId, proposal, normalized, metadata);
+    }
     await createProductSalesForProposal(proposal, metadata, normalized, purchaseDate, studentUserId);
-    await updateFulfillment(receiptId, proposal.$id, {
-      status: "completed",
-      error: "",
-      creditId: "",
-      sagaStatus: "skipped",
-      sagaError: "",
-      sagaMarker: "",
-    });
-    return { applicable: true, creditId: "", sagaStatus: "skipped" };
+    if (!ground.applicable) {
+      await updateFulfillment(receiptId, proposal.$id, {
+        status: "completed",
+        error: "",
+        creditId: "",
+        sagaStatus: "skipped",
+        sagaError: "",
+        sagaMarker: "",
+      });
+    }
+    return { applicable: true, creditId: ground.creditId || "", sagaStatus: ground.sagaStatus || "skipped" };
   }
   if (!clean(snapshot.aircraftModelId) || !clean(snapshot.aircraftModelName) || !Number.isFinite(amountPaid) || amountPaid <= 0 || !Number.isFinite(hours) || hours <= 0) {
     throw new Error("Snapshot do pacote invalido.");
@@ -1363,6 +1504,32 @@ module.exports = async ({ req, res, log, error }) => {
           sagaStatus: "not_applicable",
           sagaError: "",
           sagaMarker: "",
+        }).catch(() => undefined);
+        throw fulfillmentError;
+      }
+    } else if (normalized.eventType === "purchase_approved" && proposalMetadata?.kind === "commercial") {
+      try {
+        const purchaseDate = asIsoDate(normalized.eventAt || normalized.receivedAt);
+        const studentUserId = await studentUserIdForProposal(proposal, proposalMetadata);
+        if (studentUserId) {
+          await createProductSalesForProposal(proposal, proposalMetadata, normalized, purchaseDate, studentUserId);
+        }
+        const ground = await fulfillCommercialGroundCreditPurchase(documentId, proposal, normalized, proposalMetadata);
+        if (!ground.applicable) {
+          await updateFulfillment(documentId, proposalId, {
+            status: "not_applicable",
+            error: "",
+            creditId: "",
+            sagaStatus: "not_applicable",
+            sagaError: "",
+            sagaMarker: "",
+          }).catch(() => undefined);
+        }
+      } catch (fulfillmentError) {
+        await updateFulfillment(documentId, proposalId, {
+          status: "failed",
+          error: fulfillmentError?.message || String(fulfillmentError),
+          creditId: "",
         }).catch(() => undefined);
         throw fulfillmentError;
       }

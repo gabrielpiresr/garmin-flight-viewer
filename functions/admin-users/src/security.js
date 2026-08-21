@@ -5,6 +5,9 @@ const SECURITY_MODES = Object.freeze({
 
 const PUBLIC_GUEST_ACTIONS = new Set([
   "createPublicLiabilityWaiverContract",
+  "createRegistrationCheckout",
+  "getRegistrationCheckoutStatus",
+  "quoteRegistrationCheckout",
   "fetchAiswebMetBatch",
   "getEmailBrandSettings",
   "getOnboardingPublic",
@@ -16,6 +19,7 @@ const PUBLIC_GUEST_ACTIONS = new Set([
   "goproResolveVideoPlayback",
   "impersonateStudent",
   "lookupSagaAnacPerson",
+  "runRegistrationEnrollmentAutomation",
   // Public CRM qualification form (/qualificacao) notifies admins after submit.
   "notifyCrmLeadEvent",
 ]);

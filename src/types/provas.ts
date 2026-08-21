@@ -173,6 +173,37 @@ export type ProvaAttempt = {
   passed: boolean | null;
 };
 
+export type ProvaJourneyRequirement = {
+  id: string;
+  schoolId: string;
+  provaId: string;
+  provaTitle: string;
+  trackId: string;
+  trackName: string;
+  startMissionId: string;
+  startMissionName: string;
+  endMissionId: string;
+  endMissionName: string;
+  requiredToAdvance: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProvaJourneyRequirementInput = {
+  schoolId?: string;
+  provaId: string;
+  provaTitle: string;
+  trackId: string;
+  trackName: string;
+  startMissionId: string;
+  startMissionName: string;
+  endMissionId: string;
+  endMissionName: string;
+  requiredToAdvance: boolean;
+  isActive: boolean;
+};
+
 export type ProvaBankCard = Prova & {
   categoryCount: number;
   questionCount: number;

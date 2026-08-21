@@ -62,6 +62,14 @@ const FUNCTION_ONLY = [
   Permission.delete(Role.label("admin")),
 ];
 
+const USERS_READ_ADMIN_CUD = [
+  Permission.read(Role.users()),
+  Permission.read(Role.label("admin")),
+  Permission.create(Role.label("admin")),
+  Permission.update(Role.label("admin")),
+  Permission.delete(Role.label("admin")),
+];
+
 const COLLECTIONS = [
   {
     id: "provas",
@@ -163,6 +171,31 @@ const COLLECTIONS = [
       await idx(cid, "prova_attempts_student_idx", ["student_user_id"]);
     },
   },
+  {
+    id: "prova_journey_requirements",
+    name: "prova_journey_requirements",
+    perms: USERS_READ_ADMIN_CUD,
+    documentSecurity: false,
+    attributes: async (cid) => {
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "school_id", 64, true), "school_id");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "prova_id", 36, true), "prova_id");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "prova_title", 255, true), "prova_title");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "track_id", 36, true), "track_id");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "track_name", 255, true), "track_name");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "start_mission_id", 128, true), "start_mission_id");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "start_mission_name", 255, true), "start_mission_name");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "end_mission_id", 128, true), "end_mission_id");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "end_mission_name", 255, true), "end_mission_name");
+      await attr(cid, () => db.createBooleanAttribute(DATABASE_ID, cid, "required_to_advance", true), "required_to_advance");
+      await attr(cid, () => db.createBooleanAttribute(DATABASE_ID, cid, "is_active", true), "is_active");
+      await attr(cid, () => db.createStringAttribute(DATABASE_ID, cid, "updated_at", 40, true), "updated_at");
+      await idx(cid, "prova_journey_school_idx", ["school_id"]);
+      await idx(cid, "prova_journey_track_idx", ["track_id"]);
+      await idx(cid, "prova_journey_school_track_idx", ["school_id", "track_id"], ["ASC", "ASC"]);
+      await idx(cid, "prova_journey_active_idx", ["school_id", "track_id", "is_active"], ["ASC", "ASC", "ASC"]);
+      await idx(cid, "prova_journey_updated_idx", ["school_id", "updated_at"], ["ASC", "DESC"]);
+    },
+  },
 ];
 
 async function sleep(ms) {
@@ -230,11 +263,13 @@ async function main() {
     VITE_APPWRITE_PROVA_QUESTIONS_COL_ID: "prova_questions",
     VITE_APPWRITE_PROVA_ASSIGNMENTS_COL_ID: "prova_assignments",
     VITE_APPWRITE_PROVA_ATTEMPTS_COL_ID: "prova_attempts",
+    VITE_APPWRITE_PROVA_JOURNEY_REQUIREMENTS_COL_ID: "prova_journey_requirements",
     APPWRITE_PROVAS_COL_ID: "provas",
     APPWRITE_PROVA_CATEGORIES_COL_ID: "prova_categories",
     APPWRITE_PROVA_QUESTIONS_COL_ID: "prova_questions",
     APPWRITE_PROVA_ASSIGNMENTS_COL_ID: "prova_assignments",
     APPWRITE_PROVA_ATTEMPTS_COL_ID: "prova_attempts",
+    APPWRITE_PROVA_JOURNEY_REQUIREMENTS_COL_ID: "prova_journey_requirements",
   });
   console.log("\nUpdated .env.local with provas collection IDs.");
 }

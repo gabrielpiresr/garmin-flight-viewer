@@ -23,6 +23,34 @@ function formatBrl(value: number): string {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function normalizeProductText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isTransferLead(lead: CrmLead): boolean {
+  return Boolean(lead.transferSchool || lead.crmStatus === "aguardando_transferencia");
+}
+
+function matchesDefaultProposalProduct(product: SchoolProduct, kind: "enrollment" | "ground" | "transfer"): boolean {
+  const haystack = normalizeProductText(`${product.name || ""} ${product.id || ""}`);
+  if (kind === "ground") return /\bground\b/.test(haystack);
+  if (kind === "transfer") return /transfer/.test(haystack);
+  return /matric|matricula|matr/.test(haystack);
+}
+
+function defaultProposalProductIds(products: SchoolProduct[], lead: CrmLead): Set<string> {
+  const wanted: Array<"enrollment" | "ground" | "transfer"> = ["enrollment", "ground"];
+  if (isTransferLead(lead)) wanted.push("transfer");
+  return new Set(
+    products
+      .filter((product) => wanted.some((kind) => matchesDefaultProposalProduct(product, kind)))
+      .map((product) => product.id),
+  );
+}
+
 const inputCls =
   "mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
@@ -52,7 +80,10 @@ export function ProposalGeneratorModal({ lead, onClose, onProposalCreated }: Pro
 
   useEffect(() => {
     Promise.all([
-      listSchoolProducts().then(setProducts),
+      listSchoolProducts().then((items) => {
+        setProducts(items);
+        setSelectedProductIds(defaultProposalProductIds(items, lead));
+      }),
       getProposalsByLead(lead.id).then(setExistingProposals),
       getFlightCreditSalesConfig()
         .then((cfg) => {

@@ -440,6 +440,13 @@ function isScheduledReportStatus(status: AdminFlightReportRow["status"]): boolea
   return status === "Pendente" || status === "Confirmado" || status === "Previsto";
 }
 
+function isFutureScheduledReportRow(row: AdminFlightReportRow): boolean {
+  if (!isScheduledReportStatus(row.status)) return false;
+  const date = row.flightDate || row.createdAt.slice(0, 10);
+  if (!date) return false;
+  return date >= isoDate(new Date());
+}
+
 const COLUMNS: ColumnDef[] = [
   { key: "group", label: "Grupo", category: "base", groupOnly: true, sortable: true, format: (row) => (isGroupedRow(row) ? row.group : ""), sortValue: (row) => (isGroupedRow(row) ? row.group : "") },
   { key: "status", label: "Status", category: "base", detailOnly: true, compact: true, sortable: true, format: (row) => (isGroupedRow(row) ? "" : row.status), sortValue: (row) => (isGroupedRow(row) ? "" : row.status) },
@@ -1577,6 +1584,7 @@ export function FlightReportsTab({ lockedInstructorUserId = "", hideInstructorFi
         const hasVideo = row.videoPresent;
         if (mediaFilters.includes("telemetry") && !hasTelemetry) return false;
         if (mediaFilters.includes("video") && !hasVideo) return false;
+        if (status === "all" && isFutureScheduledReportRow(row)) return false;
         if (status !== "all" && row.status !== status) return false;
         if (evaluationFilter === "evaluated" && !row.evaluationPresent) return false;
         if (evaluationFilter === "pending" && row.evaluationPresent) return false;

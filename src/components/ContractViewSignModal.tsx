@@ -112,6 +112,7 @@ export function ContractViewSignModal({ contract, signerRole, onSigned, onClose 
       });
       showToast({ variant: "success", message: "Contrato assinado com sucesso." });
       onSigned(updated);
+      onClose();
     } catch (e) {
       showToast({ variant: "error", message: (e as Error).message || "Erro ao assinar contrato." });
     } finally {

@@ -324,6 +324,22 @@ export type AiswebWebcamsResult = {
   cached?: boolean;
 };
 
+export type AiswebMeteoblueMeteogramImage = {
+  provider: "Meteoblue";
+  attributionUrl: string;
+  icao: string | null;
+  airportName: string | null;
+  lat: number;
+  lon: number;
+  asl: number | null;
+  url: string;
+  contentType: string;
+  byteLength: number;
+  fetchedAt: string;
+  cachedUntil: string;
+  cached?: boolean;
+};
+
 export type AiswebRotaer = {
   icao: string;
   name: string | null;

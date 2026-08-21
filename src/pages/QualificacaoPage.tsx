@@ -124,6 +124,57 @@ type FieldKey =
   | "anacCode"
   | "heightCm";
 
+function makeInitialForm(emailHint: string, isTestMode: boolean): FormState {
+  if (!isTestMode) {
+    return {
+      name: "",
+      email: emailHint,
+      phone: "",
+      birthDate: "",
+      cpf: "",
+      anacCode: "",
+      noAnac: false,
+      isTransfer: false,
+      transferSchool: "",
+      desiredCourse: "",
+      theoreticalExamDone: null,
+      theoreticalStudyStatus: "",
+      desiredHours: "",
+      startPeriod: "",
+      notes: "",
+      weeklyHours: "",
+      weightKg: "",
+      heightCm: "",
+      availabilityPreset: null,
+      availableDays: [],
+      availablePeriod: "",
+    };
+  }
+  return {
+    name: "Lead Teste EPEAC",
+    email: emailHint || `qualificacao.teste+${Date.now()}@example.com`,
+    phone: "(11) 99999-0002",
+    birthDate: "1998-05-12",
+    cpf: "529.982.247-25",
+    anacCode: "264933",
+    noAnac: false,
+    isTransfer: false,
+    transferSchool: "",
+    desiredCourse: "Piloto Privado",
+    theoreticalExamDone: false,
+    theoreticalStudyStatus: "Estou estudando por conta própria",
+    desiredHours: "42",
+    startPeriod: "30_dias",
+    notes: "Lead gerado em modo de teste pelo parametro istest=true.",
+    weeklyHours: "4",
+    weightKg: "78",
+    heightCm: "176",
+    availabilityPreset: "todos",
+    availableDays: ALL_DAYS,
+    availablePeriod: "ambos",
+  };
+}
+
 // ─── UI helpers ────────────────────────────────────────────────────────────────
 
 function Divider() {
@@ -163,6 +214,7 @@ function resolveReferrerUserId(params: URLSearchParams): string | null {
 export function QualificacaoPage() {
   const params = new URLSearchParams(window.location.search);
   const emailHint = params.get("email") ?? "";
+  const isTestMode = params.get("istest")?.toLowerCase() === "true";
   const referralSource = params.get("referral")?.trim().slice(0, 255) || null;
   const [brand, setBrand] = useState(() => getCachedBrandSettings());
   const logoUrl = brand?.logoUrl || brand?.logoDataUrl || "";
@@ -211,29 +263,7 @@ export function QualificacaoPage() {
     };
   }, [referrerUserId]);
 
-  const [form, setForm] = useState<FormState>({
-    name: "",
-    email: emailHint,
-    phone: "",
-    birthDate: "",
-    cpf: "",
-    anacCode: "",
-    noAnac: false,
-    isTransfer: false,
-    transferSchool: "",
-    desiredCourse: "",
-    theoreticalExamDone: null,
-    theoreticalStudyStatus: "",
-    desiredHours: "",
-    startPeriod: "",
-    notes: "",
-    weeklyHours: "",
-    weightKg: "",
-    heightCm: "",
-    availabilityPreset: null,
-    availableDays: [],
-    availablePeriod: "",
-  });
+  const [form, setForm] = useState<FormState>(() => makeInitialForm(emailHint, isTestMode));
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);

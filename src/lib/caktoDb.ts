@@ -12,6 +12,7 @@ import type {
   FlightReviewClubTaskStatus,
   FlightReviewClubQuote,
   FlightReviewClubMemberkitAccess,
+  RegistrationCheckout,
 } from "../types/cakto";
 import type { CrmProposal, CrmProposalInput } from "../types/proposal";
 
@@ -24,7 +25,9 @@ type CaktoResponse = {
   limit?: number;
   offset?: number;
   summary?: CaktoReceiptPage["summary"];
-  checkout?: FlightReviewClubCheckout;
+  checkout?: FlightReviewClubCheckout & RegistrationCheckout;
+  registrationCheckout?: RegistrationCheckout;
+  registrationQuote?: Pick<RegistrationCheckout, "products" | "amount">;
   quote?: FlightReviewClubQuote;
   frcStatus?: FlightReviewClubStatus;
   memberkitAccess?: FlightReviewClubMemberkitAccess;
@@ -70,6 +73,43 @@ export async function createProposalWithPayment(input: CrmProposalInput): Promis
   const response = await execute({ action: "createCaktoProposal", proposal: input });
   if (!response.proposal) throw new Error(response.message || "Orçamento não retornado.");
   return response.proposal;
+}
+
+export async function createRegistrationCheckout(input: {
+  token: string;
+  userId: string;
+  chargeGround?: boolean;
+  chargeEnrollment?: boolean;
+  chargeTransfer?: boolean;
+}): Promise<RegistrationCheckout> {
+  const response = await execute({ action: "createRegistrationCheckout", ...input });
+  const checkout = response.checkout ?? response.registrationCheckout;
+  if (!checkout?.paymentUrl) throw new Error(response.message || "Checkout de cadastro não retornado.");
+  return checkout;
+}
+
+export async function quoteRegistrationCheckout(input: {
+  token: string;
+  chargeGround?: boolean;
+  chargeEnrollment?: boolean;
+  chargeTransfer?: boolean;
+}): Promise<Pick<RegistrationCheckout, "products" | "amount">> {
+  const response = await execute({ action: "quoteRegistrationCheckout", ...input });
+  const quote = response.registrationQuote;
+  if (!quote?.products?.length) throw new Error(response.message || "Itens de pagamento não retornados.");
+  return quote;
+}
+
+export async function getRegistrationCheckoutStatus(input: {
+  token: string;
+  userId?: string;
+  chargeGround?: boolean;
+  chargeEnrollment?: boolean;
+  chargeTransfer?: boolean;
+}): Promise<RegistrationCheckout> {
+  const response = await execute({ action: "getRegistrationCheckoutStatus", ...input });
+  if (!response.registrationCheckout) throw new Error(response.message || "Status do pagamento não retornado.");
+  return response.registrationCheckout;
 }
 
 export async function retryProposalPayment(proposalId: string): Promise<CrmProposal> {

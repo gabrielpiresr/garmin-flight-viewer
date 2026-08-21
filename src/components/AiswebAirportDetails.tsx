@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, WMSTileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
-import { prefetchAiswebChartBlobs, previewAiswebChartBlob, searchWindyWebcamsForAirport } from "../lib/aiswebDb";
+import {
+  getMeteoblueMeteogramImage,
+  prefetchAiswebChartBlobs,
+  previewAiswebChartBlob,
+  searchWindyWebcamsForAirport,
+} from "../lib/aiswebDb";
 import type {
   AiswebAirportBundle,
   AiswebAirspace,
@@ -9,6 +14,7 @@ import type {
   AiswebComplement,
   AiswebDeclaredDistance,
   AiswebFrequency,
+  AiswebMeteoblueMeteogramImage,
   AiswebNavaid,
   AiswebNotam,
   AiswebRemark,
@@ -64,7 +70,15 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-type DetailSubTab = "meteorologia" | "satelite" | "detalhes" | "webcams" | "notams" | "cartas" | "suplementos";
+type DetailSubTab =
+  | "meteorologia"
+  | "satelite"
+  | "detalhes"
+  | "webcams"
+  | "meteoblue"
+  | "notams"
+  | "cartas"
+  | "suplementos";
 
 function formatNotamDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -1239,6 +1253,130 @@ function WindyWebcamsPanel({ airport }: { airport: AiswebAirportBundle }) {
   );
 }
 
+function MeteoblueMeteogramPanel({ airport }: { airport: AiswebAirportBundle }) {
+  const [meteogram, setMeteogram] = useState<AiswebMeteoblueMeteogramImage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const lat = airport.rotaer?.lat;
+  const lon = airport.rotaer?.lng;
+  const hasCoords =
+    lat != null &&
+    lon != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lon);
+
+  useEffect(() => {
+    setMeteogram(null);
+    setError(null);
+  }, [airport.icao]);
+
+  async function loadMeteogram(force = false) {
+    if (!hasCoords) {
+      setError("Coordenadas indisponíveis no ROTAER para gerar o meteorograma.");
+      setMeteogram(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await getMeteoblueMeteogramImage(airport, { force });
+      setMeteogram(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao buscar meteorograma Meteoblue.");
+      if (force) setMeteogram(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadMeteogram();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [airport.icao, hasCoords]);
+
+  if (!hasCoords) {
+    return (
+      <div className="rounded-xl border border-dashed border-slate-700/70 px-3 py-8 text-center text-xs text-slate-500">
+        Coordenadas indisponíveis para gerar o meteorograma Meteoblue.
+      </div>
+    );
+  }
+
+  const fetchedAt = meteogram?.fetchedAt ? formatWebcamDate(meteogram.fetchedAt) : "—";
+  const cachedUntil = meteogram?.cachedUntil ? formatWebcamDate(meteogram.cachedUntil) : "—";
+  const imageUrl = meteogram?.url ? `${meteogram.url}${meteogram.url.includes("?") ? "&" : "?"}v=${encodeURIComponent(meteogram.fetchedAt)}` : "";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Meteorograma</p>
+          <p className="text-[11px] text-slate-500">
+            {meteogram
+              ? `${airport.icao} · atualizado ${fetchedAt} · cache até ${cachedUntil}`
+              : `${airport.icao} · Meteoblue`}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadMeteogram(true)}
+          disabled={loading}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466.75.75 0 10-1.061 1.06 7 7 0 0011.697-3.138.75.75 0 00-1.435-.388zM4.688 8.576a5.5 5.5 0 019.201-2.466.75.75 0 101.061-1.06A7 7 0 003.253 8.188a.75.75 0 101.435.388z"
+              clipRule="evenodd"
+            />
+          </svg>
+          Atualizar
+        </button>
+      </div>
+
+      {loading && !meteogram ? (
+        <div className="h-[28rem] animate-pulse rounded-xl border border-slate-800 bg-slate-950/60" />
+      ) : null}
+
+      {error ? (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-5 text-center">
+          <p className="text-sm text-rose-200">{error}</p>
+        </div>
+      ) : null}
+
+      {imageUrl ? (
+        <div className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-slate-700/70 bg-white">
+          <img
+            src={imageUrl}
+            alt={`Meteorograma Meteoblue para ${airport.icao}`}
+            className="h-auto w-full"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+          <div className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-500">
+            Imagem fornecida por{" "}
+            <a
+              href={meteogram?.attributionUrl || "https://www.meteoblue.com/"}
+              target="_blank"
+              rel="noreferrer"
+              className="font-semibold text-cyan-700 hover:text-cyan-600"
+            >
+              Meteoblue
+            </a>
+            .
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AiswebAirportDetailTabs({
   airport,
   meteorology,
@@ -1278,6 +1416,7 @@ export function AiswebAirportDetailTabs({
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
     { id: "satelite" as const, label: "Satélite", icon: <IconMap /> },
     { id: "webcams" as const, label: "Webcams", icon: <IconMap /> },
+    { id: "meteoblue" as const, label: "Meteoblue", icon: <IconCloud /> },
     {
       id: "notams" as const,
       label: `NOTAMs (${notams.length})`,
@@ -1315,6 +1454,7 @@ export function AiswebAirportDetailTabs({
         />
       ) : null}
       {subTab === "webcams" ? <WindyWebcamsPanel airport={airport} /> : null}
+      {subTab === "meteoblue" ? <MeteoblueMeteogramPanel airport={airport} /> : null}
       {subTab === "detalhes" ? (
         <div className="space-y-3">
           <AiswebAirportTopCards airport={airport} />

@@ -26,6 +26,7 @@ const flightShareStickerTools = require("./flightShareStickers.generated.cjs");
 const { PROVA_ACTIONS, createProvaService } = require("./provas");
 const memberkit = require("./memberkit");
 const lastlink = require("./lastlink");
+const { sanitizeCapacityProjectionSettings, projectionCourseCode, isWeekendIso, resolveCourseFlownHours } = require("./capacityProjectionSettings");
 
 let sharpModule = undefined;
 
@@ -59,6 +60,10 @@ const SOLO_FLIGHT_DECISIONS_COLLECTION_ID =
   process.env.APPWRITE_SOLO_FLIGHT_DECISIONS_COL_ID ||
   "solo_flight_decisions";
 const FLIGHTS_COLLECTION_ID = process.env.APPWRITE_FLIGHTS_COLLECTION_ID || process.env.APPWRITE_COLLECTION_ID;
+const CREDIT_ADJUSTMENTS_COLLECTION_ID =
+  process.env.APPWRITE_CREDIT_ADJUSTMENTS_COLLECTION_ID ||
+  process.env.APPWRITE_CREDIT_ADJUSTMENTS_COL_ID ||
+  "credit_adjustments";
 const FLIGHT_VIDEOS_COLLECTION_ID =
   process.env.APPWRITE_VIDEOS_COLLECTION_ID || process.env.APPWRITE_FLIGHT_VIDEOS_COLLECTION_ID || "6a0200bf00297bfc2231";
 const FLIGHT_PHOTOS_COLLECTION_ID =
@@ -215,6 +220,8 @@ const METEOBLUE_API_KEY = process.env.METEOBLUE_API_KEY || "";
 const METEOBLUE_LAT = Number(process.env.METEOBLUE_LAT ?? "-22.9754");
 const METEOBLUE_LON = Number(process.env.METEOBLUE_LON ?? "-44.3074");
 const METEOBLUE_ASL = Number(process.env.METEOBLUE_ASL ?? "2");
+const METEOBLUE_CACHE_BUCKET_ID = process.env.APPWRITE_METEOBLUE_CACHE_BUCKET_ID || FLIGHTS_CSV_BUCKET_ID;
+const METEOBLUE_METEOGRAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON || "";
 const GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL || "";
 const GOOGLE_CALENDAR_PRIVATE_KEY = process.env.GOOGLE_CALENDAR_PRIVATE_KEY || "";
@@ -4292,6 +4299,57 @@ async function syncSagaUserAnac(userId, sagaUser) {
   }
 }
 
+async function forceAnacSyncForUser(actorUserId, targetUserId) {
+  await requireAdmin(actorUserId);
+  const userId = cleanString(targetUserId);
+  if (!userId) throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
+  if (!SYNC_ANAC_FUNCTION_ID) {
+    throw Object.assign(new Error("Funcao ANAC nao configurada."), { status: 500 });
+  }
+
+  const profile = await getProfileByUserId(userId);
+  if (!profile?.$id) throw Object.assign(new Error("Perfil do usuario nao encontrado."), { status: 404 });
+
+  const anacCode = cleanString(profile.anac_code);
+  const cpf = cleanString(profile.cpf).replace(/\D/g, "");
+  const birthDate = cleanString(profile.birth_date || "");
+  if (!anacCode || cpf.length !== 11) {
+    throw Object.assign(new Error("CPF e codigo ANAC sao obrigatorios para atualizar dados da ANAC."), { status: 400 });
+  }
+
+  const execution = await functions.createExecution({
+    functionId: SYNC_ANAC_FUNCTION_ID,
+    body: JSON.stringify({
+      userId,
+      anacCode,
+      cpf,
+      birthDate,
+    }),
+    async: false,
+  });
+  const body = parseJsonObject(execution.responseBody, {});
+  if (execution.status === "failed" || execution.responseStatusCode >= 400) {
+    throw Object.assign(
+      new Error(cleanString(body.message || body.error) || `Falha ao consultar ANAC (HTTP ${execution.responseStatusCode || "?"}).`),
+      { status: execution.responseStatusCode || 502 },
+    );
+  }
+
+  const refreshed = await getUserDetail(userId);
+  return {
+    user: refreshed,
+    anacSync: {
+      pending: body.pending !== false,
+      message: cleanString(body.message || body.error) || (body.pending === false ? "Consulta ANAC atualizada." : "Consulta ANAC pendente."),
+      error: cleanString(body.error) || null,
+      ratings: Number(body.ratings) || 0,
+      licenses: Number(body.licenses) || 0,
+      hasMedical: Boolean(body.hasMedical),
+      hasPhoto: Boolean(body.hasPhoto),
+    },
+  };
+}
+
 function sagaCreditRowBaseKey(userId, credit) {
   const stableTotalValue = cleanString(credit._originalTotalValue ?? credit.totalValue);
   return [
@@ -8167,7 +8225,8 @@ function clampReportLimit(value) {
 }
 
 function selectQuery(fields) {
-  return typeof sdk.Query.select === "function" ? [sdk.Query.select(fields)] : [];
+  const uniqueFields = Array.from(new Set((Array.isArray(fields) ? fields : []).filter(Boolean)));
+  return typeof sdk.Query.select === "function" && uniqueFields.length ? [sdk.Query.select(uniqueFields)] : [];
 }
 
 function parseItemsJson(value) {
@@ -10009,8 +10068,9 @@ async function listProfileDocumentsByUserId(userId) {
   return res.documents || [];
 }
 
-function missingEnrollmentRequirements(lead, profile, documents) {
+function missingEnrollmentRequirements(lead, profile, documents, options = {}) {
   const data = contractProfileData(profile, lead);
+  const requireDocuments = options.requireDocuments !== false;
   const missing = [];
   if (!lead?.user_id) missing.push("Conta vinculada ao lead");
   const fieldLabels = [
@@ -10043,14 +10103,16 @@ function missingEnrollmentRequirements(lead, profile, documents) {
   for (const [key, label] of fieldLabels) {
     if (!data[key]) missing.push(label);
   }
-  const byType = new Set((documents || []).map((doc) => cleanString(doc.document_type)));
-  const docLabels = {
-    identification: "Documento de identificação",
-    voterTitle: "Título de eleitor",
-    proofOfResidence: "Comprovante de residência",
-  };
-  for (const [type, label] of Object.entries(docLabels)) {
-    if (!byType.has(type)) missing.push(label);
+  if (requireDocuments) {
+    const byType = new Set((documents || []).map((doc) => cleanString(doc.document_type)));
+    const docLabels = {
+      identification: "Documento de identificação",
+      voterTitle: "Título de eleitor",
+      proofOfResidence: "Comprovante de residência",
+    };
+    for (const [type, label] of Object.entries(docLabels)) {
+      if (!byType.has(type)) missing.push(label);
+    }
   }
   if (!hasSagaAnacData(profile, lead)) {
     const cached = parseSagaAnacFromLeadOrProfile(profile, lead);
@@ -10162,6 +10224,46 @@ async function getTrainingTrackName(trackId) {
   }
 }
 
+async function getEnrollmentTrainingTrack(payload = {}) {
+  let trainingTrackId = cleanString(payload.trainingTrackId);
+  if (!trainingTrackId && payload.useDefaultTrainingTrack === true) {
+    trainingTrackId = cleanString(await resolveDefaultTrainingTrackId());
+  }
+  if (!trainingTrackId) {
+    throw Object.assign(new Error("Selecione a trilha de treinamento do aluno."), { status: 400 });
+  }
+  const trainingTrackName = await getTrainingTrackName(trainingTrackId);
+  if (!trainingTrackName) {
+    throw Object.assign(new Error("Trilha de treinamento inválida ou não encontrada."), { status: 400 });
+  }
+  return { trainingTrackId, trainingTrackName };
+}
+
+async function ensureSagaAnacDataForEnrollment(lead, profile, recipientUserId) {
+  if (hasSagaAnacData(profile, lead)) return;
+  const anacCode = cleanString(profile?.anac_code) || cleanString(lead?.anac_code);
+  const birthDate = cleanString(profile?.birth_date) || cleanString(lead?.birth_date);
+  const cpf = cleanString(profile?.cpf) || cleanString(lead?.cpf);
+  const cookieSession = await loadSagaAuthSession();
+  const cookieJar = cookieSession.cookieJar;
+  await assertSagaAuthSessionAlive(cookieJar);
+  const result = await lookupSagaAnacPersonCore(cookieJar, { anacCode, birthDate, cpf });
+  if (!result.ok) {
+    throw Object.assign(
+      new Error(result.message || "Não foi possível consultar os dados ANAC no SAGA antes da matrícula."),
+      { status: 422 },
+    );
+  }
+  await saveSagaAuthSession(cookieJar, cookieSession.loginEmail).catch(() => undefined);
+  await persistSagaAnacLookupResult({
+    leadId: lead?.$id,
+    userId: recipientUserId,
+    anacCode,
+    birthDate,
+    cpf,
+  }, result.data);
+}
+
 function getSharpModule() {
   if (sharpModule !== undefined) return sharpModule;
   try {
@@ -10172,24 +10274,31 @@ function getSharpModule() {
   return sharpModule;
 }
 
-async function runEnrollmentAutomation(actorUserId, payload = {}) {
-  await requireAdmin(actorUserId);
+async function runEnrollmentAutomation(actorUserId, payload = {}, options = {}) {
+  if (options.requireAdmin !== false) {
+    await requireAdmin(actorUserId);
+  }
   if (!CONTRACTS_COLLECTION_ID) throw Object.assign(new Error("Coleção de contratos não configurada."), { status: 500 });
   const leadId = cleanString(payload.leadId);
   if (!leadId) throw Object.assign(new Error("Lead não informado."), { status: 400 });
-  const trainingTrackId = cleanString(payload.trainingTrackId);
-  if (!trainingTrackId) {
-    throw Object.assign(new Error("Selecione a trilha de treinamento do aluno."), { status: 400 });
-  }
-  const trainingTrackName = await getTrainingTrackName(trainingTrackId);
-  if (!trainingTrackName) {
-    throw Object.assign(new Error("Trilha de treinamento inválida ou não encontrada."), { status: 400 });
-  }
+  const { trainingTrackId, trainingTrackName } = await getEnrollmentTrainingTrack(payload);
   const lead = await getLeadById(leadId);
   const recipientUserId = cleanString(lead.user_id);
-  const profile = recipientUserId ? await getProfileByUserId(recipientUserId) : null;
+  if (options.expectedToken && cleanString(lead.qual_token) !== cleanString(options.expectedToken)) {
+    throw Object.assign(new Error("Link de cadastro inválido para esta matrícula."), { status: 403 });
+  }
+  if (options.expectedUserId && recipientUserId !== cleanString(options.expectedUserId)) {
+    throw Object.assign(new Error("Usuário sem permissão para gerar esta matrícula."), { status: 403 });
+  }
+  let profile = recipientUserId ? await getProfileByUserId(recipientUserId) : null;
+  if (payload.forceSagaAnacLookup !== false && recipientUserId) {
+    await ensureSagaAnacDataForEnrollment(lead, profile, recipientUserId);
+    profile = await getProfileByUserId(recipientUserId);
+  }
   const documents = recipientUserId ? await listProfileDocumentsByUserId(recipientUserId) : [];
-  const missing = missingEnrollmentRequirements(lead, profile, documents);
+  const missing = missingEnrollmentRequirements(lead, profile, documents, {
+    requireDocuments: payload.requireEnrollmentDocuments !== false,
+  });
   if (missing.length > 0) {
     throw Object.assign(new Error(`Pendências para matrícula: ${missing.join(", ")}.`), { status: 422 });
   }
@@ -10217,6 +10326,32 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
   const customVarValues = payload.customVarValues && typeof payload.customVarValues === "object" ? payload.customVarValues : {};
   const enrollmentTrackMeta = { trainingTrackId, trainingTrackName };
   const now = new Date().toISOString();
+  const skipExistingContracts = payload.skipExistingContracts === true;
+  if (skipExistingContracts && recipientUserId) {
+    const existingContracts = await listAllDocuments(CONTRACTS_COLLECTION_ID, [
+      sdk.Query.equal("recipient_user_id", [recipientUserId]),
+      sdk.Query.equal("standard_type", ["matricula"]),
+      sdk.Query.limit(10),
+    ]).catch(() => []);
+    const reusableContracts = existingContracts.filter((item) => cleanString(item.status) !== "cancelled");
+    if (reusableContracts.length > 0) {
+      const statusPayload = await buildCrmLeadStatusChangePayload(lead, "aguardando_assinatura_pagamento");
+      await databases.updateDocument(DATABASE_ID, CRM_LEADS_COLLECTION_ID, lead.$id, statusPayload);
+      let access = null;
+      try {
+        access = await approveStudentAccessForEnrollment(recipientUserId);
+      } catch (err) {
+        access = { ok: false, message: String(err?.message || err) };
+      }
+      return {
+        createdContracts: 0,
+        existingContracts: reusableContracts.length,
+        nextStatus: "aguardando_assinatura_pagamento",
+        saga: sagaResult,
+        access,
+      };
+    }
+  }
   const allTemplates = await listEnrollmentTemplates();
   const requestedTemplateIds = Array.isArray(payload.templateIds)
     ? payload.templateIds.map(cleanString).filter(Boolean)
@@ -10291,6 +10426,35 @@ async function runEnrollmentAutomation(actorUserId, payload = {}) {
     saga: sagaResult,
     access,
   };
+}
+
+async function runRegistrationEnrollmentAutomation(actorUserId, payload = {}) {
+  const token = cleanString(payload.token);
+  const expectedUserId = cleanString(payload.userId || actorUserId);
+  if (!actorUserId) throw Object.assign(new Error("Faça login para gerar a matrícula."), { status: 401 });
+  if (!token) throw Object.assign(new Error("Link de cadastro inválido."), { status: 400 });
+  if (!expectedUserId || expectedUserId !== actorUserId) {
+    throw Object.assign(new Error("Usuário sem permissão para gerar esta matrícula."), { status: 403 });
+  }
+  const lead = await getRegistrationLeadByToken(token);
+  if (!lead?.$id) throw Object.assign(new Error("Lead do cadastro não encontrado."), { status: 404 });
+  if (cleanString(lead.user_id) !== actorUserId) {
+    throw Object.assign(new Error("Este cadastro ainda não está vinculado ao usuário logado."), { status: 403 });
+  }
+  return runEnrollmentAutomation(actorUserId, {
+    leadId: lead.$id,
+    useDefaultTrainingTrack: true,
+    createInSaga: true,
+    ignoreSagaDuplicates: false,
+    useStudentEmail: true,
+    forceSagaAnacLookup: true,
+    requireEnrollmentDocuments: false,
+    skipExistingContracts: true,
+  }, {
+    requireAdmin: false,
+    expectedToken: token,
+    expectedUserId: actorUserId,
+  });
 }
 
 async function normalizeEnrollmentPhotoBytesForPdf(bytes) {
@@ -11304,6 +11468,102 @@ async function getStudentsProgress(payload = {}) {
     },
     buckets,
     students,
+  };
+}
+
+async function getCapacityProjectionInputs(payload = {}) {
+  const today = asIsoDate(payload.today);
+  const lookbackDays = Math.min(365, Math.max(30, Math.round(Number(payload.lookbackDays) || 90)));
+  const windowStart = shiftIsoDay(today, -lookbackDays);
+  const monthStart = shiftIsoDay(today, -370);
+
+  const [recordsRaw, crmProfileDocs, crmStatusDocs] = await Promise.all([
+    buildRecords(),
+    STUDENT_CRM_PROFILES_COLLECTION_ID
+      ? listAllDocuments(STUDENT_CRM_PROFILES_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID])]).catch(() => [])
+      : Promise.resolve([]),
+    STUDENT_CRM_STATUSES_COLLECTION_ID
+      ? listAllDocuments(STUDENT_CRM_STATUSES_COLLECTION_ID, [sdk.Query.equal("school_id", [SCHOOL_ID])]).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+
+  const statusesById = new Map((crmStatusDocs || []).map((status) => [status.$id, status]));
+  const defaultStatus = (crmStatusDocs || []).find((status) => status.is_default === true && status.archived !== true);
+  const crmByStudent = new Map((crmProfileDocs || []).map((profile) => [cleanString(profile.student_user_id), profile]));
+  const students = [];
+  const actualByMonth = new Map();
+
+  for (const record of recordsRaw.filter((item) => item.role === "aluno")) {
+    const executed = Array.isArray(record.executedFlights) ? record.executedFlights : [];
+    let windowWeekdayHours = 0;
+    let windowWeekendHours = 0;
+    for (const flight of executed) {
+      const date = String(flight.flightDate || "").slice(0, 10);
+      if (!date) continue;
+      const hours = (flight.durationSec || 0) / 3600;
+      if (!(hours > 0)) continue;
+      if (date >= monthStart && date <= today) {
+        const month = date.slice(0, 7);
+        const bucket = actualByMonth.get(month) || { month, weekdayHours: 0, weekendHours: 0 };
+        if (isWeekendIso(date)) bucket.weekendHours += hours;
+        else bucket.weekdayHours += hours;
+        actualByMonth.set(month, bucket);
+      }
+      if (date < windowStart || date > today) continue;
+      if (isWeekendIso(date)) windowWeekendHours += hours;
+      else windowWeekdayHours += hours;
+    }
+
+    const assignment = primaryTrainingTrack(record);
+    const trackName = assignment?.track?.name || assignment?.trackName || "";
+    const trackId = assignment?.trackId || assignment?.track?.id || null;
+    const courseCode = projectionCourseCode(trackName);
+    const crmDoc = crmByStudent.get(record.userId);
+    const crmStatus = statusesById.get(cleanString(crmDoc?.status_id)) || defaultStatus || null;
+    const lastFlightAt = record.executed?.lastFlightAt || null;
+    const careerHours = Number(record.executed?.hours || 0);
+    const courseFlownHours = resolveCourseFlownHours({
+      careerHours,
+      currentCourse: courseCode,
+      currentTrackId: trackId,
+      flights: executed.map((flight) => ({
+        hours: (flight.durationSec || 0) / 3600,
+        trackId: flight.trainingTrackId || null,
+        trackName: flight.trainingSnapshot?.trackName || null,
+      })),
+    });
+    students.push({
+      userId: record.userId,
+      name: studentDisplayName(record),
+      email: record.email || "",
+      isActive: record.profile?.isActive !== false,
+      daysSinceLastFlight: lastFlightAt ? daysBetweenIso(lastFlightAt, today) : null,
+      lastFlightAt,
+      flownHours: careerHours,
+      courseFlownHours,
+      trackId,
+      windowWeekdayHours: Number(windowWeekdayHours.toFixed(1)),
+      windowWeekendHours: Number(windowWeekendHours.toFixed(1)),
+      windowHours: Number((windowWeekdayHours + windowWeekendHours).toFixed(1)),
+      trackName: trackName || null,
+      trackStatus: assignment?.status || null,
+      courseCode,
+      crmStatusName: crmStatus?.name || null,
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    today,
+    lookbackDays,
+    students,
+    actuals: [...actualByMonth.values()]
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((item) => ({
+        month: item.month,
+        weekdayHours: Number(item.weekdayHours.toFixed(1)),
+        weekendHours: Number(item.weekendHours.toFixed(1)),
+      })),
   };
 }
 
@@ -12363,6 +12623,45 @@ function authUserMatchesSearch(user, search) {
   return fieldsMatchSearch([user?.email, user?.name, user?.$id], search);
 }
 
+function isExactEmailSearch(search) {
+  const value = cleanString(search).toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function findAuthSearchUsers(search, limit = MAX_LIMIT) {
+  const text = String(search || "").trim();
+  if (!text) return [];
+  const safeLimit = clampLimit(limit);
+  const candidates = new Map();
+  const addUsers = (items) => {
+    for (const user of items || []) {
+      if (user?.$id) candidates.set(user.$id, user);
+    }
+  };
+
+  const authSearch = users
+    .list({
+      search: text,
+      queries: [sdk.Query.limit(safeLimit), sdk.Query.offset(0)],
+      total: true,
+    })
+    .then((res) => addUsers(res.users))
+    .catch(() => undefined);
+
+  const emailSearch = isExactEmailSearch(text)
+    ? users
+        .list({
+          queries: [sdk.Query.equal("email", [text.toLowerCase()]), sdk.Query.limit(1)],
+          total: true,
+        })
+        .then((res) => addUsers(res.users))
+        .catch(() => undefined)
+    : Promise.resolve();
+
+  await Promise.all([authSearch, emailSearch]);
+  return Array.from(candidates.values()).filter((user) => authUserMatchesSearch(user, search));
+}
+
 function fieldsMatchSearch(fields, search) {
   const needle = normalizeSearch(search);
   if (!needle) return true;
@@ -12770,16 +13069,12 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
       .map((profile) => cleanString(profile.user_id))
       .filter(Boolean);
     if (needle) {
-      const [authRes, profileSearchUserIds] = await Promise.all([
-        users.list({
-          search: String(search || "").trim(),
-          queries: [sdk.Query.limit(MAX_LIMIT), sdk.Query.offset(0)],
-          total: true,
-        }).catch(() => ({ users: [] })),
+      const [authUsers, profileSearchUserIds] = await Promise.all([
+        findAuthSearchUsers(search),
         findProfileSearchUserIds(search),
       ]);
       const searchIds = new Set([
-        ...(authRes.users || []).filter((user) => authUserMatchesSearch(user, search)).map((user) => user.$id),
+        ...authUsers.map((user) => user.$id),
         ...profileSearchUserIds,
       ]);
       matchingUserIds = matchingUserIds.filter((userId) => searchIds.has(userId));
@@ -12792,15 +13087,10 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
     total = matchingUsers.length;
     pageUsers = matchingUsers.slice(safeOffset, safeOffset + safeLimit);
   } else if (needle) {
-    const [authRes, profileUserIds] = await Promise.all([
-      users.list({
-        search: String(search || "").trim(),
-        queries: [sdk.Query.limit(MAX_LIMIT), sdk.Query.offset(0)],
-        total: true,
-      }).catch(() => ({ users: [], total: 0 })),
+    const [authUsers, profileUserIds] = await Promise.all([
+      findAuthSearchUsers(search),
       findProfileSearchUserIds(search),
     ]);
-    const authUsers = (authRes.users || []).filter((user) => authUserMatchesSearch(user, search));
     const existingIds = new Set(authUsers.map((user) => user.$id));
     const extraIds = profileUserIds.filter((userId) => !existingIds.has(userId));
     const extraUsers = await getUsersByIds(extraIds);
@@ -12859,16 +13149,12 @@ async function searchFlightPickerUsers(actorUserId, payload = {}) {
   let userIds = [];
 
   if (search) {
-    const [authRes, profileSearchUserIds] = await Promise.all([
-      users.list({
-        search,
-        queries: [sdk.Query.limit(25), sdk.Query.offset(0)],
-        total: true,
-      }).catch(() => ({ users: [] })),
+    const [authUsers, profileSearchUserIds] = await Promise.all([
+      findAuthSearchUsers(search, 25),
       findProfileSearchUserIds(search).catch(() => []),
     ]);
     userIds = Array.from(new Set([
-      ...(authRes.users || []).filter((user) => authUserMatchesSearch(user, search)).map((user) => user.$id),
+      ...authUsers.map((user) => user.$id),
       ...profileSearchUserIds,
     ].filter(Boolean)));
   } else {
@@ -13371,6 +13657,18 @@ async function deleteCredit(creditId, userId) {
     throw Object.assign(new Error("Credito nao pertence ao aluno selecionado."), { status: 400 });
   }
   await databases.deleteDocument(DATABASE_ID, STUDENT_CREDITS_COLLECTION_ID, creditId);
+}
+
+async function deleteCreditAdjustment(adjustmentId, userId) {
+  if (!CREDIT_ADJUSTMENTS_COLLECTION_ID) {
+    throw Object.assign(new Error("Colecao de ajustes de credito nao configurada."), { status: 500 });
+  }
+  if (!adjustmentId) throw Object.assign(new Error("Multa nao informada."), { status: 400 });
+  const existing = await databases.getDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId);
+  if (userId && existing.student_user_id && existing.student_user_id !== userId) {
+    throw Object.assign(new Error("Multa nao pertence ao aluno selecionado."), { status: 400 });
+  }
+  await databases.deleteDocument(DATABASE_ID, CREDIT_ADJUSTMENTS_COLLECTION_ID, adjustmentId);
 }
 
 function incrementDeletedCount(summary, collectionId, amount = 1) {
@@ -15823,6 +16121,23 @@ function defaultEmailBrandSettings() {
     appUrl: normalizeAbsoluteUrl(APP_URL),
     supportEmail: "",
     footerText: "Este é um email automático da plataforma.",
+    registrationDirectionsTitle: "Como chegar na EPEAC",
+    registrationDirectionsPlace: "Aeroporto Campo de Marte (SBMT)",
+    registrationDirectionsText: "Av. Santos Dumont, 1979 — Santana, São Paulo/SP. Chegue com 15 a 20 minutos de antecedência, siga a sinalização até a escola e na portaria informe que você é aluno e vem para o Ground School.",
+    registrationDirectionsMapsUrl: "https://maps.google.com/?q=EPEAC+Escola+de+Pilotagem+Campo+de+Marte",
+    registrationNextStepsTitle: "Próximos passos",
+    registrationNextStepsItems: [
+      "O nosso Ground School acontece logo antes do primeiro voo. Ele dura entre 1h e 2h.",
+      "O seu Ground School acontece logo antes do seu primeiro voo.",
+      "Após o Ground School você fará uma breve prova na escola em cima dos ensinamentos sobre o avião. É necessário alcançar pelo menos 70% na prova para ser liberado para o voo.",
+    ],
+    registrationMaterialsTitle: "Material e avisos importantes",
+    registrationMaterialsItems: [
+      "O seu acesso na plataforma app.epeac.com.br já está liberado. O login é o seu e-mail e a senha é o seu CPF só com números, ou a senha que você criou no cadastro.",
+      "Na plataforma temos a aba \"Manuais\" com todos os materiais que você vai precisar. É muito importante ler os manuais antes do Ground.",
+      "Na aba \"Jornada\" você consegue ver todo o cronograma de formação e as missões, além dos detalhes que serão cobrados em cada voo.",
+      "É obrigatória a leitura do Manual do Aluno que está na plataforma antes do seu Ground School — ele contém todos os detalhes e regras da escola.",
+    ],
   };
 }
 
@@ -16086,6 +16401,20 @@ function publicEmailBrandSettings(settings, updatedAt) {
     supportEmail: cleanString(settings.supportEmail),
     footerText: cleanString(settings.footerText) || defaults.footerText,
     faviconUrl: cleanString(settings.faviconUrl) || null,
+    registrationDirectionsTitle:
+      cleanString(settings.registrationDirectionsTitle) || defaults.registrationDirectionsTitle,
+    registrationDirectionsPlace:
+      cleanString(settings.registrationDirectionsPlace) || defaults.registrationDirectionsPlace,
+    registrationDirectionsText:
+      cleanString(settings.registrationDirectionsText) || defaults.registrationDirectionsText,
+    registrationDirectionsMapsUrl:
+      normalizeAbsoluteUrl(settings.registrationDirectionsMapsUrl) || defaults.registrationDirectionsMapsUrl,
+    registrationNextStepsTitle:
+      cleanString(settings.registrationNextStepsTitle) || defaults.registrationNextStepsTitle,
+    registrationNextStepsItems: sanitizeBrandTextList(settings.registrationNextStepsItems, defaults.registrationNextStepsItems),
+    registrationMaterialsTitle:
+      cleanString(settings.registrationMaterialsTitle) || defaults.registrationMaterialsTitle,
+    registrationMaterialsItems: sanitizeBrandTextList(settings.registrationMaterialsItems, defaults.registrationMaterialsItems),
     updatedAt: updatedAt || null,
   };
 }
@@ -16175,6 +16504,15 @@ function sanitizeHexColor(value, fallback) {
   return /^#[0-9a-f]{6}$/i.test(raw) ? raw : fallback;
 }
 
+function sanitizeBrandTextList(value, fallback, limit = 8) {
+  const source = Array.isArray(value) ? value : fallback;
+  const items = source
+    .map((item) => cleanString(item).slice(0, 700))
+    .filter(Boolean)
+    .slice(0, limit);
+  return items.length ? items : fallback;
+}
+
 function sanitizeEmailBrandSettingsInput(input) {
   const settings = input && typeof input === "object" ? input : {};
   const defaults = defaultEmailBrandSettings();
@@ -16188,6 +16526,15 @@ function sanitizeEmailBrandSettingsInput(input) {
     supportEmail: cleanString(settings.supportEmail).slice(0, 255),
     footerText: cleanString(settings.footerText).slice(0, 500) || defaults.footerText,
     faviconUrl: cleanString(settings.faviconUrl).slice(0, 2048) || null,
+    registrationDirectionsTitle: cleanString(settings.registrationDirectionsTitle).slice(0, 120) || defaults.registrationDirectionsTitle,
+    registrationDirectionsPlace: cleanString(settings.registrationDirectionsPlace).slice(0, 160) || defaults.registrationDirectionsPlace,
+    registrationDirectionsText: cleanString(settings.registrationDirectionsText).slice(0, 1200) || defaults.registrationDirectionsText,
+    registrationDirectionsMapsUrl:
+      normalizeAbsoluteUrl(settings.registrationDirectionsMapsUrl) || defaults.registrationDirectionsMapsUrl,
+    registrationNextStepsTitle: cleanString(settings.registrationNextStepsTitle).slice(0, 120) || defaults.registrationNextStepsTitle,
+    registrationNextStepsItems: sanitizeBrandTextList(settings.registrationNextStepsItems, defaults.registrationNextStepsItems),
+    registrationMaterialsTitle: cleanString(settings.registrationMaterialsTitle).slice(0, 120) || defaults.registrationMaterialsTitle,
+    registrationMaterialsItems: sanitizeBrandTextList(settings.registrationMaterialsItems, defaults.registrationMaterialsItems),
   };
 }
 
@@ -16606,6 +16953,10 @@ function publicSchoolRules(settings, updatedAt) {
       };
     })(),
     soloFlight: sanitizeSoloFlightRules(settings?.soloFlight),
+    capacityProjection: sanitizeCapacityProjectionSettings(
+      settings?.capacityProjection,
+      settings?.schedule?.maintenanceAvgHoursPerDay,
+    ),
     updatedAt: updatedAt || null,
   };
 }
@@ -17295,6 +17646,133 @@ function appwritePublicStorageFileViewUrl(bucketId, fileId) {
   } catch {
     return url.replace(/([?&])(mode|impersonateUserId|impersonateuserid)=[^&]*/gi, "$1").replace(/[?&]$/, "");
   }
+}
+
+function meteoblueMeteogramCacheFileId(input) {
+  const code = aiswebService.normalizeIcao(input?.icaoCode || input?.icao).toLowerCase() || "xxxx";
+  const lat = Number(input?.lat);
+  const lon = Number(input?.lon ?? input?.lng);
+  const asl = Number(input?.asl);
+  const key = [
+    code,
+    Number.isFinite(lat) ? lat.toFixed(4) : "lat",
+    Number.isFinite(lon) ? lon.toFixed(4) : "lon",
+    Number.isFinite(asl) ? Math.round(asl) : "asl",
+    "meteogram-v1",
+  ].join(":");
+  return `mb_mtg_${sha256(key).slice(0, 28)}`;
+}
+
+function meteoblueMeteogramImagePayload(input, file, options = {}) {
+  const updatedAt = options.fetchedAt || file?.$updatedAt || file?.$createdAt || new Date().toISOString();
+  const stamp = Date.parse(updatedAt);
+  const fetchedAt = Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString();
+  return {
+    provider: "Meteoblue",
+    attributionUrl: "https://www.meteoblue.com/",
+    icao: aiswebService.normalizeIcao(input?.icaoCode || input?.icao) || null,
+    airportName: cleanString(input?.name || input?.airportName) || null,
+    lat: Number(input?.lat),
+    lon: Number(input?.lon ?? input?.lng),
+    asl: Number.isFinite(Number(input?.asl)) ? Math.round(Number(input.asl)) : null,
+    url: appwritePublicStorageFileViewUrl(METEOBLUE_CACHE_BUCKET_ID, file.$id),
+    contentType: cleanString(options.contentType || file?.mimeType) || "image/png",
+    byteLength: Number(options.byteLength || file?.sizeOriginal || file?.size || 0) || 0,
+    fetchedAt,
+    cachedUntil: new Date(new Date(fetchedAt).getTime() + METEOBLUE_METEOGRAM_CACHE_TTL_MS).toISOString(),
+    cached: options.cached === true,
+  };
+}
+
+async function getFreshMeteoblueMeteogramCache(input) {
+  if (!METEOBLUE_CACHE_BUCKET_ID) return null;
+  const fileId = meteoblueMeteogramCacheFileId(input);
+  try {
+    const file = await storage.getFile(METEOBLUE_CACHE_BUCKET_ID, fileId);
+    const stamp = Date.parse(file?.$updatedAt || file?.$createdAt || "");
+    if (!Number.isFinite(stamp)) return null;
+    if (Date.now() - stamp > METEOBLUE_METEOGRAM_CACHE_TTL_MS) return null;
+    return meteoblueMeteogramImagePayload(input, file, { cached: true });
+  } catch {
+    return null;
+  }
+}
+
+async function fetchMeteoblueMeteogramImage(input) {
+  if (!METEOBLUE_API_KEY) {
+    throw Object.assign(new Error("METEOBLUE_API_KEY não configurada na function."), { status: 500 });
+  }
+  const lat = Number(input?.lat);
+  const lon = Number(input?.lon ?? input?.lng);
+  const asl = Number(input?.asl);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    throw Object.assign(new Error("Coordenadas indisponíveis para gerar meteorograma Meteoblue."), { status: 400 });
+  }
+
+  const url = new URL("https://my.meteoblue.com/images/meteogram");
+  url.searchParams.set("apikey", METEOBLUE_API_KEY);
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lon));
+  if (Number.isFinite(asl)) url.searchParams.set("asl", String(Math.round(asl)));
+  url.searchParams.set("format", "png");
+  url.searchParams.set("lang", "pt");
+  url.searchParams.set("windspeed", "kn");
+  url.searchParams.set("temperature", "C");
+  url.searchParams.set("precipitationamount", "mm");
+
+  const response = await fetch(url.toString(), { method: "GET" });
+  const contentType = cleanString(response.headers.get("content-type") || "image/png").split(";")[0] || "image/png";
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw Object.assign(
+      new Error(`Meteoblue imagem HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`),
+      { status: 502 },
+    );
+  }
+  if (!contentType.startsWith("image/")) {
+    const body = await response.text().catch(() => "");
+    throw Object.assign(
+      new Error(`Meteoblue não retornou imagem${body ? `: ${body.slice(0, 200)}` : "."}`),
+      { status: 502 },
+    );
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw Object.assign(new Error("Meteorograma Meteoblue vazio."), { status: 502 });
+  return { buffer, contentType };
+}
+
+async function putMeteoblueMeteogramCache(input, image) {
+  if (!METEOBLUE_CACHE_BUCKET_ID) throw Object.assign(new Error("Storage Meteoblue não configurado."), { status: 500 });
+  const fileId = meteoblueMeteogramCacheFileId(input);
+  const icao = aiswebService.normalizeIcao(input?.icaoCode || input?.icao).toLowerCase() || "ad";
+  const extension = image.contentType === "image/jpeg" ? "jpg" : image.contentType === "image/webp" ? "webp" : "png";
+  const inputFile =
+    typeof File !== "undefined"
+      ? new File([image.buffer], `meteoblue-meteogram-${icao}.${extension}`, { type: image.contentType })
+      : AppwriteInputFile?.fromBuffer
+        ? AppwriteInputFile.fromBuffer(image.buffer, `meteoblue-meteogram-${icao}.${extension}`)
+        : null;
+  if (!inputFile) throw Object.assign(new Error("Upload de meteorograma não suportado neste runtime."), { status: 500 });
+
+  await storage.deleteFile(METEOBLUE_CACHE_BUCKET_ID, fileId).catch(() => undefined);
+  const uploaded = await storage.createFile(METEOBLUE_CACHE_BUCKET_ID, fileId, inputFile, [
+    sdk.Permission.read(sdk.Role.any()),
+  ]);
+  return meteoblueMeteogramImagePayload(input, uploaded, {
+    cached: false,
+    contentType: image.contentType,
+    byteLength: image.buffer.length,
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
+async function resolveMeteoblueMeteogramImage(input, options = {}) {
+  if (!options.force) {
+    const cached = await getFreshMeteoblueMeteogramCache(input);
+    if (cached) return cached;
+  }
+  const image = await fetchMeteoblueMeteogramImage(input);
+  return putMeteoblueMeteogramCache(input, image);
 }
 
 async function sendWppTemplateMessage(input) {
@@ -18046,6 +18524,17 @@ function soloFlightLegIcaos(leg) {
   return [leg?.dep, leg?.arr].map((v) => aiswebService.normalizeIcao(v)).filter((v) => v && v.length === 4);
 }
 
+function soloFlightRouteTextIcaos(value) {
+  const matches = cleanString(value).toUpperCase().match(/\b[A-Z]{4}\b/g) || [];
+  return Array.from(new Set(matches.map((v) => aiswebService.normalizeIcao(v)).filter((v) => v && v.length === 4)));
+}
+
+function soloFlightPreviousFlightIcaos(item) {
+  const legs = Array.isArray(item?.meta?.legs) ? item.meta.legs : [];
+  if (legs.length) return legs.flatMap((leg) => soloFlightLegIcaos(leg));
+  return soloFlightRouteTextIcaos(item?.flight?.route || item?.doc?.from_to || item?.doc?.name);
+}
+
 function soloFlightHasDualCommand(flight, meta) {
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
   const text = [
@@ -18257,11 +18746,8 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
   }));
 
   const destinationNav = completed.find((item) => {
-    const legs = Array.isArray(item.meta?.legs) ? item.meta.legs : [];
-    return legs.some((leg) => {
-      const hasDest = soloFlightLegIcaos(leg).some((icao) => snapshot.destinationIcaos.includes(icao));
-      return hasDest && parseDurationToMinutes(leg?.navTime) > 0;
-    });
+    const icaos = soloFlightPreviousFlightIcaos(item);
+    return icaos.some((icao) => snapshot.destinationIcaos.includes(icao));
   });
   checks.push(soloFlightCheck({
     id: "previousDestinationNavigation",
@@ -18273,8 +18759,8 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
 
   const alternateFlight = snapshot.alternateIcaos.length
     ? completed.find((item) => {
-        const legs = Array.isArray(item.meta?.legs) ? item.meta.legs : [];
-        return legs.some((leg) => soloFlightLegIcaos(leg).some((icao) => snapshot.alternateIcaos.includes(icao)));
+        const icaos = soloFlightPreviousFlightIcaos(item);
+        return icaos.some((icao) => snapshot.alternateIcaos.includes(icao));
       })
     : null;
   checks.push(soloFlightCheck({
@@ -18402,17 +18888,24 @@ async function evaluateSoloFlight(actorUserId, payload = {}) {
 }
 
 function soloFlightTemplateContext(request, evaluation) {
+  const instructorName = cleanString(request.instructorName) || profileShortName(evaluation?.instructor, "Instrutor");
+  const route = cleanString(request.route) || "-";
   const flagsSummary = (request.flags || []).length
-    ? request.flags.map((flag) => flag.label).join("; ").slice(0, 500)
+    ? request.flags.map((flag) => {
+        const label = cleanString(flag.label);
+        const details = cleanString(flag.details);
+        return details && details !== label ? `${label}: ${details}` : label;
+      }).filter(Boolean).join("; ").slice(0, 500)
     : "Sem pendências";
   return {
     student_name: request.studentName || profileShortName(evaluation?.student),
     flight_date: formatDateBr(request.flightDate),
     start_time: request.startTime || "-",
-    route: request.route || "-",
+    route: instructorName ? `${route} · Instrutor: ${instructorName}` : route,
     status: request.status === "auto_approved" ? "aprovado automaticamente" : request.status,
     request_id: request.id,
     flags_summary: flagsSummary,
+    instructor_name: instructorName || "-",
     destination: (request.destinationIcaos || []).join(", ") || "-",
     alternates: (request.alternateIcaos || []).join(", ") || "-",
     request_type: request.requestType === "primeiro_circuito_solo" ? "primeiro circuito solo" : "voo solo",
@@ -26084,7 +26577,12 @@ function registrationOptionPayload(raw) {
   return {
     chargeGround: opts.chargeGround === true,
     chargeEnrollment: opts.chargeEnrollment === true,
-    allowCheckout: opts.allowCheckout === true || opts.chargeGround === true || opts.chargeEnrollment === true,
+    chargeTransfer: opts.chargeTransfer === true,
+    allowCheckout:
+      opts.allowCheckout === true ||
+      opts.chargeGround === true ||
+      opts.chargeEnrollment === true ||
+      opts.chargeTransfer === true,
     allowFirstFlightBooking: opts.allowFirstFlightBooking === true,
   };
 }
@@ -26118,6 +26616,7 @@ function normalizedProductMatch(text, wanted) {
   const value = normalizeSearch(text);
   if (wanted === "ground") return /\bground\b/.test(value);
   if (wanted === "enrollment") return /matric|matricula|matr/i.test(value);
+  if (wanted === "transfer") return /transfer|transferencia/i.test(value);
   return false;
 }
 
@@ -26131,6 +26630,15 @@ function registrationProductCopy(kind, name, price) {
         "Briefing teórico presencial sobre o avião, procedimentos e regras da escola. Acontece na EPEAC imediatamente antes do primeiro voo e dura entre 1h e 2h. Depois você faz uma prova rápida (mínimo 70%) para ser liberado para o voo.",
     };
   }
+  if (kind === "transfer") {
+    return {
+      kind,
+      name: cleanString(name) || "Taxa de transferência",
+      price,
+      description:
+        "Taxa administrativa para validar a documentação de transferência e concluir o vínculo do aluno transferido na escola.",
+    };
+  }
   return {
     kind: "enrollment",
     name: cleanString(name) || "Matrícula",
@@ -26140,7 +26648,7 @@ function registrationProductCopy(kind, name, price) {
   };
 }
 
-async function registrationCheckoutProducts({ ground, enrollment }) {
+async function registrationCheckoutProducts({ ground, enrollment, transfer }) {
   if (!SCHOOL_PRODUCTS_COLLECTION_ID) return [];
   const result = await databases.listDocuments(DATABASE_ID, SCHOOL_PRODUCTS_COLLECTION_ID, [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
@@ -26167,6 +26675,15 @@ async function registrationCheckoutProducts({ ground, enrollment }) {
       ...registrationProductCopy("enrollment", product.name, Number(product.ideal_price) || 0),
     });
   }
+  if (transfer) {
+    const product = result.documents.find((doc) => normalizedProductMatch(`${doc.name || ""} ${doc.$id || ""}`, "transfer"));
+    if (!product) throw Object.assign(new Error("Produto Taxa de transferencia nao encontrado ou inativo."), { status: 404 });
+    selected.push({
+      id: product.$id,
+      price: Number(product.ideal_price) || 0,
+      ...registrationProductCopy("transfer", product.name, Number(product.ideal_price) || 0),
+    });
+  }
   return selected.filter((item) => item.id && item.name && item.price > 0);
 }
 
@@ -26179,10 +26696,11 @@ async function resolveRegistrationCheckoutContext(payload = {}) {
   const lead = candidate ? null : await getRegistrationLeadByToken(payload.token);
   if (!candidate && !lead) throw Object.assign(new Error("Link de cadastro invalido."), { status: 404 });
   const options = candidate
-    ? registrationOptionsFromCandidate(candidate)
-    : registrationOptionPayload({
+      ? registrationOptionsFromCandidate(candidate)
+      : registrationOptionPayload({
         chargeGround: payload.chargeGround === true,
         chargeEnrollment: payload.chargeEnrollment === true,
+        chargeTransfer: payload.chargeTransfer === true,
       });
   const linkedUserId = cleanString(candidate?.user_id || lead?.user_id);
   const studentUserId = cleanString(payload.userId || linkedUserId);
@@ -26278,6 +26796,7 @@ async function quoteRegistrationCheckout(payload = {}) {
   const products = await registrationCheckoutProducts({
     ground: options.chargeGround,
     enrollment: options.chargeEnrollment,
+    transfer: options.chargeTransfer,
   });
   return { products, amount: registrationProductsAmount(products) };
 }
@@ -26291,6 +26810,7 @@ async function getRegistrationCheckoutStatus(payload = {}) {
   const products = await registrationCheckoutProducts({
     ground: options.chargeGround,
     enrollment: options.chargeEnrollment,
+    transfer: options.chargeTransfer,
   });
   const wantedIds = new Set(products.map((item) => item.id));
   let match = null;
@@ -26328,6 +26848,7 @@ async function createRegistrationCheckout(payload = {}) {
   const products = await registrationCheckoutProducts({
     ground: options.chargeGround,
     enrollment: options.chargeEnrollment,
+    transfer: options.chargeTransfer,
   });
   const checkout = await createProductOnlyCheckoutForUser(studentUserId, products);
   return {
@@ -34437,6 +34958,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { checkout });
     }
 
+    if (action === "runRegistrationEnrollmentAutomation") {
+      const result = await runRegistrationEnrollmentAutomation(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
     if (action === "createPublicLiabilityWaiverContract") {
       const result = await createPublicLiabilityWaiverContract(payload, req);
       return jsonResponse(res, 200, { ok: true, ...result });
@@ -34725,6 +35251,12 @@ module.exports = async ({ req, res, log, error }) => {
       await requireInstructorOrAdmin(actorUserId);
       const studentsProgress = await getStudentsProgress(payload);
       return jsonResponse(res, 200, { studentsProgress });
+    }
+
+    if (action === "getCapacityProjectionInputs") {
+      await requireAdmin(actorUserId);
+      const capacityProjectionInputs = await getCapacityProjectionInputs(payload);
+      return jsonResponse(res, 200, { capacityProjectionInputs });
     }
 
     if (action === "switchActiveRole") {
@@ -35107,6 +35639,34 @@ module.exports = async ({ req, res, log, error }) => {
         limit: payload.limit,
       });
       return jsonResponse(res, 200, { webcams });
+    }
+
+    if (action === "getMeteoblueMeteogramImage") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const icaoCode = aiswebService.normalizeIcao(payload.icaoCode || payload.icao);
+      const request = {
+        icaoCode,
+        lat: payload.lat,
+        lon: payload.lon ?? payload.lng,
+        asl: payload.asl,
+        name: payload.name || payload.airportName,
+      };
+      if (
+        icaoCode &&
+        (!Number.isFinite(Number(request.lat)) || !Number.isFinite(Number(request.lon)))
+      ) {
+        const rotaer = await aiswebService.fetchRotaer(icaoCode);
+        if (rotaer) {
+          request.lat = rotaer.lat;
+          request.lon = rotaer.lng;
+          request.name = request.name || rotaer.name;
+          if (!Number.isFinite(Number(request.asl)) && Number.isFinite(rotaer.altFt) && rotaer.altFt != null) {
+            request.asl = Math.round(Number(rotaer.altFt) * 0.3048);
+          }
+        }
+      }
+      const meteogram = await resolveMeteoblueMeteogramImage(request, { force: payload.force === true });
+      return jsonResponse(res, 200, { meteogram });
     }
 
     if (action === "getMeteoblueForecast") {
@@ -35634,6 +36194,11 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { user });
     }
 
+    if (action === "forceAnacSync") {
+      const result = await forceAnacSyncForUser(actorUserId, String(payload.userId || ""));
+      return jsonResponse(res, 200, result);
+    }
+
     if (action === "createCredit") {
       const created = await createCredit(actorUserId, payload.credit);
       return jsonResponse(res, 200, { ok: true, creditSaga: created.creditSaga });
@@ -35646,6 +36211,11 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "deleteCredit") {
       await deleteCredit(String(payload.creditId || ""), String(payload.userId || ""));
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === "deleteCreditAdjustment") {
+      await deleteCreditAdjustment(String(payload.adjustmentId || ""), String(payload.userId || ""));
       return jsonResponse(res, 200, { ok: true });
     }
 

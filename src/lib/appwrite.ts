@@ -109,6 +109,9 @@ export const PROVA_ASSIGNMENTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_PROVA_ASSIGNMENTS_COL_ID as string | undefined) ?? "prova_assignments";
 export const PROVA_ATTEMPTS_COL_ID =
   (import.meta.env.VITE_APPWRITE_PROVA_ATTEMPTS_COL_ID as string | undefined) ?? "prova_attempts";
+export const PROVA_JOURNEY_REQUIREMENTS_COL_ID =
+  (import.meta.env.VITE_APPWRITE_PROVA_JOURNEY_REQUIREMENTS_COL_ID as string | undefined) ??
+  "prova_journey_requirements";
 export const FPL_SIM_PLANS_COL_ID =
   (import.meta.env.VITE_APPWRITE_FPL_SIM_PLANS_COL_ID as string | undefined) ?? "fpl_sim_plans";
 export const FPL_SIM_TIPS_COL_ID =
@@ -218,6 +221,8 @@ export const STUDENT_CRM_STATUSES_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_CRM_STATUSES_COL_ID as string | undefined) ?? "student_crm_statuses";
 export const STUDENT_CRM_PROFILES_COL_ID =
   (import.meta.env.VITE_APPWRITE_STUDENT_CRM_PROFILES_COL_ID as string | undefined) ?? "student_crm_profiles";
+export const CAPACITY_STUDENT_PROFILES_COL_ID =
+  (import.meta.env.VITE_APPWRITE_CAPACITY_STUDENT_PROFILES_COL_ID as string | undefined) ?? "capacity_student_profiles";
 
 // Admissão de instrutores
 export const INSTRUCTOR_ADMISSION_STAGES_COL_ID =

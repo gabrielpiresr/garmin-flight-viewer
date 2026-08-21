@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
-import { getPublicScheduleCached, loadFleetMaintenanceContextCached } from "../../lib/scheduleCache";
+import { getPublicScheduleCached, invalidateFleetMaintenanceContext, loadFleetMaintenanceContextCached } from "../../lib/scheduleCache";
 import { getAdminDashboardSummary, listAdminFlightReports } from "../../lib/adminUsersDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
 import { type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
 import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
+import { createAircraftHorimeterCorrection } from "../../lib/aircraftHorimeterCorrectionsDb";
+import { navigateToHref } from "../../lib/routedTabs";
 import { useAuth } from "../../contexts/AuthContext";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import type { AdminDashboardData } from "../../types/adminDashboard";
 import type { AdminFlightReportRow } from "../../types/adminFlightReports";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../../types/admin";
 import { Skeleton } from "../ui/Skeleton";
+import { useToast } from "../ui/ToastProvider";
+import { PlanejamentoHoverButton } from "./PlanejamentoSectionShell";
 
 type Props = {
   onOpenReports: () => void;
@@ -566,7 +571,15 @@ export function AdminHome(_props: Props) {
 
       {loading && !data ? <AdminHomeSkeleton /> : data ? (
         <>
-          <AircraftCards cards={data.aircraftCards} />
+          <AircraftCards
+            cards={data.aircraftCards}
+            schoolId={user?.schoolId || "escola_principal"}
+            onHoursChanged={() => {
+              adminHomeCache.clear();
+              invalidateFleetMaintenanceContext();
+              void load(true);
+            }}
+          />
           <MonthSummary
             aircraftRows={monthSummary.aircraft}
             instructorRows={monthSummary.instructors}
@@ -594,7 +607,44 @@ function AdminHomeSkeleton() {
   );
 }
 
-function AircraftCards({ cards }: { cards: AircraftHomeCard[] }) {
+function parseHoursInput(raw: string): number | null {
+  const parsed = Number(raw.trim().replace(",", "."));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function IconWrench() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path fillRule="evenodd" d="M12 6.75a5.25 5.25 0 016.775-5.025.75.75 0 01.313 1.248l-3.32 3.319c.063.475.276.934.641 1.299.365.365.824.578 1.3.641l3.318-3.319a.75.75 0 011.248.313 5.25 5.25 0 01-5.472 6.756c-1.018-.086-1.87.1-2.309.634L7.344 21.3A3.298 3.298 0 112.7 16.657l8.684-7.151c.533-.44.72-1.291.634-2.308A5.28 5.28 0 0112 6.75zM4.117 19.125a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75h-.008a.75.75 0 01-.75-.75v-.008z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function IconEqualize() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm-3.13-6.326A5.5 5.5 0 0115.89 7.79l.312.31h-2.433a.75.75 0 010 1.5h4.243a.75.75 0 00.75-.75V4.618a.75.75 0 00-1.5 0v2.43l-.31-.31A7 7 0 003.239 9.876a.75.75 0 101.45.388 5.5 5.5 0 017.493-5.166z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function IconPencil() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M2.695 14.762l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 005.63-5.63l-4.287-4.287a4 4 0 00-5.63 5.63l.744.743zm6.368-7.429l4.287 4.287 2.122-2.121-4.287-4.288-2.122 2.122z" />
+    </svg>
+  );
+}
+
+function AircraftCards({
+  cards,
+  schoolId,
+  onHoursChanged,
+}: {
+  cards: AircraftHomeCard[];
+  schoolId: string;
+  onHoursChanged: () => void;
+}) {
   const [planeIt, setPlaneIt] = useState<PlaneItTotalsState>({ loading: false, error: null, totals: {} });
   const planeItIds = useMemo(
     () => Array.from(new Set(cards.map((card) => card.aircraft.plane_it_id?.trim()).filter((id): id is string => Boolean(id)))),
@@ -628,9 +678,11 @@ function AircraftCards({ cards }: { cards: AircraftHomeCard[] }) {
         <AircraftCard
           key={card.aircraft.id}
           card={card}
+          schoolId={schoolId}
           planeItTotal={card.aircraft.plane_it_id ? planeIt.totals[card.aircraft.plane_it_id] : undefined}
           planeItLoading={Boolean(card.aircraft.plane_it_id) && planeIt.loading}
           planeItError={planeIt.error}
+          onHoursChanged={onHoursChanged}
         />
       )) : (
         <EmptyState text="Nenhum avião cadastrado na frota." />
@@ -641,22 +693,95 @@ function AircraftCards({ cards }: { cards: AircraftHomeCard[] }) {
 
 function AircraftCard({
   card,
+  schoolId,
   planeItTotal,
   planeItLoading,
   planeItError,
+  onHoursChanged,
 }: {
   card: AircraftHomeCard;
+  schoolId: string;
   planeItTotal?: PlaneItAircraftTotal;
   planeItLoading: boolean;
   planeItError: string | null;
+  onHoursChanged: () => void;
 }) {
+  const { showToast } = useToast();
+  const { canAction } = usePermissions();
+  const [panel, setPanel] = useState<"equalize" | "manual" | null>(null);
+  const [hoursInput, setHoursInput] = useState("");
+  const [notesInput, setNotesInput] = useState("");
+  const [saving, setSaving] = useState(false);
   const hasPlaneItId = Boolean(card.aircraft.plane_it_id?.trim());
+  const planeItHours = planeItTotal?.horasVooEtapaDecimalTotal;
+  const canEqualize = hasPlaneItId && !planeItLoading && !planeItError && planeItHours != null && Number.isFinite(planeItHours);
+  const registration = card.aircraft.registration;
+
+  async function saveHours(ttaf: number, notes: string) {
+    setSaving(true);
+    try {
+      await createAircraftHorimeterCorrection({
+        aircraft_id: card.aircraft.id,
+        school_id: schoolId,
+        corrected_at: new Date().toISOString(),
+        ttaf_value: Number(ttaf.toFixed(1)),
+        notes: notes.trim() || null,
+      });
+      showToast({ variant: "success", message: `Horímetro de ${registration} atualizado para ${fmtNumber(ttaf, 1)} h.` });
+      setPanel(null);
+      onHoursChanged();
+    } catch (e) {
+      showToast({ variant: "error", message: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <article className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-lg font-semibold text-slate-100">{aircraftName(card.aircraft, card.modelName)}</p>
           <p className="mt-0.5 text-xs text-slate-500">{card.aircraft.active ? "Ativo" : "Inativo"}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {canAction("os.create") ? (
+              <PlanejamentoHoverButton
+                icon={<IconWrench />}
+                label="Lançar manutenção"
+                onClick={() => navigateToHref(`/admin/frota/ordens-servico?aircraft=${encodeURIComponent(card.aircraft.id)}&new=1`)}
+              />
+            ) : null}
+            <PlanejamentoHoverButton
+              icon={<IconEqualize />}
+              label="Igualar ao Plane It"
+              title={
+                !hasPlaneItId
+                  ? "Avião sem ID do Plane It"
+                  : planeItLoading
+                    ? "Carregando horas do Plane It"
+                    : planeItError
+                      ? "Plane It indisponível"
+                      : planeItHours == null
+                        ? "Sem horas no Plane It"
+                        : `Igualar horímetro a ${fmtPlaneItHours(planeItHours)}`
+              }
+              disabled={!canEqualize || saving}
+              onClick={() => {
+                setPanel("equalize");
+                setNotesInput("");
+              }}
+            />
+            <PlanejamentoHoverButton
+              icon={<IconPencil />}
+              label="Ajustar horas"
+              disabled={saving}
+              onClick={() => {
+                setPanel("manual");
+                setHoursInput(card.baseHours?.hours == null ? "" : String(card.baseHours.hours));
+                setNotesInput("");
+              }}
+            />
+          </div>
         </div>
         <div className="grid min-w-60 grid-cols-2 overflow-hidden rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-right">
           <div className="px-3 py-3">
@@ -675,6 +800,74 @@ function AircraftCard({
           </div>
         </div>
       </div>
+
+      {panel === "equalize" && planeItHours != null ? (
+        <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3">
+          <p className="text-sm text-slate-200">
+            Igualar o horímetro de <span className="font-semibold">{registration}</span> ao Plane It ({fmtPlaneItHours(planeItHours)})?
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void saveHours(planeItHours, "Igualado ao Plane It")}
+              className="rounded-lg bg-cyan-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50"
+            >
+              {saving ? "Salvando..." : "Confirmar"}
+            </button>
+            <button type="button" onClick={() => setPanel(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-400">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {panel === "manual" ? (
+        <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+          <p className="text-sm font-medium text-slate-200">Ajustar horas de {registration}</p>
+          <p className="mt-1 text-xs text-slate-500">Atual: {fmtHours(card.baseHours?.hours)}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(8rem,12rem)_1fr]">
+            <label>
+              <span className="mb-1 block text-[11px] text-slate-500">Novo horímetro (h) *</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={hoursInput}
+                onChange={(event) => setHoursInput(event.target.value)}
+                placeholder="ex: 355.5"
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[11px] text-slate-500">Observação</span>
+              <input
+                type="text"
+                value={notesInput}
+                onChange={(event) => setNotesInput(event.target.value)}
+                placeholder="Opcional"
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
+              />
+            </label>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={saving || parseHoursInput(hoursInput) == null}
+              onClick={() => {
+                const hours = parseHoursInput(hoursInput);
+                if (hours == null) return;
+                void saveHours(hours, notesInput);
+              }}
+              className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              {saving ? "Salvando..." : "Salvar"}
+            </button>
+            <button type="button" onClick={() => setPanel(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-400">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className={`mt-4 rounded-xl border px-3 py-3 ${maintenanceTone(card.nextMaintenance)}`}>
         <div className="flex flex-wrap items-center justify-between gap-2">

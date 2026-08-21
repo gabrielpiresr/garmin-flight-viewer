@@ -9,6 +9,7 @@ import type { AdminStudentsProgressData, AdminStudentsProgressParams } from "../
 import type { AdminUserDetail, AdminUsersPage, AdminUserSummary } from "../types/adminUsers";
 import type { StudentCreditInput } from "../types/credits";
 import type { StudentTrainingTrack } from "../types/trainingTrack";
+import type { CapacityMonthActual, CapacityStudentInput } from "../types/capacityProjection";
 
 export type ScheduleWeekFlightRow = {
   id: string;
@@ -39,6 +40,7 @@ type AdminUsersResponse = {
   nextCursor?: string | null;
   dashboard?: AdminDashboardData;
   studentsProgress?: AdminStudentsProgressData;
+  capacityProjectionInputs?: CapacityProjectionInputs;
   trainingTracks?: StudentTrainingTrack[];
   total?: number;
   limit?: number;
@@ -48,12 +50,14 @@ type AdminUsersResponse = {
   auditEvents?: AdminAuditEvent[];
   deletion?: AdminUserDeletionSummary;
   createdContracts?: number;
+  existingContracts?: number;
   nextStatus?: string;
   executionId?: string;
   saga?: EnrollmentSagaResult;
   access?: EnrollmentAccessResult;
   creditSaga?: CreditSagaResult;
   data?: SagaAnacPerson;
+  anacSync?: AdminUserAnacSyncResult;
   ok?: boolean;
 };
 
@@ -79,6 +83,16 @@ export type CreditSagaResult = {
   sagaStudentId?: string;
   message?: string;
   logs?: string[];
+};
+
+export type AdminUserAnacSyncResult = {
+  pending: boolean;
+  message: string;
+  error?: string | null;
+  ratings?: number;
+  licenses?: number;
+  hasMedical?: boolean;
+  hasPhoto?: boolean;
 };
 
 export type AdminUserDeletionSummary = {
@@ -265,6 +279,30 @@ export async function runEnrollmentAutomation(input: {
   };
 }
 
+export async function runRegistrationEnrollmentAutomation(input: {
+  token: string;
+  userId: string;
+}): Promise<{
+  createdContracts: number;
+  existingContracts?: number;
+  nextStatus: string;
+  saga?: EnrollmentSagaResult;
+  access?: EnrollmentAccessResult;
+}> {
+  const response = await executeAdminUsersAsync({
+    action: "runRegistrationEnrollmentAutomation",
+    token: input.token,
+    userId: input.userId,
+  });
+  return {
+    createdContracts: Number(response.createdContracts ?? 0),
+    existingContracts: typeof response.existingContracts === "number" ? response.existingContracts : undefined,
+    nextStatus: String(response.nextStatus || "aguardando_assinatura_pagamento"),
+    saga: response.saga,
+    access: response.access,
+  };
+}
+
 export async function lookupSagaAnacPersonAdmin(input: {
   leadId: string;
   userId?: string | null;
@@ -393,6 +431,61 @@ export async function getAdminStudentsProgress(params: AdminStudentsProgressPara
   return response.studentsProgress;
 }
 
+export type CapacityProjectionInputs = {
+  generatedAt: string;
+  today: string;
+  lookbackDays: number;
+  students: CapacityStudentInput[];
+  actuals: CapacityMonthActual[];
+};
+
+export async function getCapacityProjectionInputs(params: {
+  today: string;
+  lookbackDays: number;
+}): Promise<CapacityProjectionInputs> {
+  try {
+    const response = await executeAdminUsers({ action: "getCapacityProjectionInputs", ...params });
+    if (response.capacityProjectionInputs) {
+      return await ensureCourseFlownHours(response.capacityProjectionInputs, params.today);
+    }
+  } catch (error) {
+    const fallback = await loadCapacityProjectionInputsFallbackSafe(params);
+    if (fallback) return fallback;
+    throw error instanceof Error ? error : new Error("Dados de projeção não retornados pela função.");
+  }
+  const fallback = await loadCapacityProjectionInputsFallbackSafe(params);
+  if (fallback) return fallback;
+  throw new Error("Dados de projeção não retornados pela função.");
+}
+
+async function ensureCourseFlownHours(
+  payload: CapacityProjectionInputs,
+  today: string,
+): Promise<CapacityProjectionInputs> {
+  if (payload.students.every((student) => student.courseFlownHours != null)) return payload;
+  try {
+    const { applyCourseFlownHours } = await import("./capacityProjectionInputs");
+    const { listAllSavedFlights } = await import("./flightsDb");
+    const flights = await listAllSavedFlights({ userId: "admin", role: "admin" }, { pageSize: 100, maxItems: 4000 });
+    if (flights.error || !flights.data) return payload;
+    return { ...payload, students: applyCourseFlownHours(payload.students, flights.data, today) };
+  } catch {
+    return payload;
+  }
+}
+
+async function loadCapacityProjectionInputsFallbackSafe(params: {
+  today: string;
+  lookbackDays: number;
+}): Promise<CapacityProjectionInputs | null> {
+  try {
+    const { loadCapacityProjectionInputsFallback } = await import("./capacityProjectionInputs");
+    return await loadCapacityProjectionInputsFallback(params);
+  } catch {
+    return null;
+  }
+}
+
 export type AdminUserProfileUpdateInput = {
   fullName?: string;
   nickname?: string;
@@ -418,6 +511,24 @@ export async function updateAdminUserProfile(
   });
   if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
   return response.user;
+}
+
+export async function forceAdminUserAnacSync(userId: string): Promise<{
+  user: AdminUserDetail;
+  anacSync: AdminUserAnacSyncResult;
+}> {
+  const response = await executeAdminUsers({
+    action: "forceAnacSync",
+    userId,
+  });
+  if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
+  return {
+    user: response.user,
+    anacSync: response.anacSync ?? {
+      pending: true,
+      message: response.message || "Consulta ANAC pendente.",
+    },
+  };
 }
 
 export async function updateAdminUserRole(
@@ -516,6 +627,10 @@ export async function updateAdminUserCredit(creditId: string, input: StudentCred
 
 export async function deleteAdminUserCredit(creditId: string, userId: string): Promise<void> {
   await executeAdminUsers({ action: "deleteCredit", creditId, userId });
+}
+
+export async function deleteAdminUserCreditAdjustment(adjustmentId: string, userId: string): Promise<void> {
+  await executeAdminUsers({ action: "deleteCreditAdjustment", adjustmentId, userId });
 }
 
 export async function deleteAdminUserCascade(userId: string, reason?: string): Promise<AdminUserDeletionSummary> {

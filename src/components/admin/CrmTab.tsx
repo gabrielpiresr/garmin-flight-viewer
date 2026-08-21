@@ -5,6 +5,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { deleteSagaUser, getAdminUserDetail, lookupSagaAnacPersonAdmin, runEnrollmentAutomation } from "../../lib/adminUsersDb";
 import { buildSagaAnacPostFields, hasSagaAnacPerson, parseSagaAnacPerson, sagaAnacMissingEnrollmentFields } from "../../lib/sagaAnacSync";
 import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
+import { listContractsForUser } from "../../lib/contractsDb";
 import { listStandardContractTemplates } from "../../lib/contractTemplatesDb";
 import { listTrainingTracks } from "../../lib/trainingTracksDb";
 import { createLead, deleteLead, generateCadastroToken, listCrmStatusSettings, listLeads, moveLeadToCrmStatus, saveCrmStatusSetting, updateLead } from "../../lib/crmDb";
@@ -47,16 +48,19 @@ import { createLeadComment, deleteLeadComment, listLeadComments, type CrmLeadCom
 import type { CrmProposal } from "../../types/proposal";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
+import { RegistrationChecklistCards } from "../cadastro/RegistrationOnboarding";
 import {
   approveStudentAccess,
   getProfile,
   getProfileDocumentUrl,
+  listProfileDocumentAttachments,
   updateProfileFields,
   uploadProfileDocumentAttachment,
   type PilotProfile,
+  type ProfileDocumentAttachment,
   type ProfileDocumentType,
 } from "../../lib/rbac";
-import type { ContractTemplate, CustomVariable } from "../../types/contracts";
+import type { Contract, ContractTemplate, CustomVariable } from "../../types/contracts";
 import {
   CRM_STATUSES,
   CRM_STATUS_COLUMN_BG,
@@ -68,6 +72,7 @@ import {
 } from "../../types/crm";
 import type { CrmAutomationSettings, CrmLead, CrmLeadFilters, CrmStatus, CrmStatusFollowupTemplate, CrmStatusSetting } from "../../types/crm";
 import type { AvailableDay, AvailablePeriod } from "../../types/crm";
+import { DEFAULT_REGISTRATION_LINK_OPTIONS, type RegistrationLinkOptions } from "../../types/instructorAdmission";
 
 // ─── Card field settings ──────────────────────────────────────────────────────
 
@@ -706,7 +711,21 @@ function CadastroLinkModal({
   const [generating, setGenerating] = useState(false);
   const [token, setToken] = useState<string | null>(lead.qualToken ?? null);
   const [copied, setCopied] = useState(false);
-  const cadastroUrl = token ? `${window.location.origin}/cadastro?token=${token}` : null;
+  const [options, setOptions] = useState<RegistrationLinkOptions>(() => crmRegistrationLinkOptionsForLead(lead));
+  const transferLead = isTransferLead(lead);
+
+  function buildCadastroUrl() {
+    if (!token) return null;
+    const url = new URL(`${window.location.origin}/cadastro`);
+    url.searchParams.set("token", token);
+    if (options.chargeGround) url.searchParams.set("chargeGround", "true");
+    if (options.chargeEnrollment) url.searchParams.set("chargeEnrollment", "true");
+    if (options.chargeTransfer) url.searchParams.set("chargeTransfer", "true");
+    if (options.allowFirstFlightBooking) url.searchParams.set("allowFirstFlightBooking", "true");
+    return url.toString();
+  }
+
+  const cadastroUrl = buildCadastroUrl();
 
   async function handleGenerate() {
     setGenerating(true);
@@ -715,9 +734,17 @@ function CadastroLinkModal({
     if (!error && t) { setToken(t); onGenerated(t); }
   }
 
-  function copyLink() {
-    if (!cadastroUrl) return;
-    void navigator.clipboard.writeText(cadastroUrl).then(() => {
+  function patchOptions(patch: Partial<RegistrationLinkOptions>) {
+    setOptions((current) => {
+      const next = { ...current, ...patch };
+      next.allowCheckout = next.chargeGround || next.chargeEnrollment || next.chargeTransfer;
+      return next;
+    });
+  }
+
+  function copyLink(url: string | null) {
+    if (!url) return;
+    void navigator.clipboard.writeText(url).then(() => {
       setCopied(true); setTimeout(() => setCopied(false), 2000);
     });
   }
@@ -739,6 +766,47 @@ function CadastroLinkModal({
           <p className="text-xs text-slate-400">
             Link personalizado para <span className="text-slate-200 font-medium">{lead.name}</span> criar conta na plataforma.
           </p>
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Opções do link</p>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeGround}
+                onChange={(event) => patchOptions({ chargeGround: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento do Ground School</span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeEnrollment}
+                onChange={(event) => patchOptions({ chargeEnrollment: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento da matrícula</span>
+            </label>
+            {transferLead && (
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={options.chargeTransfer}
+                  onChange={(event) => patchOptions({ chargeTransfer: event.target.checked })}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+                />
+                <span>Cobrar taxa de transferência</span>
+              </label>
+            )}
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.allowFirstFlightBooking}
+                onChange={(event) => patchOptions({ allowFirstFlightBooking: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir agendamento do Ground + primeiro voo</span>
+            </label>
+          </div>
           {lead.userId && lead.qualFilledAt && (
             <div className="rounded-lg bg-emerald-900/20 px-3 py-2 text-xs text-emerald-400">
               ✓ Cadastro já realizado em {new Date(lead.qualFilledAt).toLocaleDateString("pt-BR")}
@@ -748,7 +816,7 @@ function CadastroLinkModal({
             <div className="space-y-2">
               <div className="flex gap-2">
                 <input readOnly value={cadastroUrl} className={inputCls} />
-                <button type="button" onClick={copyLink}
+                <button type="button" onClick={() => copyLink(cadastroUrl)}
                   className={`rounded-lg border px-3 py-2 text-xs transition ${copied ? "border-emerald-600 bg-emerald-600/20 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"}`}>
                   {copied ? "Copiado!" : "Copiar"}
                 </button>
@@ -925,6 +993,38 @@ const CRM_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string; requ
 const CRM_TRANSFER_DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string }> = [
   { type: "transferDocument", label: "Documentos de transferência" },
 ];
+
+const CRM_REGISTRATION_LINK_DEFAULT_OPTIONS: RegistrationLinkOptions = {
+  ...DEFAULT_REGISTRATION_LINK_OPTIONS,
+  allowCheckout: true,
+  chargeGround: true,
+  chargeEnrollment: true,
+  chargeTransfer: false,
+  allowFirstFlightBooking: true,
+};
+
+const CRM_PAYMENT_DONE_STATUSES = new Set<CrmStatus>(["ground_agendado", "cadastro_anac", "aluno_pronto"]);
+const CRM_BOOKING_DONE_STATUSES = new Set<CrmStatus>(["ground_agendado", "cadastro_anac", "aluno_pronto"]);
+
+function isTransferLead(lead: CrmLead): boolean {
+  return Boolean(lead.transferSchool || lead.crmStatus === "aguardando_transferencia");
+}
+
+function crmRegistrationLinkOptionsForLead(lead: CrmLead): RegistrationLinkOptions {
+  const chargeTransfer = isTransferLead(lead);
+  return {
+    ...CRM_REGISTRATION_LINK_DEFAULT_OPTIONS,
+    chargeTransfer,
+    allowCheckout:
+      CRM_REGISTRATION_LINK_DEFAULT_OPTIONS.chargeGround ||
+      CRM_REGISTRATION_LINK_DEFAULT_OPTIONS.chargeEnrollment ||
+      chargeTransfer,
+  };
+}
+
+function crmContractNeedsRecipientSignature(contract: Contract): boolean {
+  return contract.status !== "cancelled" && !contract.signedByRecipientAt;
+}
 
 const drawerFieldCls = "mt-1 w-full rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none";
 
@@ -1144,7 +1244,7 @@ function LeadDetailDrawer({
   const fileInputs = useRef<Partial<Record<ProfileDocumentType, HTMLInputElement | null>>>({});
   const leadReady = useRef(false);
   const profileReady = useRef(false);
-  const [drawerTab, setDrawerTab] = useState<"detalhes" | "historico" | "comentarios">("detalhes");
+  const [drawerTab, setDrawerTab] = useState<"detalhes" | "checklist" | "documentos" | "historico" | "comentarios">("detalhes");
   const [leadForm, setLeadForm] = useState(() => ({
     name: lead.name,
     email: lead.email,
@@ -1171,6 +1271,9 @@ function LeadDetailDrawer({
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileEnrollmentForm>(emptyProfileEnrollmentForm);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [leadTransferDocuments, setLeadTransferDocuments] = useState<ProfileDocumentAttachment[]>([]);
+  const [leadContracts, setLeadContracts] = useState<Contract[]>([]);
+  const [leadContractsLoading, setLeadContractsLoading] = useState(false);
   const [leadSaveState, setLeadSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [profileSaveState, setProfileSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [busyDocument, setBusyDocument] = useState<ProfileDocumentType | null>(null);
@@ -1250,17 +1353,38 @@ function LeadDetailDrawer({
   useEffect(() => {
     profileReady.current = false;
     setProfile(null);
+    setLeadTransferDocuments([]);
     if (!lead.userId) return;
     setProfileLoading(true);
-    void getProfile(lead.userId).then(({ data, error }) => {
+    void Promise.all([
+      getProfile(lead.userId),
+      listProfileDocumentAttachments(lead.userId, "transferDocument"),
+    ]).then(([{ data, error }, transferDocuments]) => {
       if (error) showToast(error.message || "Erro ao carregar perfil.", "error");
       if (data) {
         setProfile(data);
         setProfileForm(profileToEnrollmentForm(data));
+        setLeadTransferDocuments(transferDocuments.length > 0 ? transferDocuments : data.documents.transferDocument ? [data.documents.transferDocument] : []);
+      } else {
+        setLeadTransferDocuments(transferDocuments);
       }
       setProfileLoading(false);
       window.setTimeout(() => { profileReady.current = true; }, 0);
     });
+  }, [lead.userId]);
+
+  useEffect(() => {
+    setLeadContracts([]);
+    if (!lead.userId) return;
+    setLeadContractsLoading(true);
+    void listContractsForUser(DEFAULT_SCHOOL_ID, lead.userId)
+      .then((contracts) => {
+        setLeadContracts(contracts.filter((contract) => contract.standardType === "matricula"));
+      })
+      .catch(() => {
+        setLeadContracts([]);
+      })
+      .finally(() => setLeadContractsLoading(false));
   }, [lead.userId]);
 
   useEffect(() => {
@@ -1347,6 +1471,12 @@ function LeadDetailDrawer({
   const openFollowupCount = countOverdueFollowups(lead.followups);
   const pendingFollowupCount = countPendingFollowups(lead.followups);
   const leadScoreResult = computeLeadScore(lead, scoreRules);
+  const transferLead = isTransferLead(lead);
+  const crmChecklistPaymentDone = lead.payInPerson || CRM_PAYMENT_DONE_STATUSES.has(lead.crmStatus);
+  const crmChecklistBookingDone = CRM_BOOKING_DONE_STATUSES.has(lead.crmStatus);
+  const activeLeadContracts = leadContracts.filter((contract) => contract.status !== "cancelled");
+  const crmChecklistContractsDone =
+    activeLeadContracts.length > 0 && activeLeadContracts.every((contract) => !crmContractNeedsRecipientSignature(contract));
 
   useEffect(() => {
     if (!leadReady.current) return;
@@ -1446,6 +1576,10 @@ function LeadDetailDrawer({
       return;
     }
     setProfile({ ...profile, documents: result.data });
+    if (type === "transferDocument") {
+      const refreshedTransferDocuments = await listProfileDocumentAttachments(profile.userId, "transferDocument");
+      setLeadTransferDocuments(refreshedTransferDocuments.length > 0 ? refreshedTransferDocuments : result.data.transferDocument ? [result.data.transferDocument] : []);
+    }
     showToast("Documento atualizado.");
     const input = fileInputs.current[type];
     if (input) input.value = "";
@@ -1556,6 +1690,8 @@ function LeadDetailDrawer({
         <div className="flex gap-1 border-b border-slate-800 px-5 pt-2">
           {([
             ["detalhes", "Detalhes"],
+            ["checklist", "Checklist"],
+            ["documentos", "Documentos"],
             ["historico", "Histórico"],
             ["comentarios", `Comentários${comments.length > 0 ? ` (${comments.length})` : ""}`],
           ] as const).map(([id, label]) => (
@@ -1806,8 +1942,71 @@ function LeadDetailDrawer({
             )}
           </section>
 
-          <section className="mt-6 space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos</p>
+          <section className="mt-6 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Lead score</p>
+            <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-3">
+              <p className={`text-2xl font-bold ${leadScoreColor(leadScoreResult.total)}`}>{leadScoreResult.total}</p>
+              {leadScoreResult.breakdown.length === 0 ? (
+                <p className="mt-1 text-xs text-slate-500">Nenhuma regra de pontuação aplicada a este lead.</p>
+              ) : (
+                <ul className="mt-2 space-y-1">
+                  {leadScoreResult.breakdown.map((item) => (
+                    <li key={item.ruleId} className="flex items-center justify-between text-xs text-slate-400">
+                      <span>{item.label}</span>
+                      <span className="font-medium text-slate-200">+{item.points}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          </>
+          )}
+
+          {drawerTab === "checklist" && (
+          <section className="space-y-4 pb-6">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Checklist do link de cadastro</p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Mesma visão do aluno no link de registro. A etapa de transferência não bloqueia pagamento.
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-[var(--bg)] p-4">
+              <RegistrationChecklistCards
+                options={crmRegistrationLinkOptionsForLead(lead)}
+                cadastroDone={Boolean(lead.userId)}
+                paid={crmChecklistPaymentDone}
+                booked={null}
+                bookedDone={crmChecklistBookingDone}
+                bookedLabel="Ground agendado"
+                isTransfer={transferLead}
+                transferDocumentDone={leadTransferDocuments.length > 0 || Boolean(profile?.documents.transferDocument)}
+                transferDocumentCount={leadTransferDocuments.length}
+                showContracts
+                contractsDone={crmChecklistContractsDone}
+                contractsCount={activeLeadContracts.length}
+                contractsLoading={leadContractsLoading}
+                onStartCadastro={() => onSendCadastro(lead)}
+                onTransferDocuments={() => setDrawerTab("documentos")}
+                onPay={() => undefined}
+                onSchedule={() => undefined}
+              />
+            </div>
+            {!lead.userId ? (
+              <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">
+                O lead ainda não criou conta. Envie ou copie o link de cadastro para iniciar o checklist.
+              </p>
+            ) : null}
+          </section>
+          )}
+
+          {drawerTab === "documentos" && (
+          <section className="space-y-6 pb-6">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos anexados</p>
+              <p className="mt-1 text-xs text-slate-500">Arquivos vinculados ao perfil do aluno.</p>
+            </div>
             {profile ? (
               <div className="space-y-2">
                 {CRM_DOCUMENT_TYPES.map(({ type, label, required }) => {
@@ -1834,57 +2033,53 @@ function LeadDetailDrawer({
             ) : (
               <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Os documentos aparecem quando o lead tem perfil vinculado.</p>
             )}
-          </section>
 
-          {(leadForm.crmStatus === "aguardando_transferencia" || leadForm.crmStatus === "matricula_enviada" || leadForm.crmStatus === "aguardando_assinatura_pagamento" || leadForm.crmStatus === "ground_agendado" || leadForm.crmStatus === "cadastro_anac" || leadForm.crmStatus === "aluno_pronto") && (
-            <section className="mt-6 space-y-3">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos de Transferência</p>
-              {profile ? (
-                <div className="space-y-2">
-                  {CRM_TRANSFER_DOCUMENT_TYPES.map(({ type, label }) => {
-                    const attachment = profile.documents[type];
-                    const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
-                    return (
-                      <div key={type} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-medium text-slate-200">{label}</p>
-                          <p className={`truncate text-[11px] ${attachment ? "text-slate-500" : "text-slate-700"}`}>{attachment ? attachment.fileName : "Não anexado"}</p>
+            {(transferLead || leadForm.crmStatus === "matricula_enviada" || leadForm.crmStatus === "aguardando_assinatura_pagamento" || leadForm.crmStatus === "ground_agendado" || leadForm.crmStatus === "cadastro_anac" || leadForm.crmStatus === "aluno_pronto") && (
+              <div className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Documentos de transferência</p>
+                {profile ? (
+                  <div className="space-y-2">
+                    {CRM_TRANSFER_DOCUMENT_TYPES.map(({ type, label }) => {
+                      const attachments = type === "transferDocument"
+                        ? leadTransferDocuments.length > 0 ? leadTransferDocuments : profile.documents.transferDocument ? [profile.documents.transferDocument] : []
+                        : profile.documents[type] ? [profile.documents[type]] : [];
+                      return (
+                        <div key={type} className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-slate-200">{label}</p>
+                              <p className={`truncate text-[11px] ${attachments.length ? "text-slate-500" : "text-slate-700"}`}>
+                                {attachments.length ? `${attachments.length} documento(s) anexado(s)` : "Não anexado"}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <input ref={(node) => { fileInputs.current[type] = node; }} type="file" className="hidden" onChange={(e) => void handleUpload(type, e.target.files?.[0])} />
+                              <button type="button" disabled={busyDocument === type} onClick={() => fileInputs.current[type]?.click()} className="rounded-lg border border-sky-700/60 bg-sky-600/10 px-2 py-1 text-xs text-sky-300 hover:bg-sky-600/20 disabled:opacity-50">{busyDocument === type ? "Subindo..." : attachments.length ? "Trocar" : "Anexar"}</button>
+                            </div>
+                          </div>
+                          {attachments.length > 0 ? (
+                            <div className="mt-2 space-y-1 border-t border-slate-800 pt-2">
+                              {attachments.map((attachment) => {
+                                const url = getProfileDocumentUrl(attachment.fileId, "view");
+                                return (
+                                  <div key={attachment.docId || attachment.fileId} className="flex items-center justify-between gap-2 text-[11px]">
+                                    <span className="min-w-0 truncate text-slate-400">{attachment.fileName}</span>
+                                    {url && <a href={url} target="_blank" rel="noreferrer" className="shrink-0 rounded-md border border-slate-700 px-2 py-0.5 text-slate-300 hover:bg-slate-800">Ver</a>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {url && <a href={url} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">Ver</a>}
-                          <input ref={(node) => { fileInputs.current[type] = node; }} type="file" className="hidden" onChange={(e) => void handleUpload(type, e.target.files?.[0])} />
-                          <button type="button" disabled={busyDocument === type} onClick={() => fileInputs.current[type]?.click()} className="rounded-lg border border-sky-700/60 bg-sky-600/10 px-2 py-1 text-xs text-sky-300 hover:bg-sky-600/20 disabled:opacity-50">{busyDocument === type ? "Subindo..." : attachment ? "Trocar" : "Anexar"}</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Os documentos aparecem quando o lead tem perfil vinculado.</p>
-              )}
-            </section>
-          )}
-
-          <section className="mt-6 space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Lead score</p>
-            <div className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-3">
-              <p className={`text-2xl font-bold ${leadScoreColor(leadScoreResult.total)}`}>{leadScoreResult.total}</p>
-              {leadScoreResult.breakdown.length === 0 ? (
-                <p className="mt-1 text-xs text-slate-500">Nenhuma regra de pontuação aplicada a este lead.</p>
-              ) : (
-                <ul className="mt-2 space-y-1">
-                  {leadScoreResult.breakdown.map((item) => (
-                    <li key={item.ruleId} className="flex items-center justify-between text-xs text-slate-400">
-                      <span>{item.label}</span>
-                      <span className="font-medium text-slate-200">+{item.points}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-slate-800 bg-[var(--bg)] px-3 py-2 text-xs text-slate-500">Os documentos aparecem quando o lead tem perfil vinculado.</p>
+                )}
+              </div>
+            )}
           </section>
-
-          </>
           )}
 
           {drawerTab === "historico" && (

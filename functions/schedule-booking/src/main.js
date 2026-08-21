@@ -53,6 +53,23 @@ function parseJson(value, fallback = {}) {
   }
 }
 
+function parseFunctionPayload(req) {
+  const candidates = [];
+  try {
+    if (req?.bodyJson && typeof req.bodyJson === "object") candidates.push(req.bodyJson);
+    if (typeof req?.bodyJson === "string") candidates.push(parseJson(req.bodyJson, null));
+  } catch {
+    // Appwrite can throw while reading an empty bodyJson.
+  }
+  for (const raw of [req?.body, req?.bodyRaw, req?.payload]) {
+    if (!raw) continue;
+    if (typeof raw === "object") candidates.push(raw);
+    if (typeof raw === "string") candidates.push(parseJson(raw, null));
+  }
+  const objects = candidates.filter((item) => item && typeof item === "object" && !Array.isArray(item));
+  return objects.find((item) => clean(item.action)) || objects[0] || {};
+}
+
 function number(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -323,6 +340,20 @@ function scheduleTimes(date, startTime, durationMinutes, rules) {
   };
 }
 
+function exactScheduleTimes(date, startTime, durationMinutes) {
+  const start = parseClock(startTime);
+  const cutoff = start + durationMinutes;
+  if (cutoff > 1440) fail("O intervalo completo deve permanecer no mesmo dia.");
+  return {
+    presentationTime: clock(start),
+    startTime: clock(start),
+    cutoffTime: clock(cutoff),
+    endTime: clock(cutoff),
+    occupiedStartAt: new Date(dateTimeMs(date, clock(start))).toISOString(),
+    occupiedEndAt: new Date(dateTimeMs(date, clock(cutoff))).toISOString(),
+  };
+}
+
 async function getAircraft(registration) {
   const result = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
     sdk.Query.equal("school_id", [SCHOOL_ID]),
@@ -332,6 +363,30 @@ async function getAircraft(registration) {
   ]);
   const aircraft = result.documents[0];
   if (!aircraft) fail("Aeronave indisponível.");
+  return aircraft;
+}
+
+async function listInitialBookingAircrafts(rules) {
+  const result = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.equal("type", ["aviao"]),
+    sdk.Query.limit(20),
+  ]);
+  return result.documents
+    .filter((doc) => !aircraftHiddenForRole(rules, doc.registration, "aluno"))
+    .slice(0, 2);
+}
+
+async function getGroundAircraft() {
+  const result = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("active", [true]),
+    sdk.Query.equal("type", ["ground"]),
+    sdk.Query.limit(1),
+  ]);
+  const aircraft = result.documents[0];
+  if (!aircraft) fail("Equipamento Ground não configurado na frota.", 422);
   return aircraft;
 }
 
@@ -2795,6 +2850,302 @@ async function handleCreditPreview(payload, actorId, actorRole, rules) {
   };
 }
 
+async function handleInitialRegistrationCalendar(payload, actorId, actorRole, rules) {
+  const from = clean(payload.dateFrom) || addDays(new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10), 2);
+  const to = clean(payload.dateTo) || addDays(from, 21);
+  const [aircrafts, ground, flights, opWeeks] = await Promise.all([
+    listInitialBookingAircrafts(rules),
+    getGroundAircraft().catch(() => null),
+    rules.sagaOnlySchedule ? listSagaEvents() : listFlights(from, to),
+    databases.listDocuments(DATABASE_ID, OP_WEEKS_ID, [
+      sdk.Query.equal("week_start", [weekStart(from), weekStart(addDays(from, 7)), weekStart(addDays(from, 14))]),
+      sdk.Query.limit(500),
+    ]).catch(() => ({ documents: [] })),
+  ]);
+  const occupancyIdents = new Set(aircrafts.map((doc) => normalizeRegistration(doc.registration)));
+  if (ground) occupancyIdents.add(normalizeRegistration(ground.registration));
+  const aircraftRegByDocId = {};
+  for (const doc of aircrafts) aircraftRegByDocId[doc.$id] = doc.registration;
+  if (ground) aircraftRegByDocId[ground.$id] = ground.registration;
+  const blockedSlots = [];
+  for (const weekDoc of opWeeks.documents || []) {
+    const registration = aircraftRegByDocId[weekDoc.aircraft_id];
+    if (!registration) continue;
+    const states = parseJson(weekDoc.slots_json, {});
+    const hoursByDay = {};
+    for (const [key, state] of Object.entries(states)) {
+      if (state !== "blocked") continue;
+      const parts = key.split("-");
+      if (parts.length !== 2) continue;
+      const day = parseInt(parts[0], 10);
+      const hour = parseInt(parts[1], 10);
+      if (!Number.isFinite(day) || !Number.isFinite(hour)) continue;
+      if (!hoursByDay[day]) hoursByDay[day] = [];
+      hoursByDay[day].push(hour);
+    }
+    for (const [day, hours] of Object.entries(hoursByDay)) {
+      const sorted = [...new Set(hours)].sort((a, b) => a - b);
+      let rangeStart = sorted[0];
+      let prev = sorted[0];
+      for (let i = 1; i <= sorted.length; i++) {
+        const cur = sorted[i];
+        if (cur !== prev + 1) {
+          blockedSlots.push({ aircraftRegistration: registration, dayOfWeek: parseInt(day, 10), startHour: rangeStart, endHour: prev + 1 });
+          rangeStart = cur;
+        }
+        prev = cur;
+      }
+    }
+  }
+  const publicFlights = rules.sagaOnlySchedule
+    ? flights
+      .flatMap((event) => publicSagaFlights(event, rules, actorId, actorRole, ""))
+      .filter((flight) => flight && flight.flightDate >= from && flight.flightDate <= to)
+    : flights.map((doc) => publicFlight(doc, actorId, actorRole));
+  return {
+    mode: rules.mode,
+    rules,
+    minDate: addDays(new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10), 2),
+    groundRegistration: ground?.registration || null,
+    blockedSlots,
+    aircrafts: aircrafts.map((doc) => ({
+      id: doc.$id,
+      registration: doc.registration,
+      modelId: doc.model_id,
+      imageUrl: doc.image_url || null,
+    })),
+    flights: publicFlights
+      .filter((doc) => occupancyIdents.has(normalizeRegistration(doc.aircraftIdent))),
+  };
+}
+
+async function createInitialBookingFlight({ aircraft, studentId, studentLabel, date, startTime, durationMinutes, status, origin, notes, times: timesInput }) {
+  const times = timesInput || exactScheduleTimes(date, startTime, durationMinutes);
+  const id = sdk.ID.unique();
+  await acquireLocks(
+    aircraft.registration,
+    date,
+    parseClock(times.presentationTime || times.startTime),
+    parseClock(times.endTime || times.cutoffTime),
+    15,
+    id,
+    studentId,
+  );
+  try {
+    const record = buildRecord({
+      studentId,
+      studentLabel,
+      registration: aircraft.registration,
+      date,
+      times,
+      durationMinutes,
+      isNight: false,
+    });
+    return await databases.createDocument(DATABASE_ID, FLIGHTS_ID, id, {
+      school_id: SCHOOL_ID,
+      name: `${date} - ${aircraft.registration}`,
+      source_filename: `${origin}-${date}-${id}.csv`,
+      user_id: studentId,
+      student_user_id: studentId,
+      instructor_user_id: null,
+      created_by_role: "aluno",
+      csv_text: record,
+      aircraft_ident: aircraft.registration,
+      aircraft_model_id: aircraft.model_id,
+      duration_sec: durationMinutes * 60,
+      requested_duration_minutes: durationMinutes,
+      flight_date: date,
+      start_time: times.startTime,
+      presentation_time: times.presentationTime,
+      cutoff_time: times.cutoffTime,
+      schedule_end_time: times.endTime,
+      occupied_start_at: times.occupiedStartAt,
+      occupied_end_at: times.occupiedEndAt,
+      schedule_origin: origin,
+      schedule_week_start: weekStart(date),
+      schedule_demand_id: `${origin}-${id}`,
+      flight_status: status,
+      is_night: false,
+      notes: notes || null,
+    }, flightPermissions(studentId, null));
+  } catch (err) {
+    await releaseLocks(id);
+    throw err;
+  }
+}
+
+async function handleInitialRegistrationRequest(payload, actorId, actorRole, profile, rules) {
+  if (rules.mode !== "booking") fail("A escala não está aberta para agendamento.");
+  const studentId = actorRole === "aluno" ? actorId : clean(payload.studentUserId || actorId);
+  if (!studentId) fail("Aluno não informado.");
+  const student = actorRole === "aluno" ? profile : await getProfile(studentId);
+  const studentLabel = clean(student.full_name || student.email || "Aluno");
+  const date = clean(payload.flightDate);
+  const registration = clean(payload.aircraftIdent).toUpperCase();
+  const startTime = clean(payload.startTime);
+  const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const minDate = addDays(today, 2);
+  if (date < minDate) fail(`Escolha uma data a partir de ${brDate(minDate)}.`, 400);
+  const aircrafts = await listInitialBookingAircrafts(rules);
+  const aircraft = aircrafts.find((doc) => normalizeRegistration(doc.registration) === normalizeRegistration(registration));
+  if (!aircraft) fail("Aeronave indisponível para o primeiro voo.", 404);
+  const ground = await getGroundAircraft();
+  const flightStart = parseClock(startTime);
+  if (flightStart % 30 !== 0) fail("O início precisa respeitar slots de 30 minutos.");
+  const nightStart = Math.round(number(rules.nightFlightStartHour, 18) * 60);
+  if (flightStart + 60 > nightStart) fail("O primeiro voo precisa caber no período diurno.");
+  const flightTimes = scheduleTimes(date, startTime, 60, rules);
+  const presentation = parseClock(flightTimes.presentationTime);
+  const groundStart = presentation - 90;
+  const groundEnd = presentation - 1;
+  const groundDurationMinutes = Math.max(1, groundEnd - groundStart);
+  const scheduleStart = parseClock(rules.scheduleStartTime || "06:00");
+  if (groundStart < scheduleStart) {
+    fail(`O Ground não pode começar antes das ${clock(scheduleStart)}. Escolha um horário mais tarde.`);
+  }
+  const groundTimes = exactScheduleTimes(date, clock(groundStart), groundDurationMinutes);
+  await validateBlockedSlot(ground.$id, date, groundStart, groundEnd);
+  await validateBlockedSlot(
+    aircraft.$id,
+    date,
+    flightStart - rules.bufferBeforeMinutes,
+    flightStart + 60 + rules.bufferAfterMinutes,
+  );
+  if (rules.sagaOnlySchedule) {
+    const studentSagaId = requireStudentSagaId(student);
+    const events = await listSagaEvents();
+    validateSagaConflict(events, rules, ground.registration, groundTimes.occupiedStartAt, groundTimes.occupiedEndAt);
+    validateSagaConflict(events, rules, aircraft.registration, flightTimes.occupiedStartAt, flightTimes.occupiedEndAt);
+    validateSagaStudentOverlap(events, rules, studentSagaId, groundTimes.occupiedStartAt, flightTimes.occupiedEndAt);
+    const groundResult = await execAdminUsers({
+      action: "sagaUpsertScheduleDirect",
+      aircraftIdent: ground.registration,
+      studentSagaId,
+      studentName: studentLabel,
+      date,
+      startTime: clock(groundStart),
+      durationMinutes: groundDurationMinutes,
+      sagaStatus: "PLANNED",
+      notes: "Ground School agendado junto do primeiro voo.",
+    });
+    try {
+      const sagaTotalDuration = rules.bufferBeforeMinutes + 60 + rules.bufferAfterMinutes;
+      const sagaBoundaryOffset = sagaBoundaryStartOffsetMinutes(events, rules, aircraft.registration, studentSagaId, flightTimes.occupiedStartAt);
+      const sagaPayloadTimes = sagaDirectPayloadTimes(flightTimes, sagaTotalDuration, sagaBoundaryOffset);
+      const flightResult = await execAdminUsers({
+        action: "sagaUpsertScheduleDirect",
+        aircraftIdent: aircraft.registration,
+        studentSagaId,
+        studentName: studentLabel,
+        date,
+        startTime: sagaPayloadTimes.startTime,
+        durationMinutes: sagaPayloadTimes.durationMinutes,
+        sagaStatus: "PENDING",
+        notes: "Primeiro voo agendado junto do Ground School.",
+      });
+      return {
+        ground: {
+          id: clean(groundResult.scheduleId),
+          aircraftIdent: ground.registration,
+          aircraftModelId: ground.model_id || null,
+          flightDate: date,
+          presentationTime: clock(groundStart),
+          startTime: clock(groundStart),
+          cutoffTime: clock(groundEnd),
+          endTime: clock(groundEnd),
+          durationMinutes: groundDurationMinutes,
+          status: "Previsto",
+          isOwn: true,
+          studentUserId: studentId,
+          instructorUserId: null,
+          canCancel: false,
+        },
+        flight: {
+          id: clean(flightResult.scheduleId),
+          aircraftIdent: aircraft.registration,
+          aircraftModelId: aircraft.model_id || null,
+          flightDate: date,
+          presentationTime: flightTimes.presentationTime,
+          startTime: flightTimes.startTime,
+          cutoffTime: flightTimes.cutoffTime,
+          endTime: flightTimes.endTime,
+          durationMinutes: 60,
+          status: "Pendente",
+          isOwn: true,
+          studentUserId: studentId,
+          instructorUserId: null,
+          canCancel: true,
+        },
+        nextSteps: {
+          groundStartTime: clock(groundStart),
+          groundEndTime: clock(groundEnd),
+          flightStartTime: startTime,
+          flightDate: date,
+          presentationTime: flightTimes.presentationTime,
+          cutoffTime: flightTimes.cutoffTime,
+          endTime: flightTimes.endTime,
+        },
+      };
+    } catch (err) {
+      if (clean(groundResult.scheduleId)) {
+        await execAdminUsers({
+          action: "sagaCancelScheduleDirect",
+          scheduleId: clean(groundResult.scheduleId),
+          reason: "Falha ao criar primeiro voo vinculado.",
+        }).catch(() => null);
+      }
+      throw err;
+    }
+  }
+  await validateFlightConflict(ground.registration, date, groundTimes.occupiedStartAt, groundTimes.occupiedEndAt);
+  await validateFlightConflict(aircraft.registration, date, flightTimes.occupiedStartAt, flightTimes.occupiedEndAt);
+  await validateStudentFlightOverlap(studentId, date, groundTimes.occupiedStartAt, flightTimes.occupiedEndAt);
+
+  const groundDoc = await createInitialBookingFlight({
+    aircraft: ground,
+    studentId,
+    studentLabel,
+    date,
+    startTime: clock(groundStart),
+    durationMinutes: groundDurationMinutes,
+    status: "Confirmado",
+    origin: "registration_ground",
+    notes: "Ground School agendado junto do primeiro voo.",
+    times: groundTimes,
+  });
+  try {
+    const flightDoc = await createInitialBookingFlight({
+      aircraft,
+      studentId,
+      studentLabel,
+      date,
+      startTime,
+      durationMinutes: 60,
+      status: "Pendente",
+      origin: "registration_first_flight",
+      notes: "Primeiro voo agendado junto do Ground School.",
+      times: flightTimes,
+    });
+    return {
+      ground: publicFlight(groundDoc, actorId, actorRole),
+      flight: publicFlight(flightDoc, actorId, actorRole),
+      nextSteps: {
+        groundStartTime: clock(groundStart),
+        groundEndTime: clock(groundEnd),
+        flightStartTime: startTime,
+        flightDate: date,
+        presentationTime: flightTimes.presentationTime,
+        cutoffTime: flightTimes.cutoffTime,
+        endTime: flightTimes.endTime,
+      },
+    };
+  } catch (err) {
+    await databases.updateDocument(DATABASE_ID, FLIGHTS_ID, groundDoc.$id, { flight_status: "Cancelado" }).catch(() => null);
+    await releaseLocks(groundDoc.$id).catch(() => null);
+    throw err;
+  }
+}
+
 module.exports = async ({ req, res, error }) => {
   try {
     if (!DATABASE_ID || !FLIGHTS_ID || !PROFILES_ID || !AIRCRAFTS_ID || !SETTINGS_ID) {
@@ -2804,7 +3155,7 @@ module.exports = async ({ req, res, error }) => {
     // SAGA) chega via header a cada request — não existe como variável de ambiente.
     const dynamicKey = clean(req.headers["x-appwrite-key"]);
     if (dynamicKey) client.setKey(dynamicKey);
-    const payload = req.bodyJson || parseJson(req.body, {});
+    const payload = parseFunctionPayload(req);
     // Chamada autenticada do cliente (JWT) OU interna (admin-users via API key + asStudentUserId).
     // Se houver header de usuário, ele manda — impede impersonação pelo body no client SDK.
     const headerActorId = clean(req.headers["x-appwrite-user-id"]);
@@ -2818,8 +3169,10 @@ module.exports = async ({ req, res, error }) => {
     rules.creditSimplified = await getCreditSalesSimplified();
     let data;
     if (payload.action === "getCalendar") data = await handleCalendar(payload, actorId, actorRole, rules, profile);
+    else if (payload.action === "getInitialRegistrationCalendar") data = await handleInitialRegistrationCalendar(payload, actorId, actorRole, rules);
     else if (payload.action === "checkAvailability") data = await handleAvailability(payload, actorId, actorRole, rules);
     else if (payload.action === "requestFlight") data = await handleRequest(payload, actorId, actorRole, profile, rules);
+    else if (payload.action === "requestInitialRegistrationFlight") data = await handleInitialRegistrationRequest(payload, actorId, actorRole, profile, rules);
     else if (payload.action === "creditPreview") data = await handleCreditPreview(payload, actorId, actorRole, rules);
     else if (payload.action === "confirmFlight") data = await handleConfirm(payload, actorId, actorRole, rules);
     else if (payload.action === "rescheduleFlight") {

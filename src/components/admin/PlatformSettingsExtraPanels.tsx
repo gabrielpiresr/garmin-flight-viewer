@@ -36,7 +36,33 @@ const defaultBrandForm: EmailBrandSettingsInput = {
   supportEmail: "",
   footerText: "Este é um email automático da plataforma.",
   faviconUrl: "",
+  registrationDirectionsTitle: "Como chegar na EPEAC",
+  registrationDirectionsPlace: "Aeroporto Campo de Marte (SBMT)",
+  registrationDirectionsText:
+    "Av. Santos Dumont, 1979 — Santana, São Paulo/SP. Chegue com 15 a 20 minutos de antecedência, siga a sinalização até a escola e na portaria informe que você é aluno e vem para o Ground School.",
+  registrationDirectionsMapsUrl: "https://maps.google.com/?q=EPEAC+Escola+de+Pilotagem+Campo+de+Marte",
+  registrationNextStepsTitle: "Próximos passos",
+  registrationNextStepsItems: [
+    "O nosso Ground School acontece logo antes do primeiro voo. Ele dura entre 1h e 2h.",
+    "O seu Ground School acontece logo antes do seu primeiro voo.",
+    "Após o Ground School você fará uma breve prova na escola em cima dos ensinamentos sobre o avião. É necessário alcançar pelo menos 70% na prova para ser liberado para o voo.",
+  ],
+  registrationMaterialsTitle: "Material e avisos importantes",
+  registrationMaterialsItems: [
+    "O seu acesso na plataforma app.epeac.com.br já está liberado. O login é o seu e-mail e a senha é o seu CPF só com números, ou a senha que você criou no cadastro.",
+    "Na plataforma temos a aba \"Manuais\" com todos os materiais que você vai precisar. É muito importante ler os manuais antes do Ground.",
+    "Na aba \"Jornada\" você consegue ver todo o cronograma de formação e as missões, além dos detalhes que serão cobrados em cada voo.",
+    "É obrigatória a leitura do Manual do Aluno que está na plataforma antes do seu Ground School — ele contém todos os detalhes e regras da escola.",
+  ],
 };
+
+function listToTextarea(items: string[] | undefined): string {
+  return (items ?? []).join("\n");
+}
+
+function textareaToList(value: string): string[] {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
 
 function toBrandForm(settings: EmailBrandSettings): EmailBrandSettingsInput {
   return {
@@ -49,6 +75,14 @@ function toBrandForm(settings: EmailBrandSettings): EmailBrandSettingsInput {
     supportEmail: settings.supportEmail,
     footerText: settings.footerText,
     faviconUrl: settings.faviconUrl ?? "",
+    registrationDirectionsTitle: settings.registrationDirectionsTitle ?? defaultBrandForm.registrationDirectionsTitle,
+    registrationDirectionsPlace: settings.registrationDirectionsPlace ?? defaultBrandForm.registrationDirectionsPlace,
+    registrationDirectionsText: settings.registrationDirectionsText ?? defaultBrandForm.registrationDirectionsText,
+    registrationDirectionsMapsUrl: settings.registrationDirectionsMapsUrl ?? defaultBrandForm.registrationDirectionsMapsUrl,
+    registrationNextStepsTitle: settings.registrationNextStepsTitle ?? defaultBrandForm.registrationNextStepsTitle,
+    registrationNextStepsItems: settings.registrationNextStepsItems ?? defaultBrandForm.registrationNextStepsItems,
+    registrationMaterialsTitle: settings.registrationMaterialsTitle ?? defaultBrandForm.registrationMaterialsTitle,
+    registrationMaterialsItems: settings.registrationMaterialsItems ?? defaultBrandForm.registrationMaterialsItems,
   };
 }
 
@@ -86,6 +120,7 @@ function toRulesForm(settings: SchoolRules): SchoolRulesInput {
       automaticCriteria: { ...settings.soloFlight.automaticCriteria },
       manualCriteria: settings.soloFlight.manualCriteria.map((item) => ({ ...item })),
     },
+    capacityProjection: settings.capacityProjection,
     emailNotifications: Object.fromEntries(
       EMAIL_NOTIFICATION_EVENT_OPTIONS.map((item) => [item.id, { ...settings.emailNotifications[item.id] }]),
     ) as SchoolRulesInput["emailNotifications"],
@@ -174,6 +209,14 @@ export function AppearanceSettingsPanel() {
         logoUrl,
         logoFileId: logoFile ? null : brandForm.logoFileId ?? null,
         faviconUrl,
+        registrationDirectionsTitle: brandForm.registrationDirectionsTitle,
+        registrationDirectionsPlace: brandForm.registrationDirectionsPlace,
+        registrationDirectionsText: brandForm.registrationDirectionsText,
+        registrationDirectionsMapsUrl: brandForm.registrationDirectionsMapsUrl,
+        registrationNextStepsTitle: brandForm.registrationNextStepsTitle,
+        registrationNextStepsItems: brandForm.registrationNextStepsItems,
+        registrationMaterialsTitle: brandForm.registrationMaterialsTitle,
+        registrationMaterialsItems: brandForm.registrationMaterialsItems,
       });
       const savedRules = await saveSchoolRules({
         ...toRulesForm(currentRules),
@@ -377,6 +420,89 @@ export function AppearanceSettingsPanel() {
               </div>
             );
           })()}
+        </div>
+      </div>
+      <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">Tela final do cadastro</h3>
+          <p className="mt-1 text-xs text-slate-500">Textos exibidos depois que o aluno conclui o checklist de registro.</p>
+        </div>
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <label className="text-xs text-slate-400">
+            Título de como chegar
+            <input
+              type="text"
+              value={brandForm.registrationDirectionsTitle ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationDirectionsTitle: e.target.value }))}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Local
+            <input
+              type="text"
+              value={brandForm.registrationDirectionsPlace ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationDirectionsPlace: e.target.value }))}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400 md:col-span-2">
+            Texto de como chegar
+            <textarea
+              value={brandForm.registrationDirectionsText ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationDirectionsText: e.target.value }))}
+              rows={3}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400 md:col-span-2">
+            Link do Google Maps
+            <input
+              type="url"
+              value={brandForm.registrationDirectionsMapsUrl ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationDirectionsMapsUrl: e.target.value }))}
+              placeholder="https://maps.google.com/..."
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Título de próximos passos
+            <input
+              type="text"
+              value={brandForm.registrationNextStepsTitle ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationNextStepsTitle: e.target.value }))}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Título de materiais e avisos
+            <input
+              type="text"
+              value={brandForm.registrationMaterialsTitle ?? ""}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationMaterialsTitle: e.target.value }))}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Próximos passos
+            <textarea
+              value={listToTextarea(brandForm.registrationNextStepsItems)}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationNextStepsItems: textareaToList(e.target.value) }))}
+              rows={5}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+            <span className="mt-1 block text-[11px] text-slate-600">Uma linha por item.</span>
+          </label>
+          <label className="text-xs text-slate-400">
+            Materiais e avisos importantes
+            <textarea
+              value={listToTextarea(brandForm.registrationMaterialsItems)}
+              onChange={(e) => setBrandForm((prev) => ({ ...prev, registrationMaterialsItems: textareaToList(e.target.value) }))}
+              rows={5}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+            />
+            <span className="mt-1 block text-[11px] text-slate-600">Uma linha por item.</span>
+          </label>
         </div>
       </div>
       <div className="flex justify-end">

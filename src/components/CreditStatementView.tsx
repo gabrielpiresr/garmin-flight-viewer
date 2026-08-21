@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { StudentCreditPurchase, StudentCreditStatement } from "../types/credits";
 
+type StudentCreditAdjustment = StudentCreditStatement["adjustments"][number];
+
 type Props = {
   statement: StudentCreditStatement;
   title?: string;
@@ -8,6 +10,7 @@ type Props = {
   showHeading?: boolean;
   compact?: boolean;
   renderPurchaseActions?: (purchase: StudentCreditPurchase) => ReactNode;
+  renderAdjustmentActions?: (adjustment: StudentCreditAdjustment) => ReactNode;
 };
 
 function formatDate(value: string | null | undefined): string {
@@ -66,6 +69,7 @@ export function CreditStatementView({
   showHeading = true,
   compact = false,
   renderPurchaseActions,
+  renderAdjustmentActions,
 }: Props) {
   const hasCredits = statement.purchases.length > 0 || statement.flightDebits.length > 0 || statement.adjustments.length > 0;
   const totalPenaltyHours = statement.totals.penaltyHours ?? statement.adjustments.reduce(
@@ -376,7 +380,10 @@ export function CreditStatementView({
                       Cancelamento em: <span className="text-slate-300">{formatDateTime(adjustment.occurredAt)}</span>
                     </p>
                   </div>
-                  <strong className="shrink-0 text-rose-300">{Math.abs(adjustment.hours).toFixed(2)}h</strong>
+                  <div className="flex shrink-0 flex-col items-end gap-2">
+                    <strong className="text-rose-300">{Math.abs(adjustment.hours).toFixed(2)}h</strong>
+                    {renderAdjustmentActions ? <div className="flex flex-wrap justify-end gap-2">{renderAdjustmentActions(adjustment)}</div> : null}
+                  </div>
                 </div>
               </div>
               );

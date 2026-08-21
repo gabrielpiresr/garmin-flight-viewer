@@ -10,7 +10,7 @@ import type {
 
 const ALL_ADMIN_TABS: AdminTabKey[] = [
   "home",
-  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.configuracoes",
+  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.projecoes", "schedule.configuracoes",
   "students",
   "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",

@@ -77,6 +77,7 @@ function rulesInputFrom(settings: SchoolRules): SchoolRulesInput {
     flightReviewClub: settings.flightReviewClub,
     flightEvaluation: settings.flightEvaluation,
     soloFlight: settings.soloFlight,
+    capacityProjection: settings.capacityProjection,
   };
 }
 

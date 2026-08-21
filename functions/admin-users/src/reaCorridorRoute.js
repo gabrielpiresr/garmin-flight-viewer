@@ -140,6 +140,32 @@ function formatBearingDeg(deg) {
   return `${String(Math.round(deg) % 360).padStart(3, "0")}°`;
 }
 
+/** ICA 100-12 VFR: proa 000–179 → A055; 180–359 → A065. */
+function semicircularCruiseFt(bearingDeg) {
+  const hdg = ((Number(bearingDeg) % 360) + 360) % 360;
+  return hdg < 180 ? 5500 : 6500;
+}
+
+function applySemicircularCruiseAltitudes(waypoints, legCorridors) {
+  const list = Array.isArray(waypoints) ? waypoints : [];
+  return list.map((wp, idx, arr) => {
+    if (idx === 0) return wp;
+    if (isAirportLike(wp)) {
+      const field = wp.fieldElevFt;
+      if (field != null && Number.isFinite(field)) {
+        const elev = Math.round(field);
+        return wp.altitudeFt === elev ? wp : { ...wp, altitudeFt: elev };
+      }
+      return wp;
+    }
+    if (legCorridors?.[idx]) return wp;
+    const from = arr[idx - 1];
+    const next = arr[idx + 1];
+    const bearing = calcTrueBearing(from, wp);
+    return { ...wp, altitudeFt: semicircularCruiseFt(bearing) };
+  });
+}
+
 function formatEteClock(hours) {
   if (hours == null || !Number.isFinite(hours)) return "—";
   const totalMin = Math.round(hours * 60);
@@ -286,8 +312,9 @@ function matchReaCorridorForLeg(from, to, features) {
   return best?.info ?? null;
 }
 
-function nodeId(name, lat, lng) {
-  return pointKey(lat, lng, name);
+function nodeId(name, lat, lng, carta) {
+  const key = pointKey(lat, lng, name);
+  return carta ? `${carta}|${key}` : key;
 }
 
 function isPortaoName(name) {
@@ -304,10 +331,11 @@ function fallbackName(name, lat, lng) {
   return `REA ${lat.toFixed(3)}/${lng.toFixed(3)}`;
 }
 
-function findMergeNode(nodes, lat, lng) {
+function findMergeNode(nodes, lat, lng, carta) {
   let best = null;
   let bestDist = MERGE_M;
   for (const node of nodes) {
+    if ((node.carta || "") !== carta) continue;
     const d = haversineM({ lat, lng }, node);
     if (d < bestDist) {
       best = node;
@@ -390,10 +418,17 @@ function buildGraph(features) {
     if (ra !== rb) parent.set(rb, ra);
   };
 
-  const addNode = (name, lat, lng) => {
-    const existing = findMergeNode(nodeList, lat, lng);
+  const addNode = (name, lat, lng, carta) => {
+    const existing = findMergeNode(nodeList, lat, lng, carta);
     if (existing) return existing;
-    const node = { id: nodeId(name, lat, lng), lat, lng, name: name.trim().toUpperCase(), gate: false };
+    const node = {
+      id: nodeId(name, lat, lng, carta),
+      lat,
+      lng,
+      name: name.trim().toUpperCase(),
+      gate: false,
+      carta,
+    };
     nodeList.push(node);
     nodes.set(node.id, node);
     if (!adj.has(node.id)) adj.set(node.id, []);
@@ -414,8 +449,9 @@ function buildGraph(features) {
     if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
     const aName = fallbackName(a.name, a.lat, a.lon);
     const bName = fallbackName(b.name, b.lat, b.lon);
-    const from = addNode(aName, a.lat, a.lon);
-    const to = addNode(bName, b.lat, b.lon);
+    const carta = String(props.carta_nome || "").trim().toUpperCase();
+    const from = addNode(aName, a.lat, a.lon, carta);
+    const to = addNode(bName, b.lat, b.lon, carta);
     const dirs = reaCorridorDirections(props);
     const name = corridorDisplayName(props.nome) || `${from.name}–${to.name}`;
     const oneWay = dirs.ab !== dirs.ba;
@@ -435,7 +471,7 @@ function buildGraph(features) {
       altAb,
       altBa,
       componentId: "",
-      carta: String(props.carta_nome || "").trim().toUpperCase(),
+      carta,
     });
   }
 
@@ -477,7 +513,14 @@ function attachSnap(baseAdj, baseNodes, seg, snap) {
   const adj = cloneAdj(baseAdj);
   const nodes = new Map(baseNodes);
   const id = `SNAP|${snap.lat.toFixed(5)}|${snap.lng.toFixed(5)}`;
-  const node = { id, lat: snap.lat, lng: snap.lng, name: (seg.name || "REA").toUpperCase(), gate: false };
+  const node = {
+    id,
+    lat: snap.lat,
+    lng: snap.lng,
+    name: (seg.name || "REA").toUpperCase(),
+    gate: false,
+    carta: seg.carta || "",
+  };
   nodes.set(id, node);
   if (!adj.has(id)) adj.set(id, []);
 
@@ -796,11 +839,25 @@ function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent) {
       });
       if (!ride) continue;
       if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
+      ride.originTma = originTma;
+      ride.destTma = destTma;
       ridesFound.push(ride);
       if (localTma) mandatory.push(ride);
     }
-    const nearby = ridesFound.filter((ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M);
-    const pool = mandatory.length && rides > 0 ? mandatory : nearby.length ? nearby : ridesFound;
+    const originPool = ridesFound.filter((ride) => ride.originTma);
+    const nearby = (rides === 0 && originPool.length ? originPool : ridesFound).filter(
+      (ride) => ride.entryDistM <= GATE_ENTRY_NM * NM_IN_M,
+    );
+    const pool =
+      rides === 0 && originPool.length
+        ? nearby.length
+          ? nearby
+          : originPool
+        : mandatory.length && rides > 0
+          ? mandatory
+          : nearby.length
+            ? nearby
+            : ridesFound;
     let chosen = null;
     for (const ride of pool) {
       if (
@@ -927,7 +984,7 @@ function snapRouteToVisualCorridors(waypoints, features) {
 
 function applyCorridorAltitudes(waypoints, legCorridors) {
   return waypoints.map((wp, idx) => {
-    if (idx === 0) return wp;
+    if (idx === 0 || isAirportLike(wp)) return wp;
     const corridor = legCorridors[idx];
     if (corridor?.altMax == null || !Number.isFinite(corridor.altMax)) return wp;
     const max = Math.round(corridor.altMax);
@@ -1154,10 +1211,10 @@ function buildFplRouteText(waypoints, legCorridors, speedKt, options = {}) {
     }
   }
   const endsInside =
-    destInside === false
-      ? false
-      : destOnRea || tinyTrailingSnap
-        ? destInside !== false
+    destOnRea || tinyTrailingSnap
+      ? true
+      : destInside === false
+        ? false
         : destInside === true && !continuousRea;
   const sameReaTma = originTmaId && destTmaId ? originTmaId === destTmaId : true;
   if (startsInside && endsInside && continuousRea && sameReaTma && (destOnRea || tinyTrailingSnap)) return "REA";
@@ -1235,6 +1292,8 @@ module.exports = {
   matchReaCorridorForLeg,
   matchLegCorridors,
   applyCorridorAltitudes,
+  applySemicircularCruiseAltitudes,
+  semicircularCruiseFt,
   snapRouteToVisualCorridors,
   buildFplRouteText,
   buildFplRmkText,

@@ -63,6 +63,18 @@ function plannedAlt(wp, fallback) {
   return Math.round(fallback);
 }
 
+function isAirportKind(wp) {
+  return wp?.kind === "airport" || wp?.kind === "origin" || wp?.kind === "destination";
+}
+
+/** AD intermediário (TGL) usa a elevação do campo no perfil, não o cruzeiro. */
+function waypointProfileAlt(wp, fallback, asTgl) {
+  if (asTgl && isAirportKind(wp) && wp?.fieldElevFt != null && Number.isFinite(wp.fieldElevFt)) {
+    return Math.round(wp.fieldElevFt);
+  }
+  return plannedAlt(wp, fallback);
+}
+
 function altitudeRefMode(wp) {
   const ref = String(wp?.altitudeRef || "")
     .trim()
@@ -248,10 +260,10 @@ function buildRoutePerformanceProfile(waypoints, perf) {
     const fromMode = altitudeRefMode(fromWp);
     const toMode = altitudeRefMode(toWp);
     const nextMode = nextWp ? altitudeRefMode(nextWp) : null;
-    const fromAlt = plannedAlt(fromWp, alt);
-    const toAlt = plannedAlt(toWp, alt);
-    const nextAlt = nextWp ? plannedAlt(nextWp, alt) : toAlt;
     const nextIsDest = i + 1 === waypoints.length - 1;
+    const fromAlt = waypointProfileAlt(fromWp, alt, i > 1);
+    const toAlt = waypointProfileAlt(toWp, alt, !isLast);
+    const nextAlt = nextWp ? waypointProfileAlt(nextWp, alt, !nextIsDest) : toAlt;
 
     if (pendingAlt != null && Math.abs(alt - pendingAlt) >= 1) {
       fly(pendingAlt, xLegEnd, "immediate");

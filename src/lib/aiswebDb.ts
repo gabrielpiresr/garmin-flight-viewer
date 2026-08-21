@@ -3,6 +3,7 @@ import type {
   AiswebAerodromeMatch,
   AiswebAirportBundle,
   AiswebDashboard,
+  AiswebMeteoblueMeteogramImage,
   AiswebNotam,
   AiswebPlatformSettings,
   AiswebPlatformSettingsInput,
@@ -47,6 +48,7 @@ type AiswebResponse = {
   mets?: AiswebAirportBundle["met"][];
   notams?: AiswebNotam[];
   webcams?: AiswebWebcamsResult;
+  meteogram?: AiswebMeteoblueMeteogramImage;
   alerts?: AiswebWeatherAlert[];
   alert?: AiswebWeatherAlert;
   history?: AiswebWeatherAlertHistoryItem[];
@@ -358,6 +360,23 @@ export async function searchWindyWebcamsForAirport(
   });
   if (!response.webcams) throw new Error("Webcams do Windy não retornadas.");
   return response.webcams;
+}
+
+export async function getMeteoblueMeteogramImage(
+  airport: AiswebAirportBundle,
+  options?: { force?: boolean },
+): Promise<AiswebMeteoblueMeteogramImage> {
+  const response = await execute({
+    action: "getMeteoblueMeteogramImage",
+    icaoCode: airport.icao,
+    lat: airport.rotaer?.lat ?? null,
+    lng: airport.rotaer?.lng ?? null,
+    asl: airport.rotaer?.altFt != null ? Math.round(Number(airport.rotaer.altFt) * 0.3048) : null,
+    name: airport.rotaer?.name ?? null,
+    force: options?.force === true,
+  });
+  if (!response.meteogram) throw new Error("Meteorograma Meteoblue não retornado.");
+  return response.meteogram;
 }
 
 /** Proxy allowed map tile/export URLs (Esri / GeoAISWEB) as data URL. */

@@ -45,7 +45,7 @@ const USER_PASSWORD = process.env.ALBUM_USER_PASSWORD || crypto.randomBytes(12).
 
 const ALL_ADMIN_TABS = [
   "home",
-  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.configuracoes",
+  "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.projecoes", "schedule.configuracoes",
   "students",
   "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",

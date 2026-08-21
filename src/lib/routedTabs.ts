@@ -52,6 +52,18 @@ export function navigateToTab(path: string): void {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+/** Navega para pathname + query, disparando a sincronização das abas. */
+export function navigateToHref(href: string): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(href, window.location.origin);
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentUrl !== nextUrl) {
+    window.history.pushState(null, "", nextUrl);
+  }
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 export function isFlightCreditPurchasePath(path = currentPath()): boolean {
   return normalizePath(path) === FLIGHT_CREDIT_PURCHASE_PATH;
 }

@@ -28,6 +28,7 @@ import {
 import { getRouteElevation } from "../../lib/routeElevationDb";
 import {
   buildFlightPlanLegs,
+  calcTrueBearing,
   findRouteInsertHint,
   formatBearingDeg,
   formatCompactAviationCoord,
@@ -37,6 +38,7 @@ import {
   formatFuel,
   haversineM,
   parseFplRouteText,
+  semicircularCruiseFt,
   snapWaypointsToAerodromes,
   snapWaypointsToFixes,
   summarizeFlightPlanRoute,
@@ -296,6 +298,15 @@ function IconGear() {
         d="M8.34 1.804A1 1 0 019.32 1h1.36a1 1 0 01.98.804l.295 1.473c.287.072.57.166.846.282l1.345-.736a1 1 0 011.178.215l.962.962a1 1 0 01.215 1.178l-.736 1.345c.116.276.21.56.282.846l1.473.295a1 1 0 01.804.98v1.36a1 1 0 01-.804.98l-1.473.295a6.97 6.97 0 01-.282.846l.736 1.345a1 1 0 01-.215 1.178l-.962.962a1 1 0 01-1.178.215l-1.345-.736a6.97 6.97 0 01-.846.282l-.295 1.473a1 1 0 01-.98.804H9.32a1 1 0 01-.98-.804l-.295-1.473a6.97 6.97 0 01-.846-.282l-1.345.736a1 1 0 01-1.178-.215l-.962-.962a1 1 0 01-.215-1.178l.736-1.345a6.97 6.97 0 01-.282-.846L1.804 11.66A1 1 0 011 10.68V9.32a1 1 0 01.804-.98l1.473-.295c.072-.287.166-.57.282-.846L2.823 5.854a1 1 0 01.215-1.178l.962-.962a1 1 0 011.178-.215l1.345.736c.276-.116.56-.21.846-.282l.295-1.473zM10 13a3 3 0 100-6 3 3 0 000 6z"
         clipRule="evenodd"
       />
+    </svg>
+  );
+}
+
+function IconExport() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L7.3 9.24a.75.75 0 10-1.1 1.02l3.25 3.5a.75.75 0 001.1 0l3.25-3.5a.75.75 0 10-1.1-1.02l-1.95 2.1V2.75z" />
+      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
     </svg>
   );
 }
@@ -721,34 +732,49 @@ export function PlanejamentoTab({
     };
   }, [waypoints, legCorridors, cruiseOpt, summary.eteHours, originReaTma, destReaTma, airspaces, airspaceVolumes]);
 
-  // Auto ALT = teto do corredor quando o trecho está em um corredor REA/REH.
+  // Dentro da REA: teto do corredor. Fora (DCT): A055/A065 conforme a proa (ICA 100-12).
   useEffect(() => {
     if (waypoints.length < 2) return;
     setWaypoints((prev) => {
       let changed = false;
-      const next = prev.map((wp, idx) => {
+      const autoAlts = new Set([5500, 6500]);
+      for (const corridor of legCorridors) {
+        if (corridor?.altMax != null && Number.isFinite(corridor.altMax)) {
+          autoAlts.add(Math.round(corridor.altMax));
+        }
+      }
+      const next = prev.map((wp, idx, arr) => {
         if (idx === 0) return wp;
-        const corridor = legCorridors[idx];
-        if (corridor?.altMax == null || !Number.isFinite(corridor.altMax)) return wp;
-        const max = Math.round(corridor.altMax);
         const cur = wp.altitudeFt;
         const field = wp.fieldElevFt;
-        // Apply when empty, still at field elev, or already tracking a corridor ceiling.
-        if (
+        const trackingAuto =
           cur == null ||
           !Number.isFinite(cur) ||
           (field != null && cur === Math.round(field)) ||
-          cur === max
-        ) {
-          if (cur === max) return wp;
+          autoAlts.has(Math.round(cur));
+        if (isAirportLike(wp)) {
+          if (field == null || !Number.isFinite(field)) return wp;
+          const elev = Math.round(field);
+          if (!trackingAuto || cur === elev) return wp;
+          changed = true;
+          return { ...wp, altitudeFt: elev };
+        }
+        const corridorMax = legCorridors[idx]?.altMax;
+        if (corridorMax != null && Number.isFinite(corridorMax)) {
+          const max = Math.round(corridorMax);
+          if (!trackingAuto || cur === max) return wp;
           changed = true;
           return { ...wp, altitudeFt: max };
         }
-        return wp;
+        const from = arr[idx - 1]!;
+        const cruise = semicircularCruiseFt(calcTrueBearing(from, wp));
+        if (!trackingAuto || cur === cruise) return wp;
+        changed = true;
+        return { ...wp, altitudeFt: cruise };
       });
       return changed ? next : prev;
     });
-  }, [legCorridors, waypoints.length]);
+  }, [legCorridors, waypoints]);
 
   useEffect(() => {
     setRouteTextDraft(nexAtlasText);
@@ -2136,6 +2162,13 @@ export function PlanejamentoTab({
               icon={<IconFolderSmall />}
               label="Abrir rota"
               onClick={goToLibrary}
+            />
+            <PlanejamentoHoverButton
+              icon={<IconExport />}
+              label="Exportar FPL"
+              title="Exportar FPL"
+              onClick={() => setShowFplExportModal(true)}
+              disabled={waypoints.length < 2}
             />
           </div>
         </div>

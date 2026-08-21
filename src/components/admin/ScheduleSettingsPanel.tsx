@@ -292,6 +292,7 @@ export function ScheduleSettingsPanel() {
         flightEvaluation: rules.flightEvaluation,
         soloFlight: rules.soloFlight,
         scheduleStudentHelp: rules.scheduleStudentHelp,
+        capacityProjection: rules.capacityProjection,
       });
       setRules(saved);
       showToast({ variant: "success", message: "Configurações da escala salvas." });

@@ -24,9 +24,11 @@ import type {
   InstructorAdmissionScoreRule,
   InstructorAdmissionStage,
   InstructorAdmissionStageInput,
+  RegistrationLinkOptions,
 } from "../types/instructorAdmission";
 import {
   CANONICAL_STAGE_NAMES,
+  DEFAULT_REGISTRATION_LINK_OPTIONS,
   DEFAULT_STAGES as DEFAULT_STAGE_SEED,
   INSTRUCTOR_ADMISSION_SYSTEM_PROPERTIES,
   suggestStageNameForInstructionHours,
@@ -338,6 +340,45 @@ function parseResponses(value: string | null | undefined): Record<string, Instru
   } catch {
     return {};
   }
+}
+
+const REGISTRATION_OPTIONS_RESPONSE_KEY = "__registrationLinkOptions";
+
+function normalizeRegistrationLinkOptions(value: unknown): RegistrationLinkOptions {
+  const row = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Partial<RegistrationLinkOptions>
+    : {};
+  return {
+    allowCheckout: row.allowCheckout === true || row.chargeGround === true || row.chargeEnrollment === true || row.chargeTransfer === true,
+    chargeGround: row.chargeGround === true,
+    chargeEnrollment: row.chargeEnrollment === true,
+    chargeTransfer: row.chargeTransfer === true,
+    allowFirstFlightBooking: row.allowFirstFlightBooking === true,
+  };
+}
+
+export function registrationLinkOptionsFromResponses(
+  responses: Record<string, InstructorAdmissionFieldValue> | undefined,
+): RegistrationLinkOptions {
+  return normalizeRegistrationLinkOptions(
+    (responses as Record<string, unknown> | undefined)?.[REGISTRATION_OPTIONS_RESPONSE_KEY],
+  );
+}
+
+function responsesWithRegistrationLinkOptions(
+  responses: Record<string, InstructorAdmissionFieldValue> | undefined,
+  options: Partial<RegistrationLinkOptions> | undefined,
+): Record<string, InstructorAdmissionFieldValue> {
+  const current = responses || {};
+  const normalized = normalizeRegistrationLinkOptions({
+    ...DEFAULT_REGISTRATION_LINK_OPTIONS,
+    ...registrationLinkOptionsFromResponses(current),
+    ...(options || {}),
+  });
+  return {
+    ...current,
+    [REGISTRATION_OPTIONS_RESPONSE_KEY]: normalized as unknown as InstructorAdmissionFieldValue,
+  };
 }
 
 function mapStage(doc: {
@@ -763,10 +804,20 @@ export async function getInstructorAdmissionCandidateByRegistrationToken(
 
 export async function generateInstructorRegistrationToken(
   candidateId: string,
+  options?: Partial<RegistrationLinkOptions>,
 ): Promise<{ token: string | null; error: Error | null }> {
   try {
     const token = crypto.randomUUID();
-    await updateInstructorAdmissionCandidate(candidateId, { registrationToken: token });
+    const current = await databases!.getDocument(
+      DB_ID!,
+      INSTRUCTOR_ADMISSION_CANDIDATES_COL_ID!,
+      candidateId,
+    );
+    const candidate = mapCandidate(current as Parameters<typeof mapCandidate>[0]);
+    await updateInstructorAdmissionCandidate(candidateId, {
+      registrationToken: token,
+      responses: responsesWithRegistrationLinkOptions(candidate.responses, options),
+    });
     return { token, error: null };
   } catch (error) {
     return {

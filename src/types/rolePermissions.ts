@@ -9,6 +9,7 @@ export type AdminTabKey =
   | "schedule.voos"
   | "schedule.disponibilidades"
   | "schedule.gerador"
+  | "schedule.projecoes"
   | "schedule.configuracoes"
   | "students"
   | "reports"
@@ -216,6 +217,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "schedule.voos": "Escala › Voos",
   "schedule.disponibilidades": "Escala › Disponibilidades",
   "schedule.gerador": "Escala › Gerador",
+  "schedule.projecoes": "Escala › Projeções",
   "schedule.configuracoes": "Escala › Configurações",
   "students": "Alunos",
   "reports": "Relatórios",

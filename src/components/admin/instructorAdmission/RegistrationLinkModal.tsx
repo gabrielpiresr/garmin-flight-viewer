@@ -1,6 +1,10 @@
 import { useState } from "react";
-import type { InstructorAdmissionCandidate } from "../../../types/instructorAdmission";
-import { generateInstructorRegistrationToken } from "../../../lib/instructorAdmissionDb";
+import type { InstructorAdmissionCandidate, RegistrationLinkOptions } from "../../../types/instructorAdmission";
+import { DEFAULT_REGISTRATION_LINK_OPTIONS } from "../../../types/instructorAdmission";
+import {
+  generateInstructorRegistrationToken,
+  registrationLinkOptionsFromResponses,
+} from "../../../lib/instructorAdmissionDb";
 
 export function RegistrationLinkModal({
   candidate,
@@ -14,12 +18,23 @@ export function RegistrationLinkModal({
   const [generating, setGenerating] = useState(false);
   const [token, setToken] = useState<string | null>(candidate.registrationToken ?? null);
   const [copied, setCopied] = useState(false);
+  const [options, setOptions] = useState<RegistrationLinkOptions>(() => {
+    const savedOptions = registrationLinkOptionsFromResponses(candidate.responses);
+    return {
+      ...DEFAULT_REGISTRATION_LINK_OPTIONS,
+      ...savedOptions,
+      allowCheckout: true,
+      chargeGround: true,
+      chargeEnrollment: true,
+      allowFirstFlightBooking: true,
+    };
+  });
   /** Mesmo formato do CRM: /cadastro?token=... */
   const cadastroUrl = token ? `${window.location.origin}/cadastro?token=${token}` : null;
 
   async function handleGenerate() {
     setGenerating(true);
-    const { token: nextToken, error } = await generateInstructorRegistrationToken(candidate.id);
+    const { token: nextToken, error } = await generateInstructorRegistrationToken(candidate.id, options);
     setGenerating(false);
     if (!error && nextToken) {
       setToken(nextToken);
@@ -27,9 +42,20 @@ export function RegistrationLinkModal({
     }
   }
 
-  function copyLink() {
-    if (!cadastroUrl) return;
-    void navigator.clipboard.writeText(cadastroUrl).then(() => {
+  function patchOptions(patch: Partial<RegistrationLinkOptions>) {
+    setOptions((current) => {
+      const next = { ...current, ...patch };
+      if (!next.chargeGround && !next.chargeEnrollment) next.allowCheckout = false;
+      if (patch.allowCheckout === true && !next.chargeGround && !next.chargeEnrollment) {
+        next.chargeGround = true;
+      }
+      return next;
+    });
+  }
+
+  function copyLink(url: string | null) {
+    if (!url) return;
+    void navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -54,6 +80,36 @@ export function RegistrationLinkModal({
             Link personalizado para{" "}
             <span className="font-medium text-slate-200">{candidate.name}</span> criar conta na plataforma.
           </p>
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Opções do link</p>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeGround}
+                onChange={(event) => patchOptions({ chargeGround: event.target.checked, allowCheckout: event.target.checked || options.chargeEnrollment })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento do Ground School</span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeEnrollment}
+                onChange={(event) => patchOptions({ chargeEnrollment: event.target.checked, allowCheckout: event.target.checked || options.chargeGround })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento da matrícula</span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.allowFirstFlightBooking}
+                onChange={(event) => patchOptions({ allowFirstFlightBooking: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir agendamento do Ground + primeiro voo</span>
+            </label>
+          </div>
           {candidate.userId && candidate.formFilledAt && (
             <div className="rounded-lg bg-emerald-900/20 px-3 py-2 text-xs text-emerald-400">
               ✓ Cadastro já realizado em{" "}
@@ -66,7 +122,7 @@ export function RegistrationLinkModal({
                 <input readOnly value={cadastroUrl} className={inputCls} />
                 <button
                   type="button"
-                  onClick={copyLink}
+                  onClick={() => copyLink(cadastroUrl)}
                   className={`rounded-lg border px-3 py-2 text-xs transition ${
                     copied
                       ? "border-emerald-600 bg-emerald-600/20 text-emerald-300"

@@ -84,6 +84,18 @@ type FunctionResponse = {
       }>;
     }>;
   } | null;
+  minDate?: string;
+  groundRegistration?: string | null;
+  ground?: PublicScheduleFlight;
+  nextSteps?: {
+    groundStartTime: string;
+    groundEndTime?: string;
+    flightStartTime: string;
+    flightDate: string;
+    presentationTime?: string;
+    cutoffTime?: string;
+    endTime?: string;
+  };
 };
 
 async function execute(payload: Record<string, unknown>): Promise<FunctionResponse> {
@@ -194,5 +206,49 @@ export async function cancelScheduleFlight(flightId: string, options?: { waivePe
     flight: response.flight,
     penaltyPct: response.penaltyPct ?? 0,
     penaltyHours: response.penaltyHours ?? 0,
+  };
+}
+
+export async function getInitialRegistrationSchedule(dateFrom: string, dateTo: string) {
+  try {
+    const response = await execute({ action: "getInitialRegistrationCalendar", dateFrom, dateTo });
+    return {
+      mode: response.mode,
+      minDate: response.minDate ?? dateFrom,
+      aircrafts: response.aircrafts ?? [],
+      flights: response.flights ?? [],
+      rules: response.rules,
+      blockedSlots: response.blockedSlots ?? [],
+      groundRegistration: response.groundRegistration ?? null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/a[cç][aã]o inv[aá]lida/i.test(message)) throw error;
+    const fallback = await getPublicSchedule(dateFrom, dateTo);
+    return {
+      mode: fallback.mode,
+      minDate: dateFrom,
+      aircrafts: fallback.aircrafts.filter((aircraft) => !aircraft.isWaitlist).slice(0, 2),
+      flights: fallback.flights,
+      rules: fallback.rules,
+      blockedSlots: fallback.blockedSlots ?? [],
+      groundRegistration: null,
+    };
+  }
+}
+
+export async function requestInitialRegistrationFlight(input: {
+  aircraftIdent: string;
+  flightDate: string;
+  startTime: string;
+}) {
+  const response = await execute({ action: "requestInitialRegistrationFlight", ...input });
+  if (!response.flight || !response.ground || !response.nextSteps) {
+    throw new Error("Agendamento inicial sem retorno.");
+  }
+  return {
+    flight: response.flight,
+    ground: response.ground,
+    nextSteps: response.nextSteps,
   };
 }
