@@ -62,7 +62,7 @@ test("matches the shared LastLink credit product by slug or accented title", () 
   assert.equal(communityMatchesProduct({ title: "teste de link" }, LASTLINK_CREDIT_PRODUCT_SLUG), false);
 });
 
-test("appends student checkout fields and proposal id to the LastLink URL", () => {
+test("appends only buyer email, phone and proposal id to the LastLink URL", () => {
   assert.equal(
     appendProposalQuery("https://lastlink.com/p/ABC/checkout-payment/", "prop-1"),
     "https://lastlink.com/p/ABC/checkout-payment/?gfv=prop-1",
@@ -77,11 +77,12 @@ test("appends student checkout fields and proposal id to the LastLink URL", () =
   });
   const parsed = new URL(url);
   assert.equal(parsed.searchParams.get("gfv"), "prop-1");
-  assert.equal(parsed.searchParams.get("name"), "Maria Silva");
   assert.equal(parsed.searchParams.get("email"), "maria@example.com");
-  assert.equal(parsed.searchParams.get("document"), "12345678900");
   assert.equal(parsed.searchParams.get("phone"), "5531999998888");
-  assert.equal(parsed.searchParams.get("cep"), "30123000");
+  assert.equal(parsed.searchParams.has("name"), false);
+  assert.equal(parsed.searchParams.has("document"), false);
+  assert.equal(parsed.searchParams.has("cep"), false);
+  assert.equal(parsed.searchParams.has("number"), false);
 });
 
 test("matches only the exact base offer name, not copies", () => {

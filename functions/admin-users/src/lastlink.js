@@ -149,12 +149,8 @@ function appendCheckoutQuery(url, params = {}) {
     parsed = new URL(safeUrl, LASTLINK_ORIGIN);
   }
   const fields = {
-    name: clean(params.name || params.buyer?.name),
     email: clean(params.email || params.buyer?.email),
-    document: digitsOnly(params.document || params.buyer?.document),
     phone: lastlinkPhone(params.phone || params.buyer?.phone),
-    cep: digitsOnly(params.cep || params.buyer?.cep),
-    number: clean(params.number || params.buyer?.number),
     gfv: clean(params.proposalId || params.gfv),
   };
   for (const [key, value] of Object.entries(fields)) {
