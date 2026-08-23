@@ -375,6 +375,24 @@ function useCoarsePointer(): boolean {
   return coarse;
 }
 
+function useRoute3DMobileMode(): boolean {
+  const [mobile, setMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const pointerQuery = window.matchMedia("(pointer: coarse)");
+    const widthQuery = window.matchMedia("(max-width: 768px)");
+    const update = () => setMobile(pointerQuery.matches || widthQuery.matches);
+    update();
+    pointerQuery.addEventListener("change", update);
+    widthQuery.addEventListener("change", update);
+    return () => {
+      pointerQuery.removeEventListener("change", update);
+      widthQuery.removeEventListener("change", update);
+    };
+  }, []);
+  return mobile;
+}
+
 function CanvasLifecycle() {
   const gl = useThree((s) => s.gl);
   useEffect(() => {
@@ -1544,6 +1562,8 @@ export function Route3DView({
       return new Set(FT_TYPES.filter((type) => !visible.has(type)));
     },
   );
+  const mobileOptimized = useRoute3DMobileMode();
+  const reducedScene = liteTerrain || navigationOptimized || mobileOptimized;
 
   const origin = useMemo(() => computeRouteOrigin(waypoints), [waypoints]);
   const spanM = useMemo(
@@ -1624,8 +1644,8 @@ export function Route3DView({
     });
   }, [exaggeration, metarFixes, mets, origin, terrain, toggles.metar]);
   const routeSamplePoints = useMemo(
-    () => sampleRouteCloudPoints(waypoints, liteTerrain || navigationOptimized),
-    [liteTerrain, navigationOptimized, waypoints],
+    () => sampleRouteCloudPoints(waypoints, reducedScene),
+    [reducedScene, waypoints],
   );
   const routeCloudSamples = useMemo(() => {
     if (!origin || !toggles.routeClouds || !routeForecast.length) return EMPTY_ROUTE_CLOUDS;
@@ -1729,7 +1749,7 @@ export function Route3DView({
     const timer = window.setTimeout(() => {
       void fetchTerrainGrid(
         terrainRoutePoints,
-        liteTerrain
+        reducedScene
           ? {
               signal: controller.signal,
               padDeg: 0.35,
@@ -1766,7 +1786,7 @@ export function Route3DView({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [liteTerrain, terrainRouteKey]);
+  }, [reducedScene, terrainRouteKey]);
 
   useEffect(() => {
     if (!terrain || terrainStyle !== "satellite") {
@@ -1783,7 +1803,7 @@ export function Route3DView({
     setSatError(null);
     void fetchSatelliteCanvas(
       terrain,
-      liteTerrain
+      reducedScene
         ? { signal: controller.signal, maxSatTiles: 12, maxZoom: 11 }
         : { signal: controller.signal, maxSatTiles: 48, maxZoom: 13 },
     )
@@ -1799,7 +1819,7 @@ export function Route3DView({
         }
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = liteTerrain ? 4 : 8;
+        tex.anisotropy = reducedScene ? 4 : 8;
         tex.flipY = true;
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -1825,7 +1845,7 @@ export function Route3DView({
       cancelled = true;
       controller.abort();
     };
-  }, [liteTerrain, terrain, terrainStyle]);
+  }, [reducedScene, terrain, terrainStyle]);
 
   useEffect(() => {
     if (!shouldLoadAreaLayers || !terrain) {
@@ -1915,14 +1935,28 @@ export function Route3DView({
   const canvasHeightClass = canvasClassName ?? (isSection ? "min-h-0 flex-1" : "h-[480px]");
   const canvasGl = useMemo(
     () => ({
-      antialias: !navigationOptimized,
+      antialias: !reducedScene,
       alpha: false,
-      powerPreference: "default" as const,
+      powerPreference: reducedScene ? ("low-power" as const) : ("default" as const),
       stencil: false,
     }),
-    [navigationOptimized],
+    [reducedScene],
   );
-  const canvasDpr = navigationOptimized ? 1 : ([1, 1.25] as [number, number]);
+  const canvasDpr = reducedScene ? 1 : ([1, 1.25] as [number, number]);
+  const sectionStatusLabel =
+    terrainLoading
+      ? "Relevo..."
+      : satLoading
+        ? "Satelite..."
+        : areaLoading
+          ? "Area..."
+          : metarLoading
+            ? "METAR..."
+            : routeWxLoading
+              ? "Nuvens..."
+              : terrainError || satError || metarError || routeWxError
+                ? "Aviso"
+                : "";
 
   const typeFilters =
     toggles.airspaces && presentAirspaceTypes.length > 0 ? (
@@ -2072,10 +2106,13 @@ export function Route3DView({
         </div>
         {isSection ? (
           <div className="flex flex-wrap items-center gap-2">
-            {terrainLoading ? <span className="text-[10px] text-cyan-300/80">Relevo…</span> : null}
-            {satLoading ? <span className="text-[10px] text-cyan-300/80">Satélite…</span> : null}
-            {metarLoading ? <span className="text-[10px] text-cyan-300/80">METAR…</span> : null}
-            {routeWxLoading ? <span className="text-[10px] text-cyan-300/80">Nuvens…</span> : null}
+            <span
+              className={`min-w-[4.75rem] text-right text-[10px] ${
+                sectionStatusLabel === "Aviso" ? "text-amber-300/90" : "text-cyan-300/80"
+              } ${sectionStatusLabel ? "" : "opacity-0"}`}
+            >
+              {sectionStatusLabel || "Pronto"}
+            </span>
             <button
               type="button"
               className="rounded-lg border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100"
@@ -2348,7 +2385,7 @@ export function Route3DView({
                 interactionPaused={false}
                 metarStations={metarStations}
                 routeCloudSamples={routeCloudSamples}
-                skipRouteCloudMid={liteTerrain || navigationOptimized}
+                skipRouteCloudMid={reducedScene}
               />
             </Canvas>
             </CanvasErrorBoundary>

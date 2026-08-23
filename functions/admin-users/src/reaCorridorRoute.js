@@ -845,6 +845,7 @@ function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent) {
       const originTma = anchoredToLocalTma(pos, componentSegs);
       const localTma = destTma || originTma;
       if (!localTma) continue;
+      if (rides > 0 && originTma && !destTma) continue;
       const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
         skipProgress: destTma && rides > 0,
       });
@@ -1277,6 +1278,7 @@ function buildFplRmkText(waypoints, legCorridors) {
     seenCorridors.add(clean);
     corridorNames.push(clean);
   }
+  if (corridorNames.length === 0) return "AD CFM";
   const tglAerodromes = [];
   const seenTgl = new Set();
   for (const wp of waypoints.slice(1, Math.max(1, waypoints.length - 1))) {

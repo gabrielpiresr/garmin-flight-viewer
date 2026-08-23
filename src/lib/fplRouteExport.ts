@@ -390,6 +390,7 @@ export function buildFplRmkText(
     seenCorridors.add(clean);
     corridorNames.push(clean);
   }
+  if (corridorNames.length === 0) return "AD CFM";
 
   const tglAerodromes: string[] = [];
   const seenTgl = new Set<string>();

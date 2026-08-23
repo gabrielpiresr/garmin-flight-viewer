@@ -153,6 +153,7 @@ type NavItem = {
 };
 
 const SELECTED_NAV_CLASS = "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
+const ADMIN_MOBILE_PRIMARY_NAV: AdminSection[] = ["home", "schedule", "students", "planejamento"];
 
 const NAV_ITEMS: NavItem[] = [
   {
@@ -874,6 +875,20 @@ export function AdminLayout() {
     () => NAV_ITEMS.filter((item) => canTab(item.id as AdminTabKey)),
     [canTab],
   );
+  const navById = useMemo(() => new Map(visibleNavItems.map((item) => [item.id, item])), [visibleNavItems]);
+  const mobilePrimaryItems = useMemo(
+    () => ADMIN_MOBILE_PRIMARY_NAV.map((id) => navById.get(id)).filter((item): item is NavItem => Boolean(item)),
+    [navById],
+  );
+  const mobilePrimaryIds = useMemo(
+    () => new Set<AdminSection>(mobilePrimaryItems.map((item) => item.id)),
+    [mobilePrimaryItems],
+  );
+  const mobileMoreItems = useMemo(
+    () => visibleNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
+    [mobilePrimaryIds, visibleNavItems],
+  );
+  const isMobileMoreActive = !mobilePrimaryIds.has(section);
 
   // Filtra sub-tabs de cada seção
   const visibleFleetTabs = useMemo(
@@ -910,6 +925,7 @@ export function AdminLayout() {
   const [settingsTab, setSettingsTab] = useState<SettingsSubTab>(() => resolveRouteId(SETTINGS_ROUTES, "rules"));
   const [atualizacoesTab, setAtualizacoesTab] = useState<AtualizacoesSubTab>(() => resolveRouteId(ATUALIZACOES_ROUTES, "agendamentos"));
   const [planejamentoEditorOpen, setPlanejamentoEditorOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === section)!;
   const pageTitle = resolveAdminPageTitle(
@@ -941,6 +957,7 @@ export function AdminLayout() {
   }, []);
 
   function openSection(target: AdminSection) {
+    setMobileMoreOpen(false);
     if (target === "fleet") { setSection(target, { path: pathForRoute(FLEET_ROUTES, fleetTab) }); return; }
     if (target === "schedule") { setSection(target, { path: pathForRoute(SCHEDULE_ROUTES, scheduleTab) }); return; }
     if (target === "reports") { setSection(target, { path: pathForRoute(REPORTS_ROUTES, reportsTab) }); return; }
@@ -1355,28 +1372,74 @@ export function AdminLayout() {
           )}
         </main>
 
+        {mobileMoreOpen && !(section === "planejamento" && planejamentoEditorOpen) ? (
+          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden" onClick={() => setMobileMoreOpen(false)}>
+            <div
+              className="absolute inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] max-h-[65vh] overflow-y-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-slate-950"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Mais</p>
+                  <p className="text-sm font-semibold text-slate-100">Outras áreas do admin</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileMoreOpen(false)}
+                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+                >
+                  Fechar
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {mobileMoreItems.map((item) => {
+                  const isActive = section === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => openSection(item.id)}
+                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
+                        isActive
+                          ? SELECTED_NAV_CLASS
+                          : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                      }`}
+                    >
+                      <span className="shrink-0">{item.icon}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{item.label}</span>
+                        <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <nav
           className={`fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden ${
             section === "planejamento" && planejamentoEditorOpen ? "hidden" : ""
           }`}
         >
-          <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
+          <div className="grid grid-cols-5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur">
             {permissionsLoading ? (
-              Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex min-w-[4.75rem] flex-1 flex-col items-center gap-1.5 px-2 py-2">
+              Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex min-w-0 flex-col items-center gap-1.5 px-2 py-2">
                   <div className="h-4 w-4 animate-pulse rounded bg-slate-800" />
                   <div className="h-2 w-10 animate-pulse rounded bg-slate-800" />
                 </div>
               ))
-            ) : visibleNavItems.map((item) => {
+            ) : mobilePrimaryItems.map((item) => {
               const isActive = section === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => openSection(item.id)}
-                  className={`flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-xl px-2 py-2 text-[10px] font-medium transition ${
-                    isActive ? "bg-emerald-500/10 text-emerald-400" : "text-slate-500 hover:text-slate-300"
+                  className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition ${
+                    isActive ? "school-nav-active" : "text-slate-500 hover:text-slate-300"
                   }`}
                 >
                   <span className="h-4 w-4">{item.icon}</span>
@@ -1384,6 +1447,23 @@ export function AdminLayout() {
                 </button>
               );
             })}
+            {!permissionsLoading ? (
+              <button
+                type="button"
+                onClick={() => setMobileMoreOpen((open) => !open)}
+                aria-expanded={mobileMoreOpen}
+                className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-medium transition ${
+                  isMobileMoreActive || mobileMoreOpen ? "school-nav-active" : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                <span className="h-4 w-4">
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                    <path d="M3.5 8.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6.5 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6.5 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3z" />
+                  </svg>
+                </span>
+                <span>Mais</span>
+              </button>
+            ) : null}
           </div>
         </nav>
       </div>

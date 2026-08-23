@@ -47,7 +47,7 @@ export function RouteNotamInfoPanel({
   const active = hits.find((hit) => hit.id === activeId) || hits[0];
   if (!active) return null;
   const notam = active.notam;
-  const aisweb = aiswebNotamUrl(notam.icao);
+  const aisweb = aiswebNotamUrl(notam.icao, notam.number);
 
   return (
     <aside

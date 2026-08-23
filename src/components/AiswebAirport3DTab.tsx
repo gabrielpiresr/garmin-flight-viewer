@@ -781,7 +781,16 @@ function WindArrow({ airport, origin, terrain, exaggeration }: { airport: Aisweb
   const to = destinationPoint(lat, lng, (parsed.windDirDeg + 180) % 360, VIEW_RADIUS_M * 0.019);
   const a = lngLatToEnu(from.lat, from.lng, origin);
   const b = lngLatToEnu(to.lat, to.lng, origin);
-  const yaw = Math.atan2(b.x - a.x, b.z - a.z);
+  const start = new THREE.Vector3(a.x, y, a.z);
+  const end = new THREE.Vector3(b.x, y, b.z);
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  if (length < 1) return null;
+  const quaternion = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction.clone().normalize(),
+  );
+  const mid = start.clone().add(end).multiplyScalar(0.5);
   const showTooltip = hovered || pinned;
   const handlePointerOver = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
@@ -794,7 +803,10 @@ function WindArrow({ airport, origin, terrain, exaggeration }: { airport: Aisweb
   };
   return (
     <group>
-      <Line points={[[a.x, y, a.z], [b.x, y, b.z]]} color="#38bdf8" lineWidth={2} />
+      <mesh position={mid} quaternion={quaternion}>
+        <cylinderGeometry args={[3.5, 3.5, length, 10]} />
+        <meshStandardMaterial color="#38bdf8" emissive="#0284c7" emissiveIntensity={0.4} roughness={0.35} />
+      </mesh>
       <mesh
         position={[(a.x + b.x) / 2, y, (a.z + b.z) / 2]}
         onPointerOver={handlePointerOver}
@@ -808,8 +820,8 @@ function WindArrow({ airport, origin, terrain, exaggeration }: { airport: Aisweb
         <meshBasicMaterial color="#38bdf8" transparent opacity={0.002} depthWrite={false} />
       </mesh>
       <mesh
-        position={[b.x, y, b.z]}
-        rotation={[Math.PI / 2, 0, -yaw]}
+        position={end}
+        quaternion={quaternion}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
         onClick={(event) => {
@@ -817,7 +829,7 @@ function WindArrow({ airport, origin, terrain, exaggeration }: { airport: Aisweb
           setPinned((value) => !value);
         }}
       >
-        <coneGeometry args={[9, 22, 3]} />
+        <coneGeometry args={[15, 34, 12]} />
         <meshStandardMaterial color="#7dd3fc" emissive="#0284c7" emissiveIntensity={0.45} roughness={0.4} />
       </mesh>
       {showTooltip ? (
@@ -1101,6 +1113,7 @@ function AirportScene({
 type Basemap3D = "terrain" | "satellite";
 
 export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }) {
+  const coarsePointer = useCoarsePointer();
   const [terrain, setTerrain] = useState<TerrainGrid | null>(null);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const [runwayRecords, setRunwayRecords] = useState<RunwayRecord[]>([]);
@@ -1127,7 +1140,10 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
   const lng = finiteNumber(airport.rotaer?.lng);
   const center = lat != null && lng != null ? { lat, lng } : null;
   const obstacles = useMemo(() => (center ? parseObstacles(airport.rotaer, center) : []), [airport.rotaer, center]);
-  const sceneObstacles = useMemo(() => obstacles.slice(0, MAX_RENDERED_OBSTACLES), [obstacles]);
+  const sceneObstacles = useMemo(
+    () => obstacles.slice(0, coarsePointer ? 36 : MAX_RENDERED_OBSTACLES),
+    [coarsePointer, obstacles],
+  );
   const listedObstacles = useMemo(() => obstacles.slice(0, MAX_LISTED_OBSTACLES), [obstacles]);
   const runways = useMemo(() => {
     const precise = runwayRecords.map(runwayFromRecord).filter(Boolean) as SceneRunway[];
@@ -1207,12 +1223,16 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
     let cancelled = false;
     const controller = new AbortController();
     setSatLoading(true);
-    void fetchSatelliteCanvas(terrain, { signal: controller.signal, maxSatTiles: 120, maxZoom: 15 })
+    void fetchSatelliteCanvas(terrain, {
+      signal: controller.signal,
+      maxSatTiles: coarsePointer ? 48 : 120,
+      maxZoom: coarsePointer ? 14 : 15,
+    })
       .then((canvas) => {
         if (cancelled || !canvas) return;
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 8;
+        tex.anisotropy = coarsePointer ? 2 : 8;
         tex.flipY = true;
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -1230,7 +1250,7 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
       cancelled = true;
       controller.abort();
     };
-  }, [basemap, terrain]);
+  }, [basemap, coarsePointer, terrain]);
 
   if (!center) {
     return (
@@ -1242,11 +1262,16 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
 
   return (
     <div className="space-y-3">
-      <div className="relative h-[min(72vh,760px)] min-h-[460px] overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950">
+      <div className="relative h-[min(72dvh,760px)] min-h-[380px] overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950 sm:min-h-[460px]">
         <Airport3DCanvasErrorBoundary resetKey={canvasResetKey}>
           <Canvas
-            gl={{ antialias: true, alpha: false, powerPreference: "high-performance", stencil: false }}
-            dpr={[1, 1.5]}
+            gl={{
+              antialias: !coarsePointer,
+              alpha: false,
+              powerPreference: coarsePointer ? "low-power" : "high-performance",
+              stencil: false,
+            }}
+            dpr={coarsePointer ? 1 : [1, 1.5]}
             camera={{ fov: 48, near: 2, far: 220000, position: [12000, 7000, 14000] }}
             style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
             className="h-full w-full touch-none"
@@ -1263,13 +1288,13 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
             />
           </Canvas>
         </Airport3DCanvasErrorBoundary>
-        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-xs text-slate-200 shadow-xl">
+        <div className="pointer-events-none absolute left-2 right-2 top-2 z-10 rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-xs text-slate-200 shadow-xl sm:left-3 sm:right-auto sm:top-3 sm:max-w-[min(58%,28rem)]">
           <p className="font-semibold text-white">{airport.icao} · 10 NM</p>
           <p className="text-[11px] text-slate-400">
             {runways.length} pista(s) · {sceneObstacles.length}/{obstacles.length} obstáculo(s) · {formatWind(airport)}
           </p>
         </div>
-        <div className="absolute right-3 top-3 z-10 flex flex-wrap justify-end gap-1.5">
+        <div className="absolute right-2 top-[4.6rem] z-10 flex max-w-[calc(100%-1rem)] flex-wrap justify-end gap-1.5 sm:right-3 sm:top-3 sm:max-w-[40%]">
           {([
             ["terrain", "Terreno"],
             ["satellite", "Satélite"],
@@ -1315,7 +1340,7 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
         </div>
         {simulation.enabled ? (
           <div
-            className="absolute bottom-3 left-3 z-10 w-[min(24rem,calc(100%-1.5rem))] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 text-xs text-slate-200 shadow-2xl backdrop-blur"
+            className="absolute bottom-2 left-2 right-2 z-10 max-h-[45%] overflow-y-auto rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 text-xs text-slate-200 shadow-2xl backdrop-blur sm:bottom-3 sm:left-3 sm:right-auto sm:max-h-[70%] sm:w-[min(24rem,calc(100%-1.5rem))]"
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
           >
@@ -1493,7 +1518,7 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
           </div>
         ) : null}
         {selectedMetar ? (
-          <div className="absolute right-3 top-16 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 text-xs text-slate-200 shadow-2xl">
+          <div className="absolute left-2 right-2 top-[7.4rem] z-10 max-h-[40%] overflow-y-auto rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 text-xs text-slate-200 shadow-2xl sm:left-auto sm:right-3 sm:top-16 sm:max-w-[min(22rem,calc(100%-1.5rem))]">
             <div className="mb-1 flex items-start justify-between gap-2">
               <p className="font-semibold text-white">{selectedMetar.icao} · METAR 3D</p>
               <button

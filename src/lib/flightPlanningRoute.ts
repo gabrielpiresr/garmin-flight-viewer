@@ -266,6 +266,21 @@ export function snapWaypointsToAerodromes(
 }
 
 /** NexAtlas omits dep/arr — prepend/append airport coordinates when available. */
+function endpointWaypoint(
+  point: { lat: number; lng: number; label: string },
+  kind: "origin" | "destination",
+  previous?: FlightPlanWaypoint,
+): FlightPlanWaypoint {
+  return {
+    ...(previous ?? {}),
+    raw: point.label,
+    lat: point.lat,
+    lng: point.lng,
+    label: point.label,
+    kind,
+  };
+}
+
 export function buildFullRouteWaypoints(
   routeText: string,
   origin?: { lat: number; lng: number; label: string } | null,
@@ -273,34 +288,24 @@ export function buildFullRouteWaypoints(
 ): FlightPlanWaypoint[] {
   const mid = parseFplRouteText(routeText);
   const out: FlightPlanWaypoint[] = [];
+  let firstMidIndex = 0;
 
   if (origin && Number.isFinite(origin.lat) && Number.isFinite(origin.lng)) {
     const first = mid[0];
     const nearFirst = first ? haversineM(origin, first) <= NEAR_ENDPOINT_M : false;
-    if (!nearFirst) {
-      out.push({
-        raw: origin.label,
-        lat: origin.lat,
-        lng: origin.lng,
-        label: origin.label,
-        kind: "origin",
-      });
-    }
+    out.push(endpointWaypoint(origin, "origin", nearFirst ? first : undefined));
+    if (nearFirst) firstMidIndex = 1;
   }
 
-  out.push(...mid);
+  out.push(...mid.slice(firstMidIndex));
 
   if (destination && Number.isFinite(destination.lat) && Number.isFinite(destination.lng)) {
     const last = out[out.length - 1];
     const nearLast = last ? haversineM(destination, last) <= NEAR_ENDPOINT_M : false;
-    if (!nearLast) {
-      out.push({
-        raw: destination.label,
-        lat: destination.lat,
-        lng: destination.lng,
-        label: destination.label,
-        kind: "destination",
-      });
+    if (nearLast && last) {
+      out[out.length - 1] = endpointWaypoint(destination, "destination", last);
+    } else {
+      out.push(endpointWaypoint(destination, "destination"));
     }
   }
 
@@ -559,6 +564,8 @@ export function findRouteInsertHint(
   }
   if (
     nearestIdx === waypoints.length - 1 &&
+    best.fromIndex === waypoints.length - 2 &&
+    best.t > 0.82 &&
     distLast < best.distanceM * 0.55 &&
     distLast < 1852 * 8
   ) {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { lookupAiswebIcao, searchAiswebAerodromes } from "../../lib/aiswebDb";
 import { listAerodromes, type Aerodrome, type AerodromeMapFilter, EMPTY_AERODROME_MAP_FILTER } from "../../lib/aerodromesDb";
 import { parseFieldElevationFt } from "../../lib/fieldElevation";
@@ -96,6 +96,7 @@ import { sendFplExportEmail } from "../../lib/notificationsDb";
 import { FlightBriefingAiPanel } from "../FlightBriefingAiPanel";
 import { AirspaceRouteList } from "../AirspaceRouteList";
 import { loadNotamsByLocation } from "../../lib/airspaceNotams";
+import { aiswebNotamUrl } from "../../lib/aiswebLinks";
 import {
   buildRouteNotamHits,
   collectRouteNotamLocations,
@@ -1325,6 +1326,57 @@ export function PlanejamentoTab({
     setGenerated(false);
   }
 
+  const routeTableDragRef = useRef<number | null>(null);
+
+  function routeTableIndexFromClientY(y: number, fallback: number, root: HTMLTableSectionElement | null) {
+    if (!root) return fallback;
+    let over = fallback;
+    let best = Infinity;
+    root.querySelectorAll<HTMLTableRowElement>("tr[data-route-index]").forEach((row) => {
+      const idx = Number(row.dataset.routeIndex);
+      if (!Number.isFinite(idx)) return;
+      const rect = row.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) {
+        over = idx;
+        best = 0;
+        return;
+      }
+      const d = Math.abs(y - (rect.top + rect.bottom) / 2);
+      if (d < best) {
+        best = d;
+        over = idx;
+      }
+    });
+    return over;
+  }
+
+  function onRouteTableGripPointerDown(event: PointerEvent<HTMLButtonElement>, index: number) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    routeTableDragRef.current = index;
+    setDragIndex(index);
+    setDragOverIndex(index);
+  }
+
+  function onRouteTableGripPointerMove(event: PointerEvent<HTMLButtonElement>) {
+    const from = routeTableDragRef.current;
+    if (from == null) return;
+    event.preventDefault();
+    const tbody = event.currentTarget.closest("tbody");
+    setDragOverIndex(routeTableIndexFromClientY(event.clientY, from, tbody));
+  }
+
+  function onRouteTableGripPointerUp(event: PointerEvent<HTMLButtonElement>) {
+    const from = routeTableDragRef.current;
+    const tbody = event.currentTarget.closest("tbody");
+    const to = from == null ? null : routeTableIndexFromClientY(event.clientY, from, tbody);
+    routeTableDragRef.current = null;
+    if (from != null && to != null) reorderWaypoint(from, to);
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
+
   function applyWaypointAltitude(index: number, altitudeFt: number) {
     const nextAlt = Math.round(altitudeFt);
     setWaypoints((prev) =>
@@ -2466,28 +2518,23 @@ export function PlanejamentoTab({
                       return (
                         <tr
                           key={`side-${wp.lat}-${wp.lng}-${idx}`}
-                          draggable
-                          onDragStart={() => setDragIndex(idx)}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            setDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            if (dragIndex != null) reorderWaypoint(dragIndex, idx);
-                            setDragIndex(null);
-                            setDragOverIndex(null);
-                          }}
-                          onDragEnd={() => {
-                            setDragIndex(null);
-                            setDragOverIndex(null);
-                          }}
+                          data-route-index={idx}
                           className={`border-t border-slate-800/80 ${
                             dragOverIndex === idx ? "bg-emerald-500/10" : ""
                           } ${dragIndex === idx ? "opacity-50" : ""}`}
                         >
-                          <td className="cursor-grab px-1 py-1 active:cursor-grabbing" title="Arrastar">
-                            <IconGrip />
+                          <td className="px-1 py-1" title="Arrastar">
+                            <button
+                              type="button"
+                              className="inline-flex h-8 w-7 cursor-grab touch-none select-none items-center justify-center rounded-md text-slate-500 active:cursor-grabbing"
+                              aria-label={`Arrastar ${waypointDisplayName(wp)}`}
+                              onPointerDown={(event) => onRouteTableGripPointerDown(event, idx)}
+                              onPointerMove={onRouteTableGripPointerMove}
+                              onPointerUp={onRouteTableGripPointerUp}
+                              onPointerCancel={onRouteTableGripPointerUp}
+                            >
+                              <IconGrip />
+                            </button>
                           </td>
                           <td className="max-w-[5.5rem] truncate px-1.5 py-1 font-semibold text-slate-100">
                             {waypointDisplayName(wp)}
@@ -2705,28 +2752,23 @@ export function PlanejamentoTab({
                     return (
                       <tr
                         key={row.key}
-                        draggable
-                        onDragStart={() => setDragIndex(idx)}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          setDragOverIndex(idx);
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          if (dragIndex != null) reorderWaypoint(dragIndex, idx);
-                          setDragIndex(null);
-                          setDragOverIndex(null);
-                        }}
-                        onDragEnd={() => {
-                          setDragIndex(null);
-                          setDragOverIndex(null);
-                        }}
+                        data-route-index={idx}
                         className={`border-t border-slate-800/80 ${
                           dragOverIndex === idx ? "bg-emerald-500/10" : ""
                         } ${dragIndex === idx ? "opacity-50" : ""}`}
                       >
-                        <td className="cursor-grab px-2 py-1.5 active:cursor-grabbing" title="Arrastar">
-                          <IconGrip />
+                        <td className="px-2 py-1.5" title="Arrastar">
+                          <button
+                            type="button"
+                            className="inline-flex h-8 w-7 cursor-grab touch-none select-none items-center justify-center rounded-md text-slate-500 active:cursor-grabbing"
+                            aria-label={`Arrastar ${waypointDisplayName(wp)}`}
+                            onPointerDown={(event) => onRouteTableGripPointerDown(event, idx)}
+                            onPointerMove={onRouteTableGripPointerMove}
+                            onPointerUp={onRouteTableGripPointerUp}
+                            onPointerCancel={onRouteTableGripPointerUp}
+                          >
+                            <IconGrip />
+                          </button>
                         </td>
                         <td className="px-2 py-1.5 text-slate-500">{idx + 1}</td>
                         <td className="px-2 py-1.5 font-semibold text-slate-100">
@@ -3295,6 +3337,23 @@ export function PlanejamentoTab({
                                 {expanded ? "Recolher" : "Ler na íntegra"}
                               </button>
                             ) : null}
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="rounded-lg border border-amber-300/35 bg-amber-300/10 px-2.5 py-1.5 text-[11px] font-semibold text-amber-50 transition hover:bg-amber-300/20"
+                                onClick={() => openBriefingAirportNotams(card.icao, card.number)}
+                              >
+                                Ver NOTAM
+                              </button>
+                              <a
+                                href={aiswebNotamUrl(card.icao, card.number)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded-lg border border-amber-300/35 bg-slate-950/35 px-2.5 py-1.5 text-[11px] font-semibold text-amber-50 transition hover:bg-slate-900"
+                              >
+                                AISWEB
+                              </a>
+                            </div>
                           </article>
                         );
                       })}

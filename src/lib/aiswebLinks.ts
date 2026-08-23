@@ -14,10 +14,17 @@ export function aiswebAerodromeUrl(icao: string | null | undefined): string | nu
   return `${AISWEB_ORIGIN}/?i=aerodromos&codigo=${encodeURIComponent(code)}`;
 }
 
-export function aiswebNotamUrl(location?: string | null): string {
+export function aiswebNotamUrl(location?: string | null, notamNumber?: string | null): string {
   const code = fourLetterCode(location);
-  if (code) return `${AISWEB_ORIGIN}/?i=notam&icao=${encodeURIComponent(code)}`;
-  return `${AISWEB_ORIGIN}/?i=notam`;
+  const params = new URLSearchParams({ i: "notam" });
+  if (code) params.set("icao", code);
+  const number = String(notamNumber || "").trim();
+  if (number) {
+    params.set("notam", number);
+    params.set("numero", number);
+  }
+  const hash = number ? `#${encodeURIComponent(number.replace(/\s+/g, ""))}` : "";
+  return `${AISWEB_ORIGIN}/?${params.toString()}${hash}`;
 }
 
 export function aiswebAirspaceUrl(input: {

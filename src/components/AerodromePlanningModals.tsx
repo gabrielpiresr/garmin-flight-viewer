@@ -9,6 +9,7 @@ type PopupProps = {
   icao: string;
   fallbackName?: string;
   onAddToRoute?: () => void;
+  onRemoveFromRoute?: () => void;
   onOpenDetails?: (bundle: AiswebAirportBundle) => void;
   /** Chamado quando o popup fecha (para não abrir pick no mesmo clique). */
   onPopupClose?: () => void;
@@ -64,6 +65,7 @@ export function AerodromeMapPopupContent({
   icao,
   fallbackName,
   onAddToRoute,
+  onRemoveFromRoute,
   onOpenDetails,
 }: PopupProps) {
   const [bundle, setBundle] = useState<AiswebAirportBundle | null>(null);
@@ -172,6 +174,15 @@ export function AerodromeMapPopupContent({
             + Rota
           </button>
         ) : null}
+        {onRemoveFromRoute ? (
+          <button
+            type="button"
+            className="min-w-0 flex-1 rounded bg-rose-600 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-white hover:bg-rose-500"
+            onClick={onRemoveFromRoute}
+          >
+            Remover
+          </button>
+        ) : null}
         <button
           type="button"
           className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-white hover:bg-slate-700 disabled:opacity-40"
@@ -201,13 +212,13 @@ type SideProps = {
   onClose: () => void;
 };
 
-/** Painel lateral — full-screen no celular, ~45% no tablet/desktop. */
+/** Painel lateral — full-screen no celular, 80% em tablet/desktop compacto. */
 export function AerodromeDetailsSidePanel({ bundle, open, onClose }: SideProps) {
   if (!open || !bundle) return null;
   return (
     <div className="fixed inset-0 z-[900] flex justify-end bg-black/40" onClick={onClose}>
       <aside
-        className="flex h-full w-full max-w-full flex-col border-l border-slate-700 bg-slate-950 shadow-2xl sm:max-w-[min(100%,28rem)] lg:max-w-[45vw] lg:min-w-[320px]"
+        className="flex h-full w-full max-w-full flex-col border-l border-slate-700 bg-slate-950 shadow-2xl sm:w-[80vw] sm:max-w-[80vw] lg:w-[80vw] lg:max-w-[80vw] xl:w-[45vw] xl:min-w-[320px] xl:max-w-[64rem]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">

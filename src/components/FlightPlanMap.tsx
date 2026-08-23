@@ -1029,6 +1029,11 @@ const PLAN_POPUP = {
   closeOnEscapeKey: true,
 } as const;
 
+function waypointIcaoForPopup(wp: FlightPlanWaypoint | undefined): string | null {
+  const raw = `${wp?.raw || wp?.label || ""}`.trim().toUpperCase();
+  return /^[A-Z]{4}$/.test(raw) ? raw : null;
+}
+
 function AerodromePlanningPopup({
   icao,
   fallbackName,
@@ -3360,23 +3365,33 @@ export function FlightPlanMap({
                 ? destLabel || wp?.label || "ARR"
                 : wp?.reaName || wp?.label || String(idx);
             const color = isFirst ? "#34d399" : isLast ? "#f472b6" : "#38bdf8";
+            const routeIcao = waypointIcaoForPopup(wp);
             return (
               <Marker key={`wp-${idx}-${pos[0]}-${pos[1]}`} position={pos} icon={pointIcon(label, color)}>
                 {interactive && onWaypointRemove ? (
                   <Popup {...PLAN_POPUP}>
-                    <div className="min-w-[120px] space-y-1.5 text-slate-900">
-                      <p className="text-[11px] font-semibold">{label}</p>
-                      <p className="font-mono text-[10px] text-slate-500">
-                        {formatCompactAviationCoord(pos[0]!, pos[1]!)}
-                      </p>
-                      <button
-                        type="button"
-                        className="w-full rounded-md bg-rose-600 px-2 py-1 text-left text-[11px] font-semibold text-white hover:bg-rose-500"
-                        onClick={() => onWaypointRemove(idx)}
-                      >
-                        Excluir ponto
-                      </button>
-                    </div>
+                    {routeIcao ? (
+                      <AerodromeMapPopupContent
+                        icao={routeIcao}
+                        fallbackName={label}
+                        onOpenDetails={onAerodromeDetails}
+                        onRemoveFromRoute={() => onWaypointRemove(idx)}
+                      />
+                    ) : (
+                      <div className="min-w-[120px] space-y-1.5 text-slate-900">
+                        <p className="text-[11px] font-semibold">{label}</p>
+                        <p className="font-mono text-[10px] text-slate-500">
+                          {formatCompactAviationCoord(pos[0]!, pos[1]!)}
+                        </p>
+                        <button
+                          type="button"
+                          className="w-full rounded-md bg-rose-600 px-2 py-1 text-left text-[11px] font-semibold text-white hover:bg-rose-500"
+                          onClick={() => onWaypointRemove(idx)}
+                        >
+                          Excluir ponto
+                        </button>
+                      </div>
+                    )}
                   </Popup>
                 ) : null}
               </Marker>

@@ -26,7 +26,7 @@ import type {
 } from "../types/aisweb";
 import { Tabs } from "./ui/Tabs";
 import { AiswebSatelliteTab } from "./AiswebSatelliteTab";
-import { aiswebAerodromeUrl } from "../lib/aiswebLinks";
+import { aiswebAerodromeUrl, aiswebNotamUrl } from "../lib/aiswebLinks";
 
 type AirportMapStyle = "satellite" | "roads" | "terrain";
 type AirspaceLayerId = "tma" | "ctr" | "atz" | "fir";
@@ -1415,6 +1415,11 @@ export function AiswebAirportDetailTabs({
     setSubTab(initialSubTab);
   }, [airport.icao, initialSubTab, focusKey]);
 
+  const externalAiswebUrl =
+    subTab === "notams" || highlightNotamNumber
+      ? aiswebNotamUrl(airport.icao, highlightNotamNumber || undefined)
+      : aiswebAerodromeUrl(airport.icao);
+
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
     { id: "3d" as const, label: "3D", icon: <IconMap /> },
@@ -1439,9 +1444,9 @@ export function AiswebAirportDetailTabs({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs items={items} value={subTab} onChange={setSubTab} ariaLabel="Subabas AISWEB" accent="cyan" />
-        {aiswebAerodromeUrl(airport.icao) ? (
+        {externalAiswebUrl ? (
           <a
-            href={aiswebAerodromeUrl(airport.icao)!}
+            href={externalAiswebUrl}
             target="_blank"
             rel="noreferrer"
             className="shrink-0 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20"

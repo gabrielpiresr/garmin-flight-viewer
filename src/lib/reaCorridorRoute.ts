@@ -683,6 +683,7 @@ function snapCorridorPair(
       const originTma = anchoredToLocalTma(pos, componentSegs);
       const localTma = destTma || originTma;
       if (!localTma) continue;
+      if (rides > 0 && originTma && !destTma) continue;
       const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
         skipProgress: Boolean(destTma && rides > 0),
       });
