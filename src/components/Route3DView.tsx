@@ -362,6 +362,69 @@ function CameraRig({ spanM, resetNonce }: { spanM: number; resetNonce: number })
   return null;
 }
 
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia("(pointer: coarse)");
+    const update = () => setCoarse(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return coarse;
+}
+
+function CanvasLifecycle() {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const previousTouchAction = canvas.style.touchAction;
+    canvas.style.touchAction = "none";
+    const onLost = (event: Event) => {
+      event.preventDefault();
+    };
+    canvas.addEventListener("webglcontextlost", onLost, false);
+    return () => {
+      canvas.style.touchAction = previousTouchAction;
+      canvas.removeEventListener("webglcontextlost", onLost, false);
+    };
+  }, [gl]);
+  return null;
+}
+
+function RouteOrbitControls({ spanM, interactionPaused }: { spanM: number; interactionPaused: boolean }) {
+  const coarsePointer = useCoarsePointer();
+  return (
+    <OrbitControls
+      makeDefault
+      enableDamping={!interactionPaused}
+      dampingFactor={coarsePointer ? 0.12 : 0.08}
+      enablePan
+      enableRotate
+      enableZoom
+      zoomToCursor={!coarsePointer}
+      zoomSpeed={coarsePointer ? 0.62 : 0.85}
+      panSpeed={coarsePointer ? 0.72 : 1.1}
+      rotateSpeed={coarsePointer ? 0.56 : 0.85}
+      screenSpacePanning={coarsePointer}
+      mouseButtons={{
+        LEFT: THREE.MOUSE.PAN,
+        MIDDLE: THREE.MOUSE.ROTATE,
+        RIGHT: THREE.MOUSE.ROTATE,
+      }}
+      touches={{
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN,
+      }}
+      minPolarAngle={0.04}
+      maxPolarAngle={Math.PI / 2 - 0.002}
+      minDistance={40}
+      maxDistance={spanM * 8}
+    />
+  );
+}
+
 /** Evita clipping e câmera abaixo do relevo, sem impedir deitar o olhar. */
 function OrbitGuard({
   spanM,
@@ -884,32 +947,7 @@ function SceneContent({
       <CameraRig spanM={spanM} resetNonce={resetNonce} />
       <OrbitGuard spanM={spanM} terrain={terrain} origin={origin} exaggeration={exaggeration} />
       <TerrainZoom terrain={terrain} origin={origin} exaggeration={exaggeration} spanM={spanM} />
-      <OrbitControls
-        makeDefault
-        enableDamping={!interactionPaused}
-        dampingFactor={0.08}
-        enablePan
-        enableRotate
-        enableZoom
-        zoomToCursor
-        zoomSpeed={0.85}
-        panSpeed={1.1}
-        rotateSpeed={0.85}
-        screenSpacePanning={false}
-        mouseButtons={{
-          LEFT: THREE.MOUSE.PAN,
-          MIDDLE: THREE.MOUSE.ROTATE,
-          RIGHT: THREE.MOUSE.ROTATE,
-        }}
-        touches={{
-          ONE: THREE.TOUCH.PAN,
-          TWO: THREE.TOUCH.DOLLY_ROTATE,
-        }}
-        minPolarAngle={0.04}
-        maxPolarAngle={Math.PI / 2 - 0.002}
-        minDistance={40}
-        maxDistance={spanM * 8}
-      />
+      <RouteOrbitControls spanM={spanM} interactionPaused={interactionPaused} />
 
       {toggles.terrain && terrain ? (
         <>
@@ -1262,6 +1300,9 @@ function WorldLabel({
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const anchor = useRef<THREE.Group>(null);
+  const hiddenRef = useRef(false);
+  const hideVotesRef = useRef(0);
+  const showVotesRef = useRef(0);
   useFrame(({ camera }) => {
     const el = wrapRef.current;
     const group = anchor.current;
@@ -1290,8 +1331,28 @@ function WorldLabel({
         }
       }
     }
-    const next = hide ? "hidden" : "visible";
-    if (el.style.visibility !== next) el.style.visibility = next;
+    if (hide !== hiddenRef.current) {
+      if (hide) {
+        hideVotesRef.current += 1;
+        showVotesRef.current = 0;
+        if (hideVotesRef.current >= 3) {
+          hiddenRef.current = true;
+          el.style.visibility = "hidden";
+        }
+      } else {
+        showVotesRef.current += 1;
+        hideVotesRef.current = 0;
+        if (showVotesRef.current >= 5) {
+          hiddenRef.current = false;
+          el.style.visibility = "visible";
+        }
+      }
+    } else {
+      hideVotesRef.current = 0;
+      showVotesRef.current = 0;
+      const next = hiddenRef.current ? "hidden" : "visible";
+      if (el.style.visibility !== next) el.style.visibility = next;
+    }
   });
   return (
     <group ref={anchor} position={position}>
@@ -1312,6 +1373,7 @@ function WorldLabel({
             lineHeight: 1.25,
             fontWeight: 700,
             cursor: onClick ? "pointer" : undefined,
+            willChange: "transform",
           }}
           onClick={
             onClick
@@ -1488,6 +1550,14 @@ export function Route3DView({
     () => (origin ? routeSpanM(waypoints, origin) : 8_000),
     [origin, waypoints],
   );
+  const terrainRouteKey = useMemo(
+    () => waypoints.map((w) => `${w.lat.toFixed(5)},${w.lng.toFixed(5)}`).join("|"),
+    [waypoints],
+  );
+  const terrainRoutePoints = useMemo(
+    () => waypoints.map((w) => ({ lat: w.lat, lng: w.lng })),
+    [waypoints],
+  );
   const corridorVolumes = useMemo(() => uniqueCorridorVolumes(corridors), [corridors]);
   const shouldLoadAreaLayers = showAreaAirspaces || autoLoadAreaLayers;
   const enabledAreaLayerKindsList = useMemo(
@@ -1570,6 +1640,17 @@ export function Route3DView({
     () => routeSamplePoints.map((p) => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`).join("|"),
     [routeSamplePoints],
   );
+  const metarIcaoKey = useMemo(() => metarIcaos.join("|"), [metarIcaos]);
+  const runwayIcaoKey = useMemo(
+    () =>
+      [
+        ...visibleAerodromes.map((a) => a.icao.trim().toUpperCase()),
+        ...waypoints.map((w) => w.label.trim().toUpperCase()),
+      ]
+        .filter(Boolean)
+        .join("|"),
+    [visibleAerodromes, waypoints],
+  );
 
   useEffect(() => {
     if (!toggles.metar || !metarIcaos.length) {
@@ -1600,7 +1681,7 @@ export function Route3DView({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [metarIcaos, toggles.metar]);
+  }, [metarIcaoKey, toggles.metar]);
 
   useEffect(() => {
     if (!toggles.routeClouds || waypoints.length < 2 || !routeSampleKey) {
@@ -1634,7 +1715,7 @@ export function Route3DView({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [routeSampleKey, routeSamplePoints, toggles.routeClouds, waypoints]);
+  }, [routeSampleKey, toggles.routeClouds]);
 
   useEffect(() => {
     if (waypoints.length < 2) {
@@ -1647,7 +1728,7 @@ export function Route3DView({
     setTerrainError(null);
     const timer = window.setTimeout(() => {
       void fetchTerrainGrid(
-        waypoints.map((w) => ({ lat: w.lat, lng: w.lng })),
+        terrainRoutePoints,
         liteTerrain
           ? {
               signal: controller.signal,
@@ -1685,7 +1766,7 @@ export function Route3DView({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [liteTerrain, waypoints]);
+  }, [liteTerrain, terrainRouteKey]);
 
   useEffect(() => {
     if (!terrain || terrainStyle !== "satellite") {
@@ -1791,10 +1872,7 @@ export function Route3DView({
   }, [enabledAreaLayerKindsList, shouldLoadAreaLayers, terrain]);
 
   useEffect(() => {
-    const icaos = [
-      ...visibleAerodromes.map((a) => a.icao),
-      ...waypoints.map((w) => w.label),
-    ].filter(Boolean);
+    const icaos = runwayIcaoKey.split("|").filter(Boolean);
     if (!icaos.length) {
       setRunways([]);
       return;
@@ -1806,7 +1884,7 @@ export function Route3DView({
     return () => {
       cancelled = true;
     };
-  }, [visibleAerodromes, waypoints]);
+  }, [runwayIcaoKey]);
 
   const ready = waypoints.length >= 2 && totalDistanceNm > 0 && origin != null;
 
@@ -1988,7 +2066,7 @@ export function Route3DView({
           {!isSection ? <h3 className="text-sm font-semibold text-slate-100">Vista 3D</h3> : null}
           <span className="text-[10px] text-slate-500">
             {isSection
-              ? "Arraste · pinça zoom · dois dedos para orbitar"
+              ? "1 dedo gira · pinça aproxima · 2 dedos arrastam"
               : "Arraste o terreno · scroll do meio ou Shift+arraste para girar/inclinar"}
           </span>
         </div>
@@ -2242,21 +2320,10 @@ export function Route3DView({
               dpr={canvasDpr}
               camera={{ fov: 50, near: 10, far: 500_000, position: [0, 2_000, 2_000] }}
               onPointerMissed={() => setSelection(null)}
-              onCreated={({ gl }) => {
-                const canvas = gl.domElement;
-                canvas.style.touchAction = "none";
-                const onLost = (event: Event) => {
-                  event.preventDefault();
-                };
-                const preventTouchScroll = (event: TouchEvent) => {
-                  event.preventDefault();
-                };
-                canvas.addEventListener("webglcontextlost", onLost, false);
-                canvas.addEventListener("touchmove", preventTouchScroll, { passive: false });
-              }}
               style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
               className="h-full w-full touch-none"
             >
+              <CanvasLifecycle />
               <SceneContent
                 waypoints={waypoints}
                 performance={performance}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, WMSTileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
 import {
@@ -30,6 +30,9 @@ import { aiswebAerodromeUrl } from "../lib/aiswebLinks";
 
 type AirportMapStyle = "satellite" | "roads" | "terrain";
 type AirspaceLayerId = "tma" | "ctr" | "atz" | "fir";
+const AiswebAirport3DTab = lazy(() =>
+  import("./AiswebAirport3DTab").then((module) => ({ default: module.AiswebAirport3DTab })),
+);
 
 const AIRPORT_MAP_TILES: Record<
   AirportMapStyle,
@@ -72,6 +75,7 @@ function AirportMapViewSync({ lat, lng }: { lat: number; lng: number }) {
 
 type DetailSubTab =
   | "meteorologia"
+  | "3d"
   | "satelite"
   | "detalhes"
   | "webcams"
@@ -1413,6 +1417,7 @@ export function AiswebAirportDetailTabs({
 
   const items = [
     { id: "meteorologia" as const, label: "Meteorologia", icon: <IconCloud /> },
+    { id: "3d" as const, label: "3D", icon: <IconMap /> },
     { id: "detalhes" as const, label: "Detalhes", icon: <IconInfo /> },
     { id: "satelite" as const, label: "Satélite", icon: <IconMap /> },
     { id: "webcams" as const, label: "Webcams", icon: <IconMap /> },
@@ -1446,6 +1451,17 @@ export function AiswebAirportDetailTabs({
         ) : null}
       </div>
       {subTab === "meteorologia" ? meteorology : null}
+      {subTab === "3d" ? (
+        <Suspense
+          fallback={
+            <div className="grid h-[460px] place-items-center rounded-xl border border-slate-700/70 bg-slate-950 text-xs text-slate-500">
+              Carregando vista 3D...
+            </div>
+          }
+        >
+          <AiswebAirport3DTab airport={airport} />
+        </Suspense>
+      ) : null}
       {subTab === "satelite" ? (
         <AiswebSatelliteTab
           icao={airport.icao}
