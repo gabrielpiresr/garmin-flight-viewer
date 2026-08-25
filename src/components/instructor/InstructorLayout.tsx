@@ -89,6 +89,20 @@ type NavItem = {
 
 const SELECTED_NAV_CLASS = "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
 const INSTRUCTOR_MOBILE_PRIMARY_NAV: InstructorSection[] = ["home", "schedule", "flights", "students"];
+const INSTRUCTOR_MOBILE_NAV_GROUPS: Array<{ title: string; ids: InstructorSection[] }> = [
+  {
+    title: "Operação",
+    ids: ["home", "schedule", "flights", "students", "solo-flight", "fuelings", "aisweb", "whatsapp", "album"],
+  },
+  {
+    title: "Conteúdo",
+    ids: ["journey", "maneuvers", "painel", "manuals", "manuais-internos", "notices", "help", "manual-instrutor"],
+  },
+  {
+    title: "Gestão",
+    ids: ["users", "reports", "contratos", "dre", "profile", "indique-ganhe", "marketplace"],
+  },
+];
 
 const NAV_ITEMS: NavItem[] = [
   {
@@ -482,9 +496,18 @@ export function InstructorLayout() {
     () => new Set<InstructorSection>(mobilePrimaryItems.map((item) => item.id)),
     [mobilePrimaryItems],
   );
-  const mobileMoreItems = useMemo(
-    () => visibleNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
-    [mobilePrimaryIds, visibleNavItems],
+  const mobileMoreGroups = useMemo(
+    () =>
+      INSTRUCTOR_MOBILE_NAV_GROUPS.map((group) => ({
+        title: group.title,
+        items: group.ids
+          .map((id) => navById.get(id))
+          .filter((item): item is NavItem => Boolean(item))
+          .filter((item) => !mobilePrimaryIds.has(item.id)),
+      })).filter(
+        (group) => group.items.length > 0 || (group.title === "Conteúdo" && (onboardingInMenu || manualInstrutorEnabled)),
+      ),
+    [manualInstrutorEnabled, mobilePrimaryIds, navById, onboardingInMenu],
   );
   const isMobileMoreActive = !mobilePrimaryIds.has(section);
 
@@ -856,66 +879,76 @@ export function InstructorLayout() {
                   Fechar
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {onboardingInMenu ? (
-                  <a
-                    href="/apresentacao"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => setMobileMoreOpen(false)}
-                    className="flex min-w-0 items-center gap-2 rounded-xl border border-cyan-700/40 bg-cyan-950/20 p-3 text-left text-cyan-300"
-                  >
-                    <span className="shrink-0">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                        <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
-                      </svg>
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold">Manual</span>
-                      <span className="block truncate text-[11px] text-cyan-300/70">Manual do aluno</span>
-                    </span>
-                  </a>
-                ) : null}
-                {manualInstrutorEnabled ? (
-                  <button
-                    type="button"
-                    onClick={() => openMobileSection("manual-instrutor")}
-                    className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
-                      section === "manual-instrutor"
-                        ? SELECTED_NAV_CLASS
-                        : "border-cyan-700/40 bg-cyan-950/20 text-cyan-300 hover:border-cyan-600/60"
-                    }`}
-                  >
-                    <span className="shrink-0">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                        <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
-                      </svg>
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold">Manual INVA</span>
-                      <span className="block truncate text-[11px] text-cyan-300/70">Manual do instrutor</span>
-                    </span>
-                  </button>
-                ) : null}
-                {mobileMoreItems.map((item) => {
-                  const isActive = section === item.id;
+              <div className="space-y-4">
+                {mobileMoreGroups.map((group) => {
+                  const showManuals = group.title === "Conteúdo" && (onboardingInMenu || manualInstrutorEnabled);
                   return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => openMobileSection(item.id)}
-                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
-                        isActive
-                          ? SELECTED_NAV_CLASS
-                          : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
-                      }`}
-                    >
-                      <span className="shrink-0">{item.icon}</span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">{item.label}</span>
-                        <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
-                      </span>
-                    </button>
+                    <section key={group.title}>
+                      <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500">{group.title}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {showManuals && onboardingInMenu ? (
+                          <a
+                            href="/apresentacao"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setMobileMoreOpen(false)}
+                            className="flex min-w-0 items-center gap-2 rounded-xl border border-cyan-700/40 bg-cyan-950/20 p-3 text-left text-cyan-300"
+                          >
+                            <span className="shrink-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                                <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                              </svg>
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-semibold">Manual</span>
+                              <span className="block truncate text-[11px] text-cyan-300/70">Manual do aluno</span>
+                            </span>
+                          </a>
+                        ) : null}
+                        {showManuals && manualInstrutorEnabled ? (
+                          <button
+                            type="button"
+                            onClick={() => openMobileSection("manual-instrutor")}
+                            className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
+                              section === "manual-instrutor"
+                                ? SELECTED_NAV_CLASS
+                                : "border-cyan-700/40 bg-cyan-950/20 text-cyan-300 hover:border-cyan-600/60"
+                            }`}
+                          >
+                            <span className="shrink-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                                <path fillRule="evenodd" d="M2.25 5.25a3 3 0 013-3h13.5a3 3 0 013 3V15a3 3 0 01-3 3h-3v.257c0 .597.237 1.17.659 1.591l.621.622a.75.75 0 01-.53 1.28h-9a.75.75 0 01-.53-1.28l.621-.622a2.25 2.25 0 00.659-1.59V18h-3a3 3 0 01-3-3V5.25zm1.5 0v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5z" clipRule="evenodd" />
+                              </svg>
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-semibold">Manual INVA</span>
+                              <span className="block truncate text-[11px] text-cyan-300/70">Manual do instrutor</span>
+                            </span>
+                          </button>
+                        ) : null}
+                        {group.items.map((item) => {
+                          const isActive = section === item.id;
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => openMobileSection(item.id)}
+                              className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
+                                isActive
+                                  ? SELECTED_NAV_CLASS
+                                  : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                              }`}
+                            >
+                              <span className="shrink-0">{item.icon}</span>
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-semibold">{item.label}</span>
+                                <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
                   );
                 })}
               </div>

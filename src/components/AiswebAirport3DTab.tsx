@@ -852,6 +852,42 @@ function initialBearingDeg(a: { lat: number; lng: number }, b: { lat: number; ln
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+function StablePathSegment({
+  from,
+  to,
+  color,
+  opacity,
+}: {
+  from: [number, number, number];
+  to: [number, number, number];
+  color: string;
+  opacity: number;
+}) {
+  const segment = useMemo(() => {
+    const start = new THREE.Vector3(from[0], from[1], from[2]);
+    const end = new THREE.Vector3(to[0], to[1], to[2]);
+    const direction = end.clone().sub(start);
+    const length = direction.length();
+    if (!Number.isFinite(length) || length < 1) return null;
+    return {
+      midpoint: start.add(end).multiplyScalar(0.5),
+      length,
+      quaternion: new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        direction.normalize(),
+      ),
+    };
+  }, [from, to]);
+
+  if (!segment) return null;
+  return (
+    <mesh position={segment.midpoint} quaternion={segment.quaternion} frustumCulled={false}>
+      <cylinderGeometry args={[7, 7, segment.length, 8]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.22} transparent opacity={opacity} roughness={0.4} />
+    </mesh>
+  );
+}
+
 function StablePathLine({
   points,
   color,
@@ -861,37 +897,19 @@ function StablePathLine({
   color: string;
   opacity?: number;
 }) {
-  const line = useMemo(() => {
-    const flat = new Float32Array(points.length * 3);
-    points.forEach((point, index) => {
-      flat[index * 3] = point[0];
-      flat[index * 3 + 1] = point[1];
-      flat[index * 3 + 2] = point[2];
-    });
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(flat, 3));
-    geometry.computeBoundingSphere();
-    const material = new THREE.LineBasicMaterial({
-      color,
-      transparent: true,
-      opacity,
-      depthWrite: false,
-    });
-    const next = new THREE.Line(geometry, material);
-    next.frustumCulled = false;
-    return next;
-  }, [color, opacity, points]);
-
-  useEffect(
-    () => () => {
-      line.geometry.dispose();
-      if (Array.isArray(line.material)) line.material.forEach((material) => material.dispose());
-      else line.material.dispose();
-    },
-    [line],
+  return (
+    <group>
+      {points.slice(0, -1).map((point, index) => (
+        <StablePathSegment
+          key={`${index}:${point.join(",")}:${points[index + 1]?.join(",")}`}
+          from={point}
+          to={points[index + 1]!}
+          color={color}
+          opacity={opacity}
+        />
+      ))}
+    </group>
   );
-
-  return <primitive object={line} />;
 }
 
 function SimulationPath({
@@ -1150,7 +1168,7 @@ export function AiswebAirport3DTab({ airport }: { airport: AiswebAirportBundle }
     return precise.length ? precise : runwayFallbacks(airport.rotaer);
   }, [airport.rotaer, runwayRecords]);
   const runwayOptions = useMemo(() => runwayEndOptions(runways), [runways]);
-  const canvasResetKey = `${airport.icao}:${simulation.enabled ? "sim" : "idle"}:${simulation.mode}:${simulation.runwayKey}`;
+  const canvasResetKey = `${airport.icao}:${Object.values(simulation).join(":")}`;
 
   useEffect(() => {
     if (!runwayOptions.length) return;

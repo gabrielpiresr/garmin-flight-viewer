@@ -884,9 +884,16 @@ export function AdminLayout() {
     () => new Set<AdminSection>(mobilePrimaryItems.map((item) => item.id)),
     [mobilePrimaryItems],
   );
-  const mobileMoreItems = useMemo(
-    () => visibleNavItems.filter((item) => !mobilePrimaryIds.has(item.id)),
-    [mobilePrimaryIds, visibleNavItems],
+  const mobileMoreGroups = useMemo(
+    () =>
+      NAV_GROUPS.map((group) => ({
+        title: group.title,
+        items: group.ids
+          .map((id) => navById.get(id))
+          .filter((item): item is NavItem => Boolean(item))
+          .filter((item) => !mobilePrimaryIds.has(item.id)),
+      })).filter((group) => group.items.length > 0),
+    [mobilePrimaryIds, navById],
   );
   const isMobileMoreActive = !mobilePrimaryIds.has(section);
 
@@ -1391,28 +1398,35 @@ export function AdminLayout() {
                   Fechar
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {mobileMoreItems.map((item) => {
-                  const isActive = section === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => openSection(item.id)}
-                      className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
-                        isActive
-                          ? SELECTED_NAV_CLASS
-                          : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
-                      }`}
-                    >
-                      <span className="shrink-0">{item.icon}</span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">{item.label}</span>
-                        <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
-                      </span>
-                    </button>
-                  );
-                })}
+              <div className="space-y-4">
+                {mobileMoreGroups.map((group) => (
+                  <section key={group.title}>
+                    <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500">{group.title}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {group.items.map((item) => {
+                        const isActive = section === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => openSection(item.id)}
+                            className={`flex min-w-0 items-center gap-2 rounded-xl border p-3 text-left transition ${
+                              isActive
+                                ? SELECTED_NAV_CLASS
+                                : "border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                            }`}
+                          >
+                            <span className="shrink-0">{item.icon}</span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-semibold">{item.label}</span>
+                              <span className="block truncate text-[11px] text-slate-500">{item.sublabel}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
               </div>
             </div>
           </div>

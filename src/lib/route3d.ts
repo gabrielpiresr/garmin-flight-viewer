@@ -121,6 +121,13 @@ export function buildRoute3dPath(
   exaggeration: number,
 ): Array<[number, number, number]> {
   const points: Array<[number, number, number]> = [];
+  const waypointPoint = (wp: FlightPlanWaypoint): [number, number, number] => {
+    const enu = lngLatToEnu(wp.lat, wp.lng, origin);
+    return [enu.x, altFtToY(wp.altitudeFt ?? wp.fieldElevFt ?? 0, exaggeration), enu.z];
+  };
+  const sameHorizontalPoint = (a: [number, number, number], b: [number, number, number]) =>
+    Math.hypot(a[0] - b[0], a[2] - b[2]) < 2;
+
   if (profile?.length) {
     for (const p of profile) {
       const ll = pointAlongRoute(waypoints, p.xNm);
@@ -128,10 +135,22 @@ export function buildRoute3dPath(
       const enu = lngLatToEnu(ll.lat, ll.lng, origin);
       points.push([enu.x, altFtToY(p.altFt, exaggeration), enu.z]);
     }
+    const firstWp = waypoints[0];
+    const lastWp = waypoints[waypoints.length - 1];
+    if (firstWp) {
+      const first = waypointPoint(firstWp);
+      if (!points.length || !sameHorizontalPoint(points[0]!, first)) points.unshift(first);
+      else points[0] = first;
+    }
+    if (lastWp) {
+      const last = waypointPoint(lastWp);
+      const currentLast = points[points.length - 1];
+      if (!currentLast || !sameHorizontalPoint(currentLast, last)) points.push(last);
+      else points[points.length - 1] = last;
+    }
   } else {
     for (const wp of waypoints) {
-      const enu = lngLatToEnu(wp.lat, wp.lng, origin);
-      points.push([enu.x, altFtToY(wp.altitudeFt ?? 0, exaggeration), enu.z]);
+      points.push(waypointPoint(wp));
     }
   }
   return points;

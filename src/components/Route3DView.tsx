@@ -299,7 +299,68 @@ function AircraftMarker({
 }
 
 function routePointVec(point: THREE.Vector3 | [number, number, number]): THREE.Vector3 {
-  return Array.isArray(point) ? new THREE.Vector3(point[0], point[1], point[2]) : point;
+  return Array.isArray(point) ? new THREE.Vector3(point[0], point[1], point[2]) : point.clone();
+}
+
+function StableRouteSegment({
+  from,
+  to,
+  color,
+  radius,
+}: {
+  from: THREE.Vector3 | [number, number, number];
+  to: THREE.Vector3 | [number, number, number];
+  color: string;
+  radius: number;
+}) {
+  const segment = useMemo(() => {
+    const start = routePointVec(from);
+    const end = routePointVec(to);
+    const direction = end.clone().sub(start);
+    const length = direction.length();
+    if (!Number.isFinite(length) || length < 1) return null;
+    return {
+      midpoint: start.add(end).multiplyScalar(0.5),
+      length,
+      quaternion: new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        direction.normalize(),
+      ),
+    };
+  }, [from, to]);
+
+  if (!segment) return null;
+  return (
+    <mesh position={segment.midpoint} quaternion={segment.quaternion} frustumCulled={false} raycast={() => {}}>
+      <cylinderGeometry args={[radius, radius, segment.length, 8]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.28} roughness={0.42} />
+    </mesh>
+  );
+}
+
+function StableRoutePath({
+  path,
+  colors,
+  spanM,
+}: {
+  path: Array<THREE.Vector3 | [number, number, number]>;
+  colors: string[];
+  spanM: number;
+}) {
+  const radius = Math.min(52, Math.max(12, spanM * 0.00007));
+  return (
+    <group>
+      {path.slice(0, -1).map((point, index) => (
+        <StableRouteSegment
+          key={`${index}:${colors[index] || ""}`}
+          from={point}
+          to={path[index + 1]!}
+          color={colors[index] || colors[index + 1] || "#22d3ee"}
+          radius={radius}
+        />
+      ))}
+    </group>
+  );
 }
 
 function RouteDirectionArrow({ path, spanM }: { path: Array<THREE.Vector3 | [number, number, number]>; spanM: number }) {
@@ -1082,7 +1143,9 @@ function SceneContent({
             })
         : null}
 
-      {toggles.route && path.length >= 2 && routeVertexColors ? (
+      {toggles.route && path.length >= 2 && skipRouteCloudMid ? (
+        <StableRoutePath path={path} colors={routeSegmentColors} spanM={spanM} />
+      ) : toggles.route && path.length >= 2 && routeVertexColors ? (
         <Line points={path} vertexColors={routeVertexColors} lineWidth={3} />
       ) : toggles.route && path.length >= 2 ? (
         <Line points={path} color="#22d3ee" lineWidth={2.5} />
@@ -1552,6 +1615,7 @@ export function Route3DView({
   const [metarError, setMetarError] = useState<string | null>(null);
   const [routeWxError, setRouteWxError] = useState<string | null>(null);
   const viewRef = useRef<HTMLDivElement>(null);
+  const mobileWeatherDefaultsAppliedRef = useRef(false);
   const [enabledAreaLayerKinds, setEnabledAreaLayerKinds] = useState<Set<"rea" | "reh">>(
     () => new Set(areaLayerKinds),
   );
@@ -1564,6 +1628,12 @@ export function Route3DView({
   );
   const mobileOptimized = useRoute3DMobileMode();
   const reducedScene = liteTerrain || navigationOptimized || mobileOptimized;
+
+  useEffect(() => {
+    if (!mobileOptimized || mobileWeatherDefaultsAppliedRef.current) return;
+    mobileWeatherDefaultsAppliedRef.current = true;
+    setToggles((current) => ({ ...current, metar: false, routeClouds: false }));
+  }, [mobileOptimized]);
 
   const origin = useMemo(() => computeRouteOrigin(waypoints), [waypoints]);
   const spanM = useMemo(
