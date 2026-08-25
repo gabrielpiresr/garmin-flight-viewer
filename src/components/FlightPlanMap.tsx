@@ -1769,6 +1769,8 @@ type FlightPlanMapProps = {
   mapOverlay?: ReactNode;
   /** Largura máxima da coluna flutuante esquerda. */
   mapOverlayMaxWidthClass?: string;
+  /** No mobile/tablet, o planejamento pode virar conteúdo normal abaixo do mapa. */
+  mapOverlayPlacement?: "inside" | "below";
   /** TOC / TOD markers along the route. */
   phaseMarkers?: Array<{ lat: number; lng: number; label: string }>;
   /** Controlado pelo painel de planejamento. */
@@ -1865,6 +1867,37 @@ function RouteDragToInsert({
   useEffect(() => {
     if (!enabled || positions.length < 2) return;
 
+    const eventToLatLng = (event: MouseEvent | Touch): L.LatLng =>
+      map.mouseEventToLatLng(event as unknown as MouseEvent);
+
+    const updatePreview = (latlng: L.LatLng) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        map.dragging.disable();
+        clearPreview();
+        previewRef.current = L.polyline([drag.from, [latlng.lat, latlng.lng], drag.to], {
+          color: "#14b8a6",
+          weight: 3,
+          dashArray: "6 6",
+          opacity: 0.9,
+          interactive: false,
+        }).addTo(map);
+        cursorRef.current = L.circleMarker(latlng, {
+          radius: 6,
+          color: "#fff",
+          weight: 2,
+          fillColor: "#14b8a6",
+          fillOpacity: 1,
+          interactive: false,
+        }).addTo(map);
+      } else {
+        previewRef.current?.setLatLngs([drag.from, [latlng.lat, latlng.lng], drag.to]);
+        cursorRef.current?.setLatLng(latlng);
+      }
+    };
+
     const finish = (latlng: L.LatLng) => {
       const drag = dragRef.current;
       if (!drag) return;
@@ -1882,44 +1915,42 @@ function RouteDragToInsert({
     };
 
     const onMouseMove = (e: L.LeafletMouseEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      if (!drag.moved) {
-        drag.moved = true;
-        map.dragging.disable();
-        clearPreview();
-        previewRef.current = L.polyline([drag.from, [e.latlng.lat, e.latlng.lng], drag.to], {
-          color: "#14b8a6",
-          weight: 3,
-          dashArray: "6 6",
-          opacity: 0.9,
-          interactive: false,
-        }).addTo(map);
-        cursorRef.current = L.circleMarker(e.latlng, {
-          radius: 6,
-          color: "#fff",
-          weight: 2,
-          fillColor: "#14b8a6",
-          fillOpacity: 1,
-          interactive: false,
-        }).addTo(map);
-      } else {
-        previewRef.current?.setLatLngs([drag.from, [e.latlng.lat, e.latlng.lng], drag.to]);
-        cursorRef.current?.setLatLng(e.latlng);
-      }
+      if (!dragRef.current) return;
+      updatePreview(e.latlng);
     };
 
     const onDocMouseUp = (ev: MouseEvent) => {
       if (!dragRef.current) return;
-      const latlng = map.mouseEventToLatLng(ev);
-      finish(latlng);
+      finish(eventToLatLng(ev));
+    };
+
+    const onDocTouchMove = (ev: TouchEvent) => {
+      if (!dragRef.current) return;
+      const touch = ev.touches[0] ?? ev.changedTouches[0];
+      if (!touch) return;
+      ev.preventDefault();
+      updatePreview(eventToLatLng(touch));
+    };
+
+    const onDocTouchEnd = (ev: TouchEvent) => {
+      if (!dragRef.current) return;
+      const touch = ev.changedTouches[0];
+      if (!touch) return;
+      ev.preventDefault();
+      finish(eventToLatLng(touch));
     };
 
     map.on("mousemove", onMouseMove);
     document.addEventListener("mouseup", onDocMouseUp);
+    document.addEventListener("touchmove", onDocTouchMove, { passive: false });
+    document.addEventListener("touchend", onDocTouchEnd, { passive: false });
+    document.addEventListener("touchcancel", onDocTouchEnd, { passive: false });
     return () => {
       map.off("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onDocMouseUp);
+      document.removeEventListener("touchmove", onDocTouchMove);
+      document.removeEventListener("touchend", onDocTouchEnd);
+      document.removeEventListener("touchcancel", onDocTouchEnd);
       map.dragging.enable();
       clearPreview();
       dragRef.current = null;
@@ -1934,7 +1965,7 @@ function RouteDragToInsert({
       pathOptions={{ color: "#0f766e", weight: 18, opacity: 0, interactive: true }}
       pane="overlayPane"
       eventHandlers={{
-        mousedown: (e) => {
+        mousedown: (e: L.LeafletMouseEvent) => {
           if ((e.originalEvent as MouseEvent).button !== 0) return;
           const legIndex = nearestRouteLegIndex(waypoints, e.latlng, 1852 * 25);
           if (legIndex < 0) return;
@@ -1949,7 +1980,24 @@ function RouteDragToInsert({
           L.DomEvent.stopPropagation(e.originalEvent);
           L.DomEvent.preventDefault(e.originalEvent);
         },
-      }}
+        touchstart: (e: L.LeafletMouseEvent) => {
+          const originalEvent = e.originalEvent as unknown as TouchEvent;
+          if (originalEvent.touches.length !== 1) return;
+          const legIndex = nearestRouteLegIndex(waypoints, e.latlng, 1852 * 25);
+          if (legIndex < 0) return;
+          const a = waypoints[legIndex]!;
+          const b = waypoints[legIndex + 1]!;
+          dragRef.current = {
+            legIndex,
+            from: [a.lat, a.lng],
+            to: [b.lat, b.lng],
+            moved: false,
+          };
+          map.dragging.disable();
+          L.DomEvent.stopPropagation(originalEvent);
+          L.DomEvent.preventDefault(originalEvent);
+        },
+      } as unknown as L.LeafletEventHandlerFnMap}
     />
   );
 }
@@ -1986,7 +2034,7 @@ function LegBubbles({
           <Marker
             key={`leg-${leg.toIndex}-${fontKey(scale)}`}
             position={[midLat, midLng]}
-            icon={legBubbleIcon(text, leg.bearingDeg, scale)}
+            icon={legBubbleIcon(text, leg.trueBearingDeg, scale)}
             interactive={false}
             zIndexOffset={800}
           />
@@ -2167,6 +2215,7 @@ export function FlightPlanMap({
   mapHeightClass = "h-[450px]",
   mapOverlay = null,
   mapOverlayMaxWidthClass = "w-[min(100%-1rem,22rem)]",
+  mapOverlayPlacement = "inside",
   phaseMarkers = [],
   measureMode: measureModeProp,
   onMeasureModeChange: _onMeasureModeChange,
@@ -2516,7 +2565,7 @@ export function FlightPlanMap({
         ref={mapShellRef}
         className={`relative w-full shrink-0 overflow-hidden overscroll-contain bg-[#d4d4c8] [&_.leaflet-container]:bg-[#d4d4c8] [&_.leaflet-control-attribution]:text-[9px] ${mapHeightClass}`}
       >
-        {mapOverlay && !toolPanel ? (
+        {mapOverlay && mapOverlayPlacement === "inside" && !toolPanel ? (
           <div className="pointer-events-none absolute inset-0 z-[500]">
             <div
               className={`pointer-events-auto absolute left-2 top-2 flex max-h-[calc(100%-1rem)] flex-col overflow-hidden ${mapOverlayMaxWidthClass}`}
@@ -2535,7 +2584,7 @@ export function FlightPlanMap({
         {/* Menu vertical direito (estilo NexAtlas) */}
         <div className="pointer-events-none absolute bottom-3 right-2 top-2 z-[530] flex items-start justify-end gap-2">
           {toolPanel ? (
-            <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md max-sm:absolute max-sm:inset-x-2 max-sm:bottom-14 max-sm:top-auto max-sm:max-h-[55%] max-sm:w-auto">
+            <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md max-lg:absolute max-lg:inset-x-2 max-lg:bottom-14 max-lg:top-auto max-lg:max-h-[65%] max-lg:w-auto">
               <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-200">
                   {toolPanel === "filters"
@@ -3414,6 +3463,12 @@ export function FlightPlanMap({
           })}
         </MapContainer>
       </div>
+
+      {mapOverlay && mapOverlayPlacement === "below" ? (
+        <div className={`flex min-h-0 flex-col overflow-hidden border-t border-slate-800 bg-slate-950 ${mapOverlayMaxWidthClass}`}>
+          {mapOverlay}
+        </div>
+      ) : null}
 
       {isWindy ? (
         <p className="border-t border-slate-800 bg-slate-950/50 px-2.5 py-1.5 text-[10px] text-slate-500">

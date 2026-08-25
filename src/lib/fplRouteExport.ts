@@ -1,5 +1,5 @@
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
-import { calcTrueBearing, formatCompactAviationCoord, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
+import { calcMagneticBearing, formatCompactAviationCoord, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
 import type { LegCorridorInfo } from "./legCorridor";
 
 const NM_IN_M = 1852;
@@ -51,9 +51,9 @@ function levelFlownFrom(
   const to = waypoints[legIdx]!;
   const next = waypoints[legIdx + 1];
   if (to.outboundAltitudeFt != null && Number.isFinite(to.outboundAltitudeFt)) return to.outboundAltitudeFt;
-  if ((currentInside || isAirportLike(to)) && next) return semicircularCruiseFt(calcTrueBearing(to, next));
+  if ((currentInside || isAirportLike(to)) && next) return semicircularCruiseFt(calcMagneticBearing(to, next));
   if (to.altitudeFt != null && Number.isFinite(to.altitudeFt)) return to.altitudeFt;
-  if (next) return semicircularCruiseFt(calcTrueBearing(to, next));
+  if (next) return semicircularCruiseFt(calcMagneticBearing(to, next));
   return to.altitudeFt;
 }
 

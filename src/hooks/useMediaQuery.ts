@@ -23,3 +23,8 @@ export function useMediaQuery(query: string): boolean {
 export function useIsDesktopLg(): boolean {
   return useMediaQuery("(min-width: 1024px)");
 }
+
+/** Tailwind `xl` breakpoint (1280px), used when tablets should keep compact UI. */
+export function useIsDesktopXl(): boolean {
+  return useMediaQuery("(min-width: 1280px)");
+}

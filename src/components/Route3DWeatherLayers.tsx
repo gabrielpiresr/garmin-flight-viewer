@@ -132,6 +132,7 @@ function KindInstances({
       ref={meshRef}
       args={[cumulusForKind(kind), undefined, items.length]}
       frustumCulled={false}
+      renderOrder={FLAT_KINDS.includes(kind) ? 30 : 25}
       raycast={() => {}}
     >
       {kindGeometry(kind)}
@@ -139,8 +140,12 @@ function KindInstances({
         transparent
         opacity={opacity}
         depthWrite={false}
+        depthTest={!FLAT_KINDS.includes(kind)}
         toneMapped={false}
         side={THREE.DoubleSide}
+        polygonOffset={FLAT_KINDS.includes(kind)}
+        polygonOffsetFactor={-4}
+        polygonOffsetUnits={-4}
       />
     </instancedMesh>
   );
@@ -170,7 +175,7 @@ function MetarHitDiscs({
           onPointerOut={hover.onPointerOut}
         >
           <ringGeometry args={[station.hit.radiusM * 0.86, station.hit.radiusM * 1.12, 48]} />
-          <meshBasicMaterial transparent opacity={0.04} depthWrite={false} side={THREE.DoubleSide} />
+          <meshBasicMaterial transparent opacity={0.04} depthWrite={false} depthTest={false} side={THREE.DoubleSide} />
         </mesh>
       ))}
     </>
@@ -230,6 +235,7 @@ function RouteCloudPuffs({
       ref={meshRef}
       args={[CUMULUS_ROUTE, undefined, puffs.length]}
       frustumCulled={false}
+      renderOrder={20}
       onClick={pick}
       onPointerOver={hover.onPointerOver}
       onPointerOut={hover.onPointerOut}

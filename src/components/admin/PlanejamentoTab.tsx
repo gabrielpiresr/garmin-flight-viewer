@@ -102,7 +102,7 @@ import {
   collectRouteNotamLocations,
   nearbyAerodromeIcaos,
 } from "../../lib/routeNotams";
-import { useIsDesktopLg } from "../../hooks/useMediaQuery";
+import { useIsDesktopXl } from "../../hooks/useMediaQuery";
 import {
   IconFolderSmall,
   IconSaveAsSmall,
@@ -386,7 +386,7 @@ export function PlanejamentoTab({
   const [sendingFplEmail, setSendingFplEmail] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
   const [planningPanelCollapsed, setPlanningPanelCollapsed] = useState(false);
-  const isDesktopLg = useIsDesktopLg();
+  const isDesktopLg = useIsDesktopXl();
   const [view, setView] = useState<"library" | "editor">("library");
   const [editorMounted, setEditorMounted] = useState(false);
   const [openedSections, setOpenedSections] = useState<ReadonlySet<PlanejamentoSectionId>>(() => new Set());
@@ -2127,6 +2127,10 @@ export function PlanejamentoTab({
   }, [onCompactEditorChange, view]);
 
   useEffect(() => {
+    if (compactMode) setPlanningPanelCollapsed(false);
+  }, [compactMode]);
+
+  useEffect(() => {
     if (view !== "editor") return;
     const timer = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
     return () => window.clearTimeout(timer);
@@ -2263,11 +2267,12 @@ export function PlanejamentoTab({
         onShowRouteNotamsOnMapChange={setShowRouteNotamsOnMap}
         filterNotamsByVerticalProfile={filterNotamsByVerticalProfile}
         onFilterNotamsByVerticalProfileChange={setFilterNotamsByVerticalProfile}
+        mapOverlayPlacement={compactMode ? "below" : "inside"}
         mapOverlayMaxWidthClass={
-          planningPanelCollapsed ? "w-auto" : "w-[min(100%-1rem,24rem)]"
+          compactMode ? "w-full" : planningPanelCollapsed ? "w-auto" : "w-[min(100%-1rem,24rem)]"
         }
         mapOverlay={
-          planningPanelCollapsed ? (
+          planningPanelCollapsed && !compactMode ? (
             <button
               type="button"
               className={`inline-flex items-center gap-1.5 rounded-2xl border border-slate-600/80 px-2.5 py-2 text-xs font-semibold text-slate-200 shadow-2xl shadow-black/40 transition hover:bg-slate-900 hover:text-white ${
@@ -2284,24 +2289,26 @@ export function PlanejamentoTab({
             </button>
           ) : (
           <aside
-            className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-2xl border border-slate-600/80 shadow-2xl shadow-black/40 ${
+            className={`flex w-full flex-col ${
               compactMode
-                ? "bg-slate-950 opacity-100"
-                : "bg-slate-950/80 opacity-80 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100"
+                ? "rounded-none border-0 bg-slate-950 opacity-100 shadow-none"
+                : "min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/80 opacity-80 shadow-2xl shadow-black/40 backdrop-blur-md transition-[opacity,background-color] duration-200 ease-out hover:bg-slate-950/95 hover:opacity-100"
             }`}
           >
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3">
+          <div className={compactMode ? "space-y-3 p-3" : "min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3"}>
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-100">Planejamento</h2>
-              <button
-                type="button"
-                className={btnIcon}
-                title="Ocultar coluna de planejamento"
-                aria-label="Ocultar coluna de planejamento"
-                onClick={() => setPlanningPanelCollapsed(true)}
-              >
-                <IconPanelCollapse />
-              </button>
+              {!compactMode ? (
+                <button
+                  type="button"
+                  className={btnIcon}
+                  title="Ocultar coluna de planejamento"
+                  aria-label="Ocultar coluna de planejamento"
+                  onClick={() => setPlanningPanelCollapsed(true)}
+                >
+                  <IconPanelCollapse />
+                </button>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap gap-1.5">

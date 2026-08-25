@@ -558,6 +558,7 @@ export function MainLayout() {
   const [referProgramLoaded, setReferProgramLoaded] = useState(false);
   const [onboardingInMenu, setOnboardingInMenu] = useState(false);
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [planejamentoEditorOpen, setPlanejamentoEditorOpen] = useState(false);
   const [pendingEvaluationFlight, setPendingEvaluationFlight] = useState<SavedFlightListItem | null>(null);
   const [pendingEvaluationExisting, setPendingEvaluationExisting] = useState<FlightEvaluation | null>(null);
   const [pendingEvaluationFormOpen, setPendingEvaluationFormOpen] = useState(false);
@@ -795,7 +796,7 @@ export function MainLayout() {
     <FlightReviewClubProvider value={clubContextValue}>
     <div className="school-themed-shell flex min-h-screen">
       <div
-        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} xl:block ${railWidthClass}`}
       >
       <aside
         className={`school-themed-sidebar absolute inset-y-0 left-0 z-0 flex h-full flex-col overflow-hidden border-r border-slate-800 transition-[width] ${sidebarMotionClass} ${panelWidthClass}`}
@@ -950,13 +951,13 @@ export function MainLayout() {
               title={activeTitle}
             />
             <div className="flex items-center gap-3">
-              <div className="lg:hidden">
+              <div className="xl:hidden">
                 <UserEmailWithRoleSwitcher email={user?.email} header />
               </div>
               <button
                 type="button"
                 onClick={() => void signOut()}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 lg:hidden"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 xl:hidden"
               >
                 Sair
               </button>
@@ -965,7 +966,7 @@ export function MainLayout() {
 
         </header>
 
-        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 lg:pb-6">
+        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-6 xl:pb-6">
           {openedSections.has("home") && (
             <div hidden={pageSection !== "home"}>
               <StudentSectionTab section="home" locked={isStudentTabLocked("home")}>
@@ -1119,7 +1120,7 @@ export function MainLayout() {
           {openedSections.has("planejamento") && (
             <div hidden={pageSection !== "planejamento"} className="-m-4 md:-m-6">
               <StudentSectionTab section="planejamento" locked={isStudentTabLocked("planejamento")}>
-                <PlanejamentoTab />
+                <PlanejamentoTab onCompactEditorChange={setPlanejamentoEditorOpen} />
               </StudentSectionTab>
             </div>
           )}
@@ -1153,13 +1154,13 @@ export function MainLayout() {
           )}
         </main>
 
-        <footer className="hidden border-t border-slate-800 px-4 py-3 text-center text-xs text-slate-600 md:px-6 lg:block">
+        <footer className="hidden border-t border-slate-800 px-4 py-3 text-center text-xs text-slate-600 md:px-6 xl:block">
           Uso educacional. Valide sempre com as fontes oficiais de registro de voo e procedimentos da sua escola de
           aviação.
         </footer>
 
-        {mobileMoreOpen ? (
-          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden" onClick={() => setMobileMoreOpen(false)}>
+        {mobileMoreOpen && !(pageSection === "planejamento" && planejamentoEditorOpen) ? (
+          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm xl:hidden" onClick={() => setMobileMoreOpen(false)}>
             <div
               className="absolute inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] max-h-[65vh] overflow-y-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-slate-950"
               onClick={(event) => event.stopPropagation()}
@@ -1222,7 +1223,11 @@ export function MainLayout() {
           </div>
         ) : null}
 
-        <nav className="fixed inset-x-3 bottom-3 z-50 pb-[env(safe-area-inset-bottom)] lg:hidden">
+        <nav
+          className={`fixed inset-x-3 bottom-3 z-50 pb-[env(safe-area-inset-bottom)] xl:hidden ${
+            pageSection === "planejamento" && planejamentoEditorOpen ? "hidden" : ""
+          }`}
+        >
           <div className={`grid rounded-2xl border border-slate-700/80 bg-slate-950/95 p-1 shadow-2xl shadow-slate-950/70 backdrop-blur ${clubInStudentMenu ? "grid-cols-6" : "grid-cols-5"}`}>
             {clubInStudentMenu ? (
               clubLpExternal ? (

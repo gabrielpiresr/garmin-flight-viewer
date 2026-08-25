@@ -2210,7 +2210,7 @@ export function Route3DView({
         {ready ? (
           <div className="pointer-events-none absolute bottom-3 right-2 top-2 z-20 flex items-start justify-end gap-2">
             {mapToolPanel ? (
-              <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md">
+              <div className="pointer-events-auto flex max-h-full w-[min(100%-3.5rem,17rem)] flex-col overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-950/85 shadow-2xl shadow-black/50 backdrop-blur-md max-lg:absolute max-lg:inset-x-2 max-lg:bottom-14 max-lg:top-auto max-lg:max-h-[65%] max-lg:w-auto">
                 <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-200">
                     {mapToolPanel === "basemap" ? "Tipo de mapa" : "Espacos aereos"}

@@ -1,5 +1,5 @@
 import type { FlightPlanWaypoint } from "../types/flightPlanning";
-import { calcTrueBearing, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
+import { calcMagneticBearing, haversineM, semicircularCruiseFt } from "./flightPlanningRoute";
 import {
   corridorDisplayName,
   endpointA,
@@ -787,7 +787,7 @@ export function applySemicircularCruiseAltitudes(
     if (isAirportLike(wp)) {
       const field = wp.fieldElevFt;
       const outbound =
-        next && nextInside === false ? semicircularCruiseFt(calcTrueBearing(wp, next)) : null;
+        next && nextInside === false ? semicircularCruiseFt(calcMagneticBearing(wp, next)) : null;
       if (field != null && Number.isFinite(field)) {
         const elev = Math.round(field);
         return {
@@ -801,12 +801,12 @@ export function applySemicircularCruiseAltitudes(
         : { ...wp, outboundAltitudeFt: null };
     }
     if (next && nextInside === false) {
-      const cruise = semicircularCruiseFt(calcTrueBearing(wp, next));
+      const cruise = semicircularCruiseFt(calcMagneticBearing(wp, next));
       return { ...wp, altitudeFt: cruise, outboundAltitudeFt: null, altitudeRef: "ae" };
     }
     if (legCorridors?.[idx]) return { ...wp, outboundAltitudeFt: null };
     const from = arr[idx - 1]!;
-    return { ...wp, altitudeFt: semicircularCruiseFt(calcTrueBearing(from, wp)), outboundAltitudeFt: null };
+    return { ...wp, altitudeFt: semicircularCruiseFt(calcMagneticBearing(from, wp)), outboundAltitudeFt: null };
   });
 }
 

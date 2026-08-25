@@ -268,7 +268,7 @@ export function PlanejamentoFloatingNav({
 }: FloatingNavProps) {
   return (
     <nav
-      className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden"
+      className="fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] xl:hidden"
       aria-label="Navegação do planejamento"
     >
       <div className="flex overflow-x-auto rounded-2xl border border-slate-700/80 bg-slate-950 p-1 shadow-2xl shadow-slate-950/70">

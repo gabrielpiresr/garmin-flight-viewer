@@ -1006,7 +1006,7 @@ export function AdminLayout() {
     <div className="flex min-h-screen bg-slate-950">
       {/* Sidebar */}
       <div
-        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} lg:block ${railWidthClass}`}
+        className={`relative sticky top-0 z-[5000] hidden h-screen shrink-0 transition-[width] ${sidebarMotionClass} xl:block ${railWidthClass}`}
       >
       <aside
         className={`absolute inset-y-0 left-0 z-0 flex h-full flex-col overflow-hidden border-r border-slate-800 bg-slate-950 transition-[width] ${sidebarMotionClass} ${panelWidthClass}`}
@@ -1147,13 +1147,13 @@ export function AdminLayout() {
               <AdminCommandBar className="w-full max-w-md" />
             </div>
             <div className="flex items-center gap-3">
-              <div className="lg:hidden">
+              <div className="xl:hidden">
                 <UserEmailWithRoleSwitcher email={user?.email} header />
               </div>
               <button
                 type="button"
                 onClick={() => void signOut()}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 lg:hidden"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 xl:hidden"
               >
                 Sair
               </button>
@@ -1164,7 +1164,7 @@ export function AdminLayout() {
           </div>
         </header>
 
-        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 lg:pb-4">
+        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-4 xl:pb-4">
           {openedSections.has("home") && (
             <div hidden={section !== "home"}>
               <LazyTab>
@@ -1380,7 +1380,7 @@ export function AdminLayout() {
         </main>
 
         {mobileMoreOpen && !(section === "planejamento" && planejamentoEditorOpen) ? (
-          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden" onClick={() => setMobileMoreOpen(false)}>
+          <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm xl:hidden" onClick={() => setMobileMoreOpen(false)}>
             <div
               className="absolute inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] max-h-[65vh] overflow-y-auto rounded-2xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-slate-950"
               onClick={(event) => event.stopPropagation()}
@@ -1433,7 +1433,7 @@ export function AdminLayout() {
         ) : null}
 
         <nav
-          className={`fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] lg:hidden ${
+          className={`fixed inset-x-3 bottom-3 z-40 pb-[env(safe-area-inset-bottom)] xl:hidden ${
             section === "planejamento" && planejamentoEditorOpen ? "hidden" : ""
           }`}
         >

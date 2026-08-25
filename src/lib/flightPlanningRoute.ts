@@ -1,9 +1,11 @@
 import type { FlightPlanRouteSummary, FlightPlanWaypoint } from "../types/flightPlanning";
 import { parseFieldElevationFt } from "./fieldElevation";
+import * as geomagnetism from "geomagnetism";
 
 const NM_IN_M = 1852;
 /** Mean Earth radius (m) — closer to common aviation GC calculators than 6371 km. */
 const EARTH_RADIUS_M = 6_371_008.8;
+const MAGNETIC_MODEL = geomagnetism.model(new Date(), { allowOutOfBoundsModel: true });
 
 /** Compact ICAO FPL / NexAtlas: 2306S04634W, 230600S0463400W, 2331.32S04504.93W */
 const COMPACT_COORD =
@@ -325,9 +327,33 @@ export function calcTrueBearing(
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
-/** ICA 100-12 VFR: proa 000–179 → 5500 ft; 180–359 → 6500 ft. */
+function normalizeHeadingDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360;
+}
+
+export function magneticDeclinationDeg(point: { lat: number; lng: number }): number | null {
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return null;
+  try {
+    const decl = MAGNETIC_MODEL.point([point.lat, point.lng]).decl;
+    return Number.isFinite(decl) ? decl : null;
+  } catch {
+    return null;
+  }
+}
+
+export function calcMagneticBearing(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const trueBearing = calcTrueBearing(a, b);
+  const midpoint = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+  const declination = magneticDeclinationDeg(midpoint);
+  return declination == null ? trueBearing : normalizeHeadingDeg(trueBearing - declination);
+}
+
+/** ICA 100-12 VFR: rumo magnético 000–179 → 5500 ft; 180–359 → 6500 ft. */
 export function semicircularCruiseFt(bearingDeg: number): number {
-  const hdg = ((bearingDeg % 360) + 360) % 360;
+  const hdg = normalizeHeadingDeg(bearingDeg);
   return hdg < 180 ? 5500 : 6500;
 }
 
@@ -357,8 +383,11 @@ export type FlightPlanLeg = {
   to: FlightPlanWaypoint;
   /** Index of the destination waypoint in the route (1-based for display as leg N). */
   toIndex: number;
+  trueBearingDeg: number;
   distanceNm: number;
+  /** Magnetic bearing, with local declination applied. */
   bearingDeg: number;
+  magneticDeclinationDeg: number | null;
   eteHours: number | null;
   fuelEstimate: number | null;
   /** Cumulative totals from route start through this leg. */
@@ -381,6 +410,11 @@ export function buildFlightPlanLegs(
     const from = waypoints[i - 1]!;
     const to = waypoints[i]!;
     const distanceNm = haversineM(from, to) / NM_IN_M;
+    const trueBearingDeg = calcTrueBearing(from, to);
+    const midpoint = { lat: (from.lat + to.lat) / 2, lng: (from.lng + to.lng) / 2 };
+    const declinationDeg = magneticDeclinationDeg(midpoint);
+    const bearingDeg =
+      declinationDeg == null ? trueBearingDeg : normalizeHeadingDeg(trueBearingDeg - declinationDeg);
     cumNm += distanceNm;
     const eteHours = hasCruise ? distanceNm / cruise! : null;
     const fuelEstimate = eteHours != null && hasBurn ? eteHours * burn! : null;
@@ -392,7 +426,9 @@ export function buildFlightPlanLegs(
       to,
       toIndex: i,
       distanceNm,
-      bearingDeg: calcTrueBearing(from, to),
+      trueBearingDeg,
+      bearingDeg,
+      magneticDeclinationDeg: declinationDeg,
       eteHours,
       fuelEstimate,
       cumulativeDistanceNm: cumNm,
@@ -421,7 +457,7 @@ export function waypointsToNexAtlasText(waypoints: FlightPlanWaypoint[]): string
 
 export function formatBearingDeg(deg: number): string {
   if (!Number.isFinite(deg)) return "—";
-  return `${String(Math.round(deg) % 360).padStart(3, "0")}°`;
+  return `${String(Math.round(normalizeHeadingDeg(deg)) % 360).padStart(3, "0")}°`;
 }
 
 export function formatEteClock(hours: number | null): string {
