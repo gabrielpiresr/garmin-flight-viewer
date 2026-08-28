@@ -40,4 +40,5 @@ export type FlightCreditCheckoutExtraProduct = {
   id: string;
   name: string;
   price: number;
+  custom?: boolean;
 };

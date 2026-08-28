@@ -28,7 +28,7 @@ import { AdminUserCreditsSection } from "./AdminUserCreditsSection";
 import { StudentObservationsSection } from "./StudentObservationsSection";
 import { InstructorCostsSection } from "./InstructorCostsSection";
 import { UserSalesSection } from "./UserSalesSection";
-import { PaymentLinkModal } from "./CaktoReceiptsTab";
+import { PaymentLinkModal, type PaymentLinkInitialCharge } from "./CaktoReceiptsTab";
 import { FlightDetailView } from "../FlightDetailView";
 import { FlightReviewClubBadge, hasActiveFlightReviewClubTrack } from "../FlightReviewClubBadge";
 import { Skeleton } from "../ui/Skeleton";
@@ -49,6 +49,7 @@ import {
 } from "../../lib/sagaImportDb";
 import { SagaImportProgressOverlay } from "./SagaImportProgressOverlay";
 import { useSagaImportMissionPrompt } from "../../hooks/useSagaImportMissionPrompt";
+import { getStudentDebtCharge } from "../../lib/studentReceivables";
 
 function newSagaUserImportRunId(userId: string) {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -108,6 +109,8 @@ function formatFlightDate(flight: AdminUserFlight): string {
 function formatHours(hours: number): string {
   return `${hours.toFixed(1)}h`;
 }
+
+const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 function formatDuration(seconds: number | null): string {
   if (!seconds || seconds <= 0) return "-";
@@ -434,6 +437,8 @@ export function AdminUsersTab() {
   const [success, setSuccess] = useState<string | null>(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [showPaymentLink, setShowPaymentLink] = useState(false);
+  const [paymentLinkInitialCharge, setPaymentLinkInitialCharge] = useState<PaymentLinkInitialCharge | null>(null);
+  const [calculatingStudentCharge, setCalculatingStudentCharge] = useState(false);
   const [creatingUser, setCreatingUser] = useState(false);
   const [newUser, setNewUser] = useState({
     fullName: "",
@@ -720,6 +725,32 @@ export function AdminUsersTab() {
       setError((e as Error).message);
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleOpenStudentCharge() {
+    if (!selectedDetail || !authUser) return;
+    setCalculatingStudentCharge(true);
+    try {
+      const charge = await getStudentDebtCharge({
+        viewer: { userId: authUser.id, role: authUser.role },
+        student: detailToSummary(selectedDetail),
+      });
+      if (!charge || charge.amount <= 0 || !charge.packageId) {
+        showToast({ variant: "warning", message: "Nenhum debito de voo encontrado para este aluno." });
+        return;
+      }
+      setPaymentLinkInitialCharge({
+        packageId: charge.packageId,
+        hours: charge.debtHours,
+        hourPrice: charge.hourPrice,
+        label: `Saldo em debito: ${charge.debtHours.toFixed(1)}h x ${money(charge.hourPrice)}/h = ${money(charge.amount)}.`,
+      });
+      setShowPaymentLink(true);
+    } catch (error) {
+      showToast({ variant: "error", message: (error as Error).message });
+    } finally {
+      setCalculatingStudentCharge(false);
     }
   }
 
@@ -1368,13 +1399,26 @@ export function AdminUsersTab() {
                         {deletingUser ? "Excluindo..." : "Excluir usuario"}
                       </button>
                       {selectedDetail.role === "aluno" ? (
-                        <button
-                          type="button"
-                          onClick={() => setShowPaymentLink(true)}
-                          className="rounded-lg border border-sky-700/60 bg-sky-950/30 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-sky-950/60"
-                        >
-                          Gerar link de pagamento
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaymentLinkInitialCharge(null);
+                              setShowPaymentLink(true);
+                            }}
+                            className="rounded-lg border border-sky-700/60 bg-sky-950/30 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-sky-950/60"
+                          >
+                            Gerar link de pagamento
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenStudentCharge()}
+                            disabled={calculatingStudentCharge}
+                            className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2 text-sm font-semibold text-amber-200 hover:bg-amber-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {calculatingStudentCharge ? "Calculando..." : "Cobrar aluno"}
+                          </button>
+                        </>
                       ) : null}
                     </div>
                     ) : null}
@@ -1882,7 +1926,11 @@ export function AdminUsersTab() {
         </div>
       ) : null}
       {showPaymentLink && selectedDetail ? (
-        <PaymentLinkModal onClose={() => setShowPaymentLink(false)} initialUser={detailToSummary(selectedDetail)} />
+        <PaymentLinkModal
+          onClose={() => setShowPaymentLink(false)}
+          initialUser={detailToSummary(selectedDetail)}
+          initialCharge={paymentLinkInitialCharge}
+        />
       ) : null}
     </div>
   );

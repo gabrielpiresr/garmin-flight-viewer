@@ -68,6 +68,12 @@ export async function getAvailableFlightCreditPackages(): Promise<FlightCreditSa
   return normalizeFlightCreditSalesConfig(response.config);
 }
 
+export async function getAdminFlightCreditPackagesForStudent(targetUserId: string): Promise<FlightCreditSalesConfig> {
+  const response = await execute({ action: "adminGetFlightCreditPackagesForStudent", targetUserId });
+  if (!response.config) throw new Error(response.message || "Pacotes de horas nao retornados.");
+  return normalizeFlightCreditSalesConfig(response.config);
+}
+
 export async function createFlightCreditCheckout(
   packageId: string,
   customHours?: number,

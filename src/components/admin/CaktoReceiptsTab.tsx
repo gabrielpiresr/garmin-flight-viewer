@@ -6,10 +6,12 @@ import { getFlightCreditSalesConfig, adminCreateFlightCreditCheckout, sendFlight
 import type { FlightCreditCheckoutExtraProduct, FlightCreditPackage } from "../../types/flightCreditSales";
 import { getCreditPaymentSettings } from "../../lib/lastlinkDb";
 import type { CreditPaymentProvider } from "../../types/lastlink";
-import { listSchoolProducts } from "../../lib/schoolProductsDb";
+import { createSchoolProduct, listSchoolProducts } from "../../lib/schoolProductsDb";
 import type { SchoolProduct } from "../../types/costs";
-import { listAdminUsers } from "../../lib/adminUsersDb";
+import { listAdminUserSummaries, listAdminUsers } from "../../lib/adminUsersDb";
 import type { AdminUserSummary } from "../../types/adminUsers";
+import { useAuth } from "../../contexts/AuthContext";
+import { getStudentDebtCharge, type StudentDebtCharge } from "../../lib/studentReceivables";
 
 const eventLabels: Record<string, string> = {
   purchase_approved: "Compra aprovada",
@@ -29,12 +31,21 @@ const money = (value: number) => value.toLocaleString("pt-BR", { style: "currenc
 const defaultEventTypes = ["purchase_approved", "saga_credit_created"];
 const allEventTypes = Object.keys(eventLabels);
 
+export type PaymentLinkInitialCharge = {
+  packageId: string;
+  hours: number;
+  hourPrice: number;
+  label?: string;
+};
+
 export function PaymentLinkModal({
   onClose,
   initialUser = null,
+  initialCharge = null,
 }: {
   onClose: () => void;
   initialUser?: AdminUserSummary | null;
+  initialCharge?: PaymentLinkInitialCharge | null;
 }) {
   const { showToast } = useToast();
   const [search, setSearch] = useState("");
@@ -43,12 +54,15 @@ export function PaymentLinkModal({
   const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(initialUser);
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
-  const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [selectedPackageId, setSelectedPackageId] = useState(initialCharge?.packageId ?? "");
   const [productOptions, setProductOptions] = useState<SchoolProduct[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [selectedExtraProductIds, setSelectedExtraProductIds] = useState<string[]>([]);
-  const [customHoursInput, setCustomHoursInput] = useState("");
-  const [customHourPriceInput, setCustomHourPriceInput] = useState("");
+  const [customHoursInput, setCustomHoursInput] = useState(initialCharge?.hours ? String(initialCharge.hours) : "");
+  const [customHourPriceInput, setCustomHourPriceInput] = useState(initialCharge?.hourPrice ? String(initialCharge.hourPrice) : "");
+  const [customProductName, setCustomProductName] = useState("");
+  const [customProductPriceInput, setCustomProductPriceInput] = useState("");
+  const [saveCustomProduct, setSaveCustomProduct] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [sendEmailAfterGenerate, setSendEmailAfterGenerate] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
@@ -67,7 +81,9 @@ export function PaymentLinkModal({
         ]);
         const active = config.packages.filter((p) => p.active);
         setPackages(active);
-        const defaultPackage = active.find((item) => item.isDefault) ?? active[0];
+        const defaultPackage = initialCharge?.packageId
+          ? active.find((item) => item.id === initialCharge.packageId)
+          : active.find((item) => item.isDefault) ?? active[0];
         if (defaultPackage) setSelectedPackageId(defaultPackage.id);
         if (paymentSettings?.provider) setPaymentProvider(paymentSettings.provider);
       } catch (e) {
@@ -76,7 +92,14 @@ export function PaymentLinkModal({
         setPackagesLoading(false);
       }
     })();
-  }, [showToast]);
+  }, [initialCharge?.packageId, showToast]);
+
+  useEffect(() => {
+    if (!initialCharge) return;
+    setSelectedPackageId(initialCharge.packageId);
+    setCustomHoursInput(initialCharge.hours ? String(initialCharge.hours) : "");
+    setCustomHourPriceInput(initialCharge.hourPrice ? String(initialCharge.hourPrice) : "");
+  }, [initialCharge]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,9 +161,25 @@ export function PaymentLinkModal({
     [productOptions, selectedExtraProductIds],
   );
 
+  const parsedCustomProductPrice = Number(customProductPriceInput.replace(",", "."));
+  const customProductPrice = Number.isFinite(parsedCustomProductPrice) ? Math.round(parsedCustomProductPrice * 100) / 100 : 0;
+  const customProductReady = customProductName.trim().length > 0 && customProductPrice > 0;
+  const customExtraProduct = useMemo<FlightCreditCheckoutExtraProduct | null>(
+    () =>
+      customProductReady
+        ? {
+            id: `custom_${customProductName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "produto"}`,
+            name: customProductName.trim(),
+            price: customProductPrice,
+            custom: true,
+          }
+        : null,
+    [customProductName, customProductPrice, customProductReady],
+  );
+
   const extrasTotal = useMemo(
-    () => selectedExtraProducts.reduce((sum, item) => sum + item.price, 0),
-    [selectedExtraProducts],
+    () => selectedExtraProducts.reduce((sum, item) => sum + item.price, 0) + (customExtraProduct?.price ?? 0),
+    [customExtraProduct?.price, selectedExtraProducts],
   );
 
   function toggleExtraProduct(productId: string) {
@@ -165,22 +204,32 @@ export function PaymentLinkModal({
     }
   }
 
+  async function buildExtraProductsForCheckout(): Promise<FlightCreditCheckoutExtraProduct[]> {
+    const extras = [...selectedExtraProducts];
+    if (!customExtraProduct) return extras;
+    if (!saveCustomProduct) return [...extras, customExtraProduct];
+    const saved = await createSchoolProduct({ name: customExtraProduct.name, idealPrice: customExtraProduct.price });
+    setProductOptions((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+    return [...extras, { id: saved.id, name: saved.name, price: saved.idealPrice }];
+  }
+
   async function handleGenerate(customHours?: number, customHourPrice?: number) {
     if (!selectedUser) return;
-    if (!selectedPackageId && selectedExtraProducts.length === 0) {
-      showToast({ variant: "error", message: "Selecione um pacote de horas ou pelo menos um produto adicional." });
-      return;
-    }
     setGenerating(true);
     setEmailSentTo(null);
     try {
+      const extraProducts = await buildExtraProductsForCheckout();
+      if (!selectedPackageId && extraProducts.length === 0) {
+        showToast({ variant: "error", message: "Selecione um pacote de horas ou pelo menos um produto adicional." });
+        return;
+      }
       const checkout = await adminCreateFlightCreditCheckout(
         selectedUser.userId,
         selectedPackageId,
         customHours,
         customHourPrice,
         false,
-        selectedExtraProducts,
+        extraProducts,
       );
       setPaymentUrl(checkout.paymentUrl);
       setPaymentProposalId(checkout.proposalId);
@@ -205,6 +254,7 @@ export function PaymentLinkModal({
   const customTotal = customReference && customHours > 0 && appliedHourPrice > 0 ? customHours * appliedHourPrice : null;
   const selectedPackageTotal = selectedPackage ? selectedPackage.hours * selectedPackage.hourPrice : 0;
   const mainLinkTotal = selectedPackageTotal + extrasTotal;
+  const hasExtraProducts = selectedExtraProducts.length > 0 || Boolean(customExtraProduct);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -362,9 +412,38 @@ export function PaymentLinkModal({
                   })}
                 </div>
               )}
-              {selectedExtraProducts.length > 0 ? (
+              {hasExtraProducts ? (
                 <p className="mt-2 text-[11px] text-slate-400">Extras: {money(extrasTotal)}</p>
               ) : null}
+              <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <p className="text-xs font-semibold text-slate-300">Produto personalizado</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_9rem]">
+                  <input
+                    value={customProductName}
+                    onChange={(e) => setCustomProductName(e.target.value)}
+                    placeholder="Nome do produto"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                  />
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={customProductPriceInput}
+                    onChange={(e) => setCustomProductPriceInput(e.target.value)}
+                    placeholder="Valor"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+                <label className="mt-2 flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={saveCustomProduct}
+                    onChange={(e) => setSaveCustomProduct(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500"
+                  />
+                  Salvar esse produto
+                </label>
+              </div>
             </div>
 
             <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-300">
@@ -379,7 +458,7 @@ export function PaymentLinkModal({
 
             <button
               type="button"
-              disabled={!selectedUser || (!selectedPackageId && selectedExtraProducts.length === 0) || generating || emailSending}
+              disabled={!selectedUser || (!selectedPackageId && !hasExtraProducts) || generating || emailSending}
               onClick={() => void handleGenerate()}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 py-2 text-xs font-medium text-white hover:bg-sky-500 transition disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -389,7 +468,9 @@ export function PaymentLinkModal({
 
             <div className="rounded-lg border border-emerald-700/40 bg-emerald-950/20 p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300">Quantidade personalizada</p>
-              <p className="mt-1 text-[11px] text-slate-400">Digite horas e valor/hora. A validade ainda usa o pacote de referência.</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                {initialCharge?.label ?? "Digite horas e valor/hora. A validade ainda usa o pacote de referência."}
+              </p>
               <div className="mt-2">
                 <input
                   type="number"
@@ -440,8 +521,211 @@ export function PaymentLinkModal({
   );
 }
 
+function parseDateMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const iso = value.length === 10 ? `${value}T12:00:00` : value;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function formatDate(value: string | null | undefined): string {
+  const ms = parseDateMs(value);
+  if (!ms) return "-";
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(new Date(ms));
+}
+
+function cutoffDateForDays(days: number): Date {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - Math.max(1, Math.round(days)));
+  return date;
+}
+
+function PendingReceivablesTab({ onCharge }: { onCharge: (charge: StudentDebtCharge) => void }) {
+  const { user } = useAuth();
+  const { showToast } = useToast();
+  const [lastFlightDays, setLastFlightDays] = useState(30);
+  const [lastFlightDaysDraft, setLastFlightDaysDraft] = useState("30");
+  const [rows, setRows] = useState<StudentDebtCharge[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [scanStatus, setScanStatus] = useState("");
+  const loadSeqRef = useRef(0);
+
+  const loadPending = useCallback(async () => {
+    if (!user) return;
+    const seq = ++loadSeqRef.current;
+    setLoading(true);
+    setRows([]);
+    setScanStatus("Carregando alunos...");
+    try {
+      const students: AdminUserSummary[] = [];
+      let nextOffset = 0;
+      let total = 0;
+      do {
+        const page = await listAdminUserSummaries({
+          search: "",
+          limit: 50,
+          offset: nextOffset,
+        });
+        if (seq !== loadSeqRef.current) return;
+        total = page.total;
+        students.push(...page.users.filter((row) => row.role === "aluno"));
+        nextOffset += page.limit;
+        setScanStatus(`Carregando alunos ${Math.min(nextOffset, total)} de ${total}...`);
+      } while (nextOffset < total);
+
+      const cutoffMs = cutoffDateForDays(lastFlightDays).getTime();
+      const recentStudents = students.filter((student) => parseDateMs(student.executed.lastFlightAt) >= cutoffMs);
+      setScanStatus(`Calculando pendencias de ${recentStudents.length} aluno(s)...`);
+
+      const found: StudentDebtCharge[] = [];
+      for (let index = 0; index < recentStudents.length; index += 4) {
+        const chunk = recentStudents.slice(index, index + 4);
+        const results = await Promise.allSettled(
+          chunk.map((student) =>
+            getStudentDebtCharge({
+              viewer: { userId: user.id, role: user.role },
+              student,
+            }),
+          ),
+        );
+        if (seq !== loadSeqRef.current) return;
+        for (const result of results) {
+          if (result.status === "fulfilled" && result.value) found.push(result.value);
+        }
+        setRows([...found].sort((a, b) => b.amount - a.amount || parseDateMs(b.lastFlightAt) - parseDateMs(a.lastFlightAt)));
+        setScanStatus(`Calculando pendencias ${Math.min(index + chunk.length, recentStudents.length)} de ${recentStudents.length}...`);
+      }
+      setScanStatus(`${found.length} aluno(s) em debito encontrados.`);
+    } catch (error) {
+      if (seq === loadSeqRef.current) {
+        showToast({ variant: "error", message: (error as Error).message });
+        setScanStatus("Falha ao carregar pendencias.");
+      }
+    } finally {
+      if (seq === loadSeqRef.current) setLoading(false);
+    }
+  }, [lastFlightDays, showToast, user]);
+
+  useEffect(() => {
+    void loadPending();
+  }, [loadPending]);
+
+  function handleApplyFilter() {
+    const nextDays = Math.max(1, Math.round(Number(lastFlightDaysDraft) || 30));
+    setLastFlightDaysDraft(String(nextDays));
+    if (nextDays === lastFlightDays) {
+      void loadPending();
+    } else {
+      setLastFlightDays(nextDays);
+    }
+  }
+
+  const totalAmount = rows.reduce((sum, row) => sum + row.amount, 0);
+  const totalHours = rows.reduce((sum, row) => sum + row.debtHours, 0);
+  const filterCls = "rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-200";
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <p className="text-xs text-slate-500">Alunos em debito</p>
+          <p className="mt-1 text-xl font-bold text-amber-300">{rows.length}</p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <p className="text-xs text-slate-500">Horas em aberto</p>
+          <p className="mt-1 text-xl font-bold text-slate-100">{totalHours.toFixed(1)}h</p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <p className="text-xs text-slate-500">Valor a cobrar</p>
+          <p className="mt-1 text-xl font-bold text-emerald-300">{money(totalAmount)}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
+        <label className="text-xs text-slate-400">
+          Ultimo voo nos ultimos
+          <input
+            type="number"
+            min="1"
+            max="3650"
+            value={lastFlightDaysDraft}
+            onChange={(event) => setLastFlightDaysDraft(event.target.value)}
+            className={`${filterCls} ml-2 w-24`}
+          />
+          <span className="ml-2">dias</span>
+        </label>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={handleApplyFilter}
+          className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {loading ? "Calculando..." : "Recalcular"}
+        </button>
+        <span className="text-xs text-slate-500">{scanStatus}</span>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <table className="min-w-full text-xs">
+          <thead className="bg-slate-900 text-slate-400">
+            <tr>
+              {["Aluno", "Ultimo voo", "Horas em debito", "Pacote vigente", "Valor", ""].map((item) => (
+                <th key={item} className="px-3 py-3 text-left">{item}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800">
+            {loading && rows.length === 0 ? (
+              Array.from({ length: 5 }).map((_, index) => (
+                <tr key={`pending-sk-${index}`}>
+                  {Array.from({ length: 6 }).map((__, colIndex) => (
+                    <td key={`${index}-${colIndex}`} className="px-3 py-3">
+                      <div className="h-4 w-full animate-pulse rounded bg-slate-800/80" />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : rows.map((row) => (
+              <tr key={row.student.userId} className="text-slate-300">
+                <td className="px-3 py-3">
+                  <p className="font-medium text-slate-100">{row.student.name || row.student.profile.fullName || row.student.email}</p>
+                  <p className="text-slate-500">{row.student.email}</p>
+                </td>
+                <td className="whitespace-nowrap px-3 py-3">{formatDate(row.lastFlightAt)}</td>
+                <td className="px-3 py-3 font-semibold text-amber-300">{row.debtHours.toFixed(1)}h</td>
+                <td className="px-3 py-3">
+                  <p>{row.packageName}</p>
+                  {row.hourPrice > 0 ? <p className="text-slate-500">{money(row.hourPrice)}/h</p> : null}
+                </td>
+                <td className="px-3 py-3 font-semibold text-emerald-300">{row.amount > 0 ? money(row.amount) : "-"}</td>
+                <td className="px-3 py-3">
+                  <button
+                    type="button"
+                    disabled={!row.packageId || row.amount <= 0}
+                    onClick={() => onCharge(row)}
+                    className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cobrar
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!loading && rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-3 py-8 text-center text-slate-500">Nenhum aluno em debito nesse periodo.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function CaktoReceiptsTab() {
   const { showToast } = useToast();
+  const [activeReceiptsSubTab, setActiveReceiptsSubTab] = useState<"received" | "pending">("received");
   const [page, setPage] = useState<CaktoReceiptPage>({ receipts: [], total: 0, limit: 25, offset: 0, summary: { approved: 0, refunded: 0, pending: 0 } });
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -455,6 +739,8 @@ export function CaktoReceiptsTab() {
   const [selected, setSelected] = useState<CaktoReceipt | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentModalUser, setPaymentModalUser] = useState<AdminUserSummary | null>(null);
+  const [paymentModalCharge, setPaymentModalCharge] = useState<PaymentLinkInitialCharge | null>(null);
   const loadSeqRef = useRef(0);
 
   useEffect(() => {
@@ -503,6 +789,47 @@ export function CaktoReceiptsTab() {
   const filterCls = "rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs text-slate-200";
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-2">
+        <button
+          type="button"
+          onClick={() => setActiveReceiptsSubTab("received")}
+          className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+            activeReceiptsSubTab === "received"
+              ? "bg-sky-600 text-white"
+              : "border border-slate-700 text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          Recebidos
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveReceiptsSubTab("pending")}
+          className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+            activeReceiptsSubTab === "pending"
+              ? "bg-amber-600 text-white"
+              : "border border-slate-700 text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          Pendentes
+        </button>
+      </div>
+
+      {activeReceiptsSubTab === "pending" ? (
+        <PendingReceivablesTab
+          onCharge={(charge) => {
+            setPaymentModalUser(charge.student);
+            setPaymentModalCharge({
+              packageId: charge.packageId,
+              hours: charge.debtHours,
+              hourPrice: charge.hourPrice,
+              label: `Saldo em debito: ${charge.debtHours.toFixed(1)}h x ${money(charge.hourPrice)}/h = ${money(charge.amount)}.`,
+            });
+            setShowPaymentModal(true);
+          }}
+        />
+      ) : null}
+
+      <div className={activeReceiptsSubTab === "received" ? "space-y-4" : "hidden"}>
       <div className="flex items-center justify-between">
         <div className="grid flex-1 gap-3 sm:grid-cols-3">
           {[
@@ -526,7 +853,11 @@ export function CaktoReceiptsTab() {
           </button>
           <button
             type="button"
-            onClick={() => setShowPaymentModal(true)}
+            onClick={() => {
+              setPaymentModalUser(null);
+              setPaymentModalCharge(null);
+              setShowPaymentModal(true);
+            }}
             className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 transition"
           >
             Gerar link de pagamento
@@ -663,7 +994,14 @@ export function CaktoReceiptsTab() {
           </div>
         </div>
       ) : null}
-      {showPaymentModal ? <PaymentLinkModal onClose={() => setShowPaymentModal(false)} /> : null}
+      </div>
+      {showPaymentModal ? (
+        <PaymentLinkModal
+          onClose={() => setShowPaymentModal(false)}
+          initialUser={paymentModalUser}
+          initialCharge={paymentModalCharge}
+        />
+      ) : null}
     </div>
   );
 }

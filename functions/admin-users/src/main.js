@@ -25025,6 +25025,7 @@ function proposalProducts(input) {
         id: cleanString(item?.id),
         name: cleanString(item?.name),
         price: proposalProductPrice(item),
+        custom: item?.custom === true,
       }))
     : [];
 }
@@ -25308,7 +25309,7 @@ function filterFlightCreditPackagesForUser(packages, profile, authUser) {
   });
 }
 
-async function getFlightCreditPackagesForStudentUserId(studentUserId) {
+async function getFlightCreditPackagesForStudentUserId(studentUserId, options = {}) {
   const safeUserId = cleanString(studentUserId);
   if (!safeUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
   const [profile, authUser, { settings, doc }] = await Promise.all([
@@ -25317,7 +25318,7 @@ async function getFlightCreditPackagesForStudentUserId(studentUserId) {
     loadFlightCreditSalesConfig(),
   ]);
   const config = publicFlightCreditSalesConfig(settings, doc?.$updatedAt || null, true);
-  if (!config.studentPurchasesEnabled) {
+  if (options.respectStudentPurchasesEnabled !== false && !config.studentPurchasesEnabled) {
     config.packages = [];
   } else {
     config.packages = filterFlightCreditPackagesForUser(config.packages, profile, authUser);
@@ -26536,6 +26537,15 @@ async function checkoutExtraProducts(input) {
 
   const resolved = [];
   for (const item of items) {
+    if (item.custom === true) {
+      resolved.push({
+        id: item.id || `custom_${crypto.createHash("sha256").update(`${item.name}:${item.price}`).digest("hex").slice(0, 16)}`,
+        name: item.name,
+        price: item.price,
+        custom: true,
+      });
+      continue;
+    }
     const doc = await databases.getDocument(DATABASE_ID, SCHOOL_PRODUCTS_COLLECTION_ID, item.id).catch(() => null);
     if (!doc || doc.deleted_at || doc.active === false || (doc.school_id && doc.school_id !== SCHOOL_ID)) {
       throw Object.assign(new Error(`Produto indisponivel: ${item.name || item.id}`), { status: 400 });
@@ -35418,6 +35428,12 @@ module.exports = async ({ req, res, log, error }) => {
       } else {
         config.packages = filterFlightCreditPackagesForUser(config.packages, profile, authUser);
       }
+      return jsonResponse(res, 200, { config });
+    }
+
+    if (action === "adminGetFlightCreditPackagesForStudent") {
+      await requireAdmin(actorUserId);
+      const config = await getFlightCreditPackagesForStudentUserId(payload.targetUserId, { respectStudentPurchasesEnabled: false });
       return jsonResponse(res, 200, { config });
     }
 
