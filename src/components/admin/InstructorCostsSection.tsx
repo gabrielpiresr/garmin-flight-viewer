@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getInstructorCosts, saveInstructorCosts } from "../../lib/instructorCostsDb";
 import { listModels } from "../../lib/aircraftModelsDb";
+import { listAircrafts } from "../../lib/aircraftDb";
+import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import type { AircraftModel } from "../../types/admin";
 import type { InstructorModelCost } from "../../types/costs";
 import { Skeleton } from "../ui/Skeleton";
@@ -54,6 +56,7 @@ type ModelCostDraft = {
   hourlyNightRate: string;
   fixedDayRate: string;
   fixedNightRate: string;
+  groundSchoolRate: string;
 };
 
 function modelCostToInstructorModelCost(draft: ModelCostDraft): InstructorModelCost {
@@ -64,6 +67,7 @@ function modelCostToInstructorModelCost(draft: ModelCostDraft): InstructorModelC
     hourlyNightRate: parseCurrency(draft.hourlyNightRate),
     fixedDayRate: parseCurrency(draft.fixedDayRate),
     fixedNightRate: parseCurrency(draft.fixedNightRate),
+    groundSchoolRate: parseCurrency(draft.groundSchoolRate),
   };
 }
 
@@ -82,6 +86,7 @@ export function InstructorCostsSection({
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [monthlyFixedCost, setMonthlyFixedCost] = useState("0");
   const [models, setModels] = useState<AircraftModel[]>([]);
+  const [groundModelIds, setGroundModelIds] = useState<Set<string>>(new Set());
   const [modelDrafts, setModelDrafts] = useState<ModelCostDraft[]>([]);
   const costsSnapshotRef = useRef("");
   const costsHydratedRef = useRef(false);
@@ -94,7 +99,9 @@ export function InstructorCostsSection({
         getInstructorCosts(instructorUserId),
         listModels(),
       ]);
+      const aircrafts = await listAircrafts(DEFAULT_SCHOOL_ID).catch(() => []);
       setModels(allModels);
+      setGroundModelIds(new Set(aircrafts.filter((aircraft) => aircraft.type === "ground").map((aircraft) => aircraft.model_id).filter(Boolean)));
       setUpdatedAt(costs?.updatedAt ?? null);
       setMonthlyFixedCost(String(costs?.monthlyFixedCost ?? 0));
 
@@ -107,6 +114,7 @@ export function InstructorCostsSection({
           hourlyNightRate: String(existing?.hourlyNightRate ?? 0),
           fixedDayRate: String(existing?.fixedDayRate ?? 0),
           fixedNightRate: String(existing?.fixedNightRate ?? 0),
+          groundSchoolRate: String(existing?.groundSchoolRate ?? 0),
         };
       });
       setModelDrafts(drafts);
@@ -232,6 +240,13 @@ export function InstructorCostsSection({
                   value={draft.fixedNightRate}
                   onChange={(v) => updateModelDraft(draft.modelId, "fixedNightRate", v)}
                 />
+                {groundModelIds.has(draft.modelId) ? (
+                  <CurrencyInput
+                    label="Repasse por ground school"
+                    value={draft.groundSchoolRate}
+                    onChange={(v) => updateModelDraft(draft.modelId, "groundSchoolRate", v)}
+                  />
+                ) : null}
               </div>
             </div>
           ))}

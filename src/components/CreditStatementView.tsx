@@ -247,11 +247,12 @@ export function CreditStatementView({
                     const payment = purchase.paymentInstallments
                       ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
                       : purchase.paymentMethod || "Forma não informada";
+                    const modelLabel = purchase.aircraftModelName;
                     return (
                       <article key={purchase.id} className="p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="text-sm font-semibold text-slate-100">{purchase.aircraftModelName}</p>
+                            <p className="text-sm font-semibold text-slate-100">{modelLabel}</p>
                             <p className="mt-0.5 text-xs text-slate-500">{formatDate(purchase.purchaseDate)} · {payment}</p>
                           </div>
                           <span className="shrink-0 text-sm font-semibold text-emerald-300">{formatHours(purchase.hours)}</span>
@@ -259,6 +260,7 @@ export function CreditStatementView({
                         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                           <span>{formatCurrency(purchase.amountPaid)}</span>
                           <span>Validade {formatDate(purchase.expiresAt)}</span>
+                          {purchase.isGroundSchool ? <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300">Ground School</span> : null}
                           {purchase.isNight ? <span className="rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] text-indigo-300">Noturno</span> : null}
                           {purchase.weekdayOnly ? <span className="rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] text-sky-300">seg-sex</span> : null}
                         </div>
@@ -284,11 +286,15 @@ export function CreditStatementView({
                       const payment = purchase.paymentInstallments
                         ? `${purchase.paymentMethod} (${purchase.paymentInstallments}x)`
                         : purchase.paymentMethod || "Forma não informada";
+                      const modelLabel = purchase.aircraftModelName;
                       return (
                         <tr key={purchase.id} className="text-slate-300">
                           <td className="px-3 py-2">{formatDate(purchase.purchaseDate)}</td>
                           <td className="px-3 py-2 font-medium text-slate-100">
-                            {purchase.aircraftModelName}
+                            {modelLabel}
+                            {purchase.isGroundSchool && (
+                              <span className="ml-2 rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">Ground School</span>
+                            )}
                             {purchase.isNight && (
                               <span className="ml-2 rounded bg-indigo-900/60 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">Noturno</span>
                             )}

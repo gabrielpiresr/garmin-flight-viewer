@@ -19,13 +19,17 @@ export type AiswebPlatformSettingsInput = {
   minimums: AiswebOperationalMinimum[];
 };
 
+export type AiswebAlertDeliveryChannel = "email" | "wpp";
+
 export type AiswebWatchlist = {
   icaoCodes: string[];
-  /** Por ICAO: se true, envia e-mail quando sair NOTAM novo. */
+  /** Canais usados pelos alertas AISWEB desta página. */
+  deliveryChannels: AiswebAlertDeliveryChannel[];
+  /** Por ICAO: se true, envia alerta quando sair NOTAM novo. */
   notamAlerts: Record<string, boolean>;
-  /** Por ICAO: se true, envia e-mail quando sair suplemento AIP novo. */
+  /** Por ICAO: se true, envia alerta quando sair suplemento AIP novo. */
   supplementAlerts: Record<string, boolean>;
-  /** Por ICAO: se true, envia e-mail quando sair aviso de aeródromo (REDEMET) novo. */
+  /** Por ICAO: se true, envia alerta quando sair aviso de aeródromo (REDEMET) novo. */
   adWarningAlerts: Record<string, boolean>;
   updatedAt: string | null;
 };
@@ -62,6 +66,7 @@ export type AiswebWeatherAlert = {
   matchMode: AiswebWeatherAlertMatchMode;
   repeatMode: AiswebWeatherAlertRepeatMode;
   criteria: AiswebWeatherAlertCriterion[];
+  deliveryChannels: AiswebAlertDeliveryChannel[];
   enabled: boolean;
   createdAt: string | null;
   updatedAt: string | null;

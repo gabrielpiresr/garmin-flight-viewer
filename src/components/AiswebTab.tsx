@@ -29,6 +29,7 @@ import {
 } from "../lib/aiswebMetar";
 import type {
   AiswebAerodromeMatch,
+  AiswebAlertDeliveryChannel,
   AiswebAirportBundle,
   AiswebDashboard,
   AiswebMinimumCheck,
@@ -85,6 +86,7 @@ function readBootstrapCache(): {
       settings: parsed.settings,
       watchlist: {
         icaoCodes: parsed.watchlist.icaoCodes || [],
+        deliveryChannels: parsed.watchlist.deliveryChannels?.length ? parsed.watchlist.deliveryChannels : ["email", "wpp"],
         notamAlerts: parsed.watchlist.notamAlerts || {},
         supplementAlerts: parsed.watchlist.supplementAlerts || {},
         adWarningAlerts: parsed.watchlist.adWarningAlerts || {},
@@ -356,13 +358,13 @@ function ConditionsBoard({
               <th className="px-2 py-2 font-semibold">Nuvens</th>
               <th className="px-2 py-2 font-semibold">Obs</th>
               <th className="px-2 py-2 font-semibold">Status</th>
-              <th className="px-2 py-2 font-semibold" title="Avisos de NOTAM por e-mail">
+              <th className="px-2 py-2 font-semibold" title="Avisos de NOTAM">
                 NOTAM
               </th>
-              <th className="px-2 py-2 font-semibold" title="Avisos de suplemento AIP por e-mail">
+              <th className="px-2 py-2 font-semibold" title="Avisos de suplemento AIP">
                 SUP
               </th>
-              <th className="px-2 py-2 font-semibold" title="Avisos de aeródromo (REDEMET) por e-mail">
+              <th className="px-2 py-2 font-semibold" title="Avisos de aeródromo (REDEMET)">
                 AD WRNG
               </th>
               <th className="px-2 py-2 text-right font-semibold">Lista</th>
@@ -906,6 +908,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     setSavingWatchlist(true);
     try {
       const saved = await saveAiswebWatchlist(unique, {
+        deliveryChannels: dashboard?.watchlist.deliveryChannels || ["email", "wpp"],
         notamAlerts: nextNotamAlerts,
         supplementAlerts: nextSupplementAlerts,
         adWarningAlerts: nextAdWarningAlerts,
@@ -962,6 +965,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     setTogglingNotamIcao(code);
     try {
       const saved = await saveAiswebWatchlist(watchlist, {
+        deliveryChannels: dashboard?.watchlist.deliveryChannels || ["email", "wpp"],
         notamAlerts: nextAlerts,
         supplementAlerts,
         adWarningAlerts,
@@ -991,6 +995,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     setTogglingSupplementIcao(code);
     try {
       const saved = await saveAiswebWatchlist(watchlist, {
+        deliveryChannels: dashboard?.watchlist.deliveryChannels || ["email", "wpp"],
         notamAlerts,
         supplementAlerts: nextAlerts,
         adWarningAlerts,
@@ -1020,6 +1025,7 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     setTogglingAdWarningIcao(code);
     try {
       const saved = await saveAiswebWatchlist(watchlist, {
+        deliveryChannels: dashboard?.watchlist.deliveryChannels || ["email", "wpp"],
         notamAlerts,
         supplementAlerts,
         adWarningAlerts: nextAlerts,
@@ -1040,6 +1046,19 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
     } finally {
       setTogglingAdWarningIcao(null);
     }
+  }
+
+  async function handleAlertDeliveryChannelsChange(channels: AiswebAlertDeliveryChannel[]) {
+    const previousWatchlist = dashboard?.watchlist;
+    const saved = await saveAiswebWatchlist(watchlist, {
+      deliveryChannels: channels,
+      notamAlerts: previousWatchlist?.notamAlerts || {},
+      supplementAlerts: previousWatchlist?.supplementAlerts || {},
+      adWarningAlerts: previousWatchlist?.adWarningAlerts || {},
+    });
+    const normalizedWatchlist = { ...saved, deliveryChannels: channels };
+    if (dashboard?.settings) writeBootstrapCache(dashboard.settings, normalizedWatchlist);
+    setDashboard((prev) => (prev ? { ...prev, watchlist: normalizedWatchlist } : prev));
   }
 
   async function handleRemove(icao: string) {
@@ -1488,7 +1507,13 @@ export function AiswebTab({ boardRefreshToken }: { boardRefreshToken?: number } 
 
       {subTab === "alertHistory" ? <AiswebWeatherAlertsPanel tab="history" /> : null}
 
-      {subTab === "myAlerts" ? <AiswebWeatherAlertsPanel tab="mine" /> : null}
+      {subTab === "myAlerts" ? (
+        <AiswebWeatherAlertsPanel
+          tab="mine"
+          deliveryChannels={dashboard?.watchlist.deliveryChannels || ["email", "wpp"]}
+          onDeliveryChannelsChange={handleAlertDeliveryChannelsChange}
+        />
+      ) : null}
 
       <StatusTooltipCard state={tooltip} />
     </div>

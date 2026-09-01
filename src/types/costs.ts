@@ -8,6 +8,7 @@ export type InstructorModelCost = {
   hourlyNightRate: number;
   fixedDayRate: number;
   fixedNightRate: number;
+  groundSchoolRate: number;
 };
 
 export type InstructorCosts = {
@@ -20,6 +21,8 @@ export type InstructorCosts = {
 };
 
 export type InstructorPaymentSnapshot = {
+  id?: string;
+  flightId?: string;
   aircraftModelId: string | null;
   aircraftModelName: string | null;
   isNight: boolean;

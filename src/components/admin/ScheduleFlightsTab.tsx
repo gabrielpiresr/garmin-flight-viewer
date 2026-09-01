@@ -261,10 +261,11 @@ const NO_STUDENT_OPTION: StudentIdentity = {
   heightCm: null,
 };
 
-// Usuário "bloqueio" no SAGA (piresr.gabriel+bloqueio@gmail.com, ID 139) — entra como
-// aluno E instrutor dos eventos de bloqueio de agenda criados pelo admin.
+const SAGA_BLOCK_MARKER = "[BLOQUEIO]";
+
+// Usuário legado "bloqueio" no SAGA (piresr.gabriel+bloqueio@gmail.com, ID 139).
+// Bloqueios novos usam o marcador em observação e aluno "Ninguém".
 const SAGA_BLOCK_USER_ID = "139";
-const SAGA_BLOCK_USER_NAME = "Bloqueio de agenda";
 
 function isNoStudentId(studentId: string | null | undefined): boolean {
   return studentId === NO_STUDENT_OPTION_ID;
@@ -297,9 +298,10 @@ function flightStatusToSagaStatus(status: FlightStatus | undefined): "PLANNED" |
   return "PLANNED";
 }
 
-/** Evento de bloqueio de agenda: usuário de bloqueio (ID 139) como aluno/instrutor, nota, nome ou agenda "bloqueio". */
+/** Evento de bloqueio de agenda: marcador novo em observação ou identificação legada por usuário/texto. */
 function sagaEventIsBlock(item: SagaDirectScheduleItem): boolean {
   const norm = (value: string | null | undefined) => String(value || "").replace(/^saga[:_-]?/i, "").trim();
+  if (String(item.notes || "").includes(SAGA_BLOCK_MARKER)) return true;
   if (norm(item.studentSagaId) === SAGA_BLOCK_USER_ID || norm(item.instructorSagaId) === SAGA_BLOCK_USER_ID) return true;
   if (norm(item.studentUserId) === `saga_${SAGA_BLOCK_USER_ID}`) return true;
   return /bloqueio/i.test(String(item.notes || ""))
@@ -4122,10 +4124,11 @@ export function ScheduleFlightsTab({
       const idx = options.findIndex((w) => w.weekStart === selectedWeekStart);
       const target = options[idx + offset];
       if (!target) return;
+      if (agendaView === "daily") setSelectedDay(DAY_ORDER[0]!);
       setSelectedWeekStart(target.weekStart);
       void loadWeekRef.current(target.weekStart, target, { showSkeleton: false });
     },
-    [selectedWeekStart],
+    [agendaView, selectedWeekStart],
   );
 
   const goToPreviousThreeDayPeriod = useCallback(() => {
@@ -6016,19 +6019,17 @@ export function ScheduleFlightsTab({
     }
     setBlockSaving(true);
     try {
-      // Um único evento SAGA com duração multi-dia. Segmentar por dia falha no SAGA
-      // ("aluno já tem voo") porque o usuário de bloqueio é o mesmo em todos os segmentos.
+      // Um único evento SAGA com duração multi-dia, marcado por observação e sem aluno.
       const result = await upsertSagaScheduleDirect({
         aircraftIdent: blockDraft.aircraftRegistration,
-        studentSagaId: SAGA_BLOCK_USER_ID,
-        studentName: SAGA_BLOCK_USER_NAME,
-        instructorSagaId: SAGA_BLOCK_USER_ID,
-        instructorName: SAGA_BLOCK_USER_NAME,
+        studentSagaId: SAGA_NO_STUDENT_ID,
+        studentName: NO_STUDENT_LABEL,
+        instructorSagaId: SAGA_NO_STUDENT_ID,
         date: blockDraft.date,
         startTime: blockDraft.startTime,
         durationMinutes,
         sagaStatus: "CONFIRMED",
-        rawNotes: ["Bloqueio de agenda via plataforma", blockDraft.notes.trim()].filter(Boolean).join(" | ").slice(0, 255),
+        rawNotes: [SAGA_BLOCK_MARKER, "Bloqueio de agenda via plataforma", blockDraft.notes.trim()].filter(Boolean).join(" | ").slice(0, 255),
       });
       const multiDay = blockDraft.endDate !== blockDraft.date;
       showToast({
@@ -6246,6 +6247,7 @@ export function ScheduleFlightsTab({
                 const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
                 const prev = weekOptions[idx - 1];
                 if (!prev) return;
+                if (agendaView === "daily") setSelectedDay(DAY_ORDER[0]!);
                 setSelectedWeekStart(prev.weekStart);
                 void loadWeek(prev.weekStart, prev, { showSkeleton: false });
               }}
@@ -6259,6 +6261,7 @@ export function ScheduleFlightsTab({
               disabled={loadingWeeks}
               onChange={(e) => {
                 const value = e.target.value;
+                if (agendaView === "daily") setSelectedDay(DAY_ORDER[0]!);
                 setSelectedWeekStart(value);
                 const week = weekOptions.find((row) => row.weekStart === value);
                 void loadWeek(value, week, { showSkeleton: false });
@@ -6283,6 +6286,7 @@ export function ScheduleFlightsTab({
                 const idx = weekOptions.findIndex((w) => w.weekStart === selectedWeekStart);
                 const next = weekOptions[idx + 1];
                 if (!next) return;
+                if (agendaView === "daily") setSelectedDay(DAY_ORDER[0]!);
                 setSelectedWeekStart(next.weekStart);
                 void loadWeek(next.weekStart, next, { showSkeleton: false });
               }}
@@ -7644,7 +7648,7 @@ export function ScheduleFlightsTab({
             </div>
             <div className="space-y-3 overflow-y-auto p-4">
               <p className="text-xs text-slate-500">
-                Cria um evento na agenda SAGA com o usuário de bloqueio, impedindo novos agendamentos no período.
+                Cria um evento na agenda SAGA marcado como bloqueio e sem aluno, impedindo novos agendamentos no período.
                 Pode começar em um dia e terminar em outro.
               </p>
               <label className="block text-xs text-slate-400">

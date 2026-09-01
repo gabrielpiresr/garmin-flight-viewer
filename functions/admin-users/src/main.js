@@ -375,7 +375,7 @@ const PROFILE_DOCUMENT_SELECT = [
   "uploaded_at",
 ];
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
-const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active"];
+const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active", "type"];
 const AIRCRAFT_MODEL_SELECT = [
   "$id",
   "name",
@@ -4060,6 +4060,22 @@ async function getAircraftModelIdByIdent(aircraftIdent) {
   return cleanString(page.documents?.[0]?.model_id);
 }
 
+async function getAircraftPaymentInfoByIdent(aircraftIdent) {
+  const normalized = normalizeAircraftIdent(aircraftIdent);
+  if (!normalized || !AIRCRAFTS_COLLECTION_ID) return { modelId: "", type: "" };
+  const page = await databases.listDocuments(DATABASE_ID, AIRCRAFTS_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.equal("registration", [normalized]),
+    ...selectQuery(["$id", "model_id", "type"]),
+    sdk.Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+  const doc = page.documents?.[0];
+  return {
+    modelId: cleanString(doc?.model_id),
+    type: cleanString(doc?.type),
+  };
+}
+
 async function getInstructorCostsForUser(instructorUserId) {
   const safeUserId = cleanString(instructorUserId);
   if (!safeUserId || !INSTRUCTOR_COSTS_COLLECTION_ID) return null;
@@ -4077,6 +4093,7 @@ async function getInstructorCostsForUser(instructorUserId) {
       hourlyNightRate: Number(item.hourlyNightRate ?? 0) || 0,
       fixedDayRate: Number(item.fixedDayRate ?? 0) || 0,
       fixedNightRate: Number(item.fixedNightRate ?? 0) || 0,
+      groundSchoolRate: Number(item.groundSchoolRate ?? 0) || 0,
     })),
   };
 }
@@ -4160,14 +4177,20 @@ async function saveInstructorPaymentSnapshotServer(flightDoc, actorUserId, calcu
   const instructorUserId = cleanString(flightDoc.instructor_user_id);
   if (!instructorUserId) return;
   const studentUserId = cleanString(flightDoc.student_user_id || flightDoc.user_id);
-  const modelId = await getAircraftModelIdByIdent(cleanString(flightDoc.aircraft_ident));
+  const aircraftPaymentInfo = await getAircraftPaymentInfoByIdent(cleanString(flightDoc.aircraft_ident));
+  const modelId = aircraftPaymentInfo.modelId;
   const instructorCosts = await getInstructorCostsForUser(instructorUserId);
   const modelCost = (instructorCosts?.modelCosts || []).find((item) => cleanString(item.modelId) === modelId);
   const isNight = Boolean(flightDoc.is_night);
+  const isGroundSchool = cleanString(aircraftPaymentInfo.type) === "ground";
   const blockMinutes = Number(flightDoc.block_time_minutes || flightDoc.total_flight_minutes || 0) || 0;
-  const flightHours = blockMinutes > 0 ? blockMinutes / 60 : 0;
-  const hourlyRate = isNight ? Number(modelCost?.hourlyNightRate || 0) : Number(modelCost?.hourlyDayRate || 0);
-  const fixedRate = isNight ? Number(modelCost?.fixedNightRate || 0) : Number(modelCost?.fixedDayRate || 0);
+  const flightHours = isGroundSchool ? 0 : blockMinutes > 0 ? blockMinutes / 60 : 0;
+  const hourlyRate = isGroundSchool ? 0 : isNight ? Number(modelCost?.hourlyNightRate || 0) : Number(modelCost?.hourlyDayRate || 0);
+  const fixedRate = isGroundSchool
+    ? Number(modelCost?.groundSchoolRate || 0)
+    : isNight
+      ? Number(modelCost?.fixedNightRate || 0)
+      : Number(modelCost?.fixedDayRate || 0);
   const totalCalculated = sagaRoundMoney(hourlyRate * flightHours + fixedRate);
   const studentRate = await resolveStudentHourlyRateServer(studentUserId, modelId, isNight);
   const studentAmount = sagaRoundMoney(studentRate.hourlyRate * flightHours);
@@ -11245,6 +11268,7 @@ function toFlight(doc) {
     instructorAnac: meta?.header?.instructorAnac || "",
     scheduleWeekStart: doc.schedule_week_start || meta?.schedule?.weekStart || null,
     scheduleDemandId: doc.schedule_demand_id || meta?.schedule?.demandId || null,
+    isNight: Boolean(doc.is_night ?? meta?.header?.isNight),
     trainingTrackId: doc.training_track_id || meta?.training?.trackId || snapshot?.trackId || null,
     trainingStageId: doc.training_stage_id || meta?.training?.stageId || snapshot?.stageId || null,
     trainingMissionId: doc.training_mission_id || meta?.training?.missionId || snapshot?.missionId || null,
@@ -12738,6 +12762,7 @@ async function listFlightReports(params = {}, actorUserId = "", actorRole = "") 
       trainingTrackName,
       studentName: userDisplayName(flight.studentUserId, usersById, profilesByUserId, flight.studentName),
       instructorName: userDisplayName(flight.instructorUserId, usersById, profilesByUserId, flight.instructorName),
+      isNight: Boolean(flight.isNight),
       telemetry,
       videoPresent: Boolean(readyVideoCountByFlightId.get(flight.id)),
       evaluationPresent: hasEvaluation,
@@ -15273,6 +15298,32 @@ const CAKTO_SETTINGS_KEY = "cakto";
 const LASTLINK_SETTINGS_KEY = "lastlink";
 const CREDIT_PAYMENT_PROVIDER_KEY = "creditPaymentProvider";
 const WPP_SETTINGS_KEY = "wpp";
+const WPP_ADMIN_ASSISTANT_SESSION_PREFIX = "wppAdminAssistant:";
+const WPP_ADMIN_ASSISTANT_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+const WPP_ADMIN_TEST_PHONES = ["31992079411", ...(process.env.WPP_ADMIN_TEST_PHONES || "").split(",")];
+const WPP_ADMIN_CONFIRM_BUTTONS = [
+  { id: "admin_confirm", title: "Confirmar" },
+  { id: "admin_cancel", title: "Cancelar" },
+];
+const WPP_ADMIN_FLOW_PREFIX = "wppadm";
+const WPP_ADMIN_STATUS_OPTIONS = [
+  { status: "CONFIRMED", title: "Confirmado" },
+  { status: "PENDING", title: "Pendente" },
+  { status: "PLANNED", title: "Previsto" },
+  { status: "CANCELED", title: "Cancelado" },
+];
+const WPP_ADMIN_TOP_INSTRUCTORS_CACHE_KEY = "wppAdminTopInstructors";
+const WPP_ADMIN_TOP_INSTRUCTORS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const SAGA_NO_STUDENT_ID = "0";
+const SAGA_BLOCK_MARKER = "[BLOQUEIO]";
+const SAGA_BLOCK_USER_ID = "139";
+function sagaBlockNotes(...parts) {
+  const body = parts
+    .flatMap((part) => cleanString(part).split("|"))
+    .map((part) => cleanString(part).replaceAll(SAGA_BLOCK_MARKER, "").trim())
+    .filter(Boolean);
+  return [SAGA_BLOCK_MARKER, ...body].join(" | ").slice(0, 255);
+}
 const WPP_METAR_TRIAL_PREFIX = "wppMetarTrial:";
 const WPP_METAR_TRIAL_LIMIT = 10;
 const WPP_AISWEB_ALERT_TEMPLATE_NAME = "alerta_aisweb";
@@ -18194,8 +18245,9 @@ function sagaScheduleIsConfirmedStatus(status) {
 
 function isSagaScheduleBlockForReminder(schedule) {
   const norm = (value) => cleanString(value).replace(/^saga[_-]?/i, "");
-  if (norm(schedule?.studentSagaId) === "139" || norm(schedule?.instructorSagaId) === "139") return true;
-  if (norm(schedule?.studentUserId) === "139") return true;
+  if (sagaScheduleHasBlockMarker(schedule?.notes)) return true;
+  if (norm(schedule?.studentSagaId) === SAGA_BLOCK_USER_ID || norm(schedule?.instructorSagaId) === SAGA_BLOCK_USER_ID) return true;
+  if (norm(schedule?.studentUserId) === SAGA_BLOCK_USER_ID) return true;
   return /bloqueio/i.test(cleanString(schedule?.notes))
     || /bloqueio/i.test(cleanString(schedule?.studentName))
     || /bloqueio/i.test(cleanString(schedule?.aircraft));
@@ -19741,6 +19793,7 @@ function extractWppIncomingMessages(payload) {
         const buttonReply = interactive.button_reply && typeof interactive.button_reply === "object" ? interactive.button_reply : {};
         const listReply = interactive.list_reply && typeof interactive.list_reply === "object" ? interactive.list_reply : {};
         const button = message?.button && typeof message.button === "object" ? message.button : {};
+        const audio = message?.audio && typeof message.audio === "object" ? message.audio : {};
         const text = cleanString(
           message?.text?.body ||
           buttonReply.title ||
@@ -19755,7 +19808,18 @@ function extractWppIncomingMessages(payload) {
           button.text ||
           messageId,
         );
-        if (from) messages.push(applyWppIncomingTestOverride({ from, messageId, responseId, text, phoneNumberId }));
+        if (from) {
+          messages.push(applyWppIncomingTestOverride({
+            from,
+            messageId,
+            responseId,
+            text,
+            phoneNumberId,
+            type: cleanString(message?.type),
+            mediaId: cleanString(audio.id),
+            mediaMimeType: cleanString(audio.mime_type),
+          }));
+        }
       }
     }
   }
@@ -22290,6 +22354,2757 @@ async function startWppFlightBookingAction(settings, incoming) {
   return result.status || "started";
 }
 
+function normalizeWppAdminText(value) {
+  return cleanString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function wppAdminSessionKey(phone) {
+  return `${WPP_ADMIN_ASSISTANT_SESSION_PREFIX}${normalizeWppRecipientPhone(phone)}`;
+}
+
+function wppAdminPhoneAllowed(settings, incoming) {
+  const phone = incoming?.lookupFrom || incoming?.from;
+  const allowed = [
+    ...WPP_ADMIN_TEST_PHONES,
+    settings?.soloFlightCoordinatorPhone,
+  ].map(normalizeWppRecipientPhone).filter(Boolean);
+  return allowed.some((target) => wppPhoneMatchScore(phone, target) >= 150);
+}
+
+function wppAdminStartRemainder(text, responseId) {
+  const raw = cleanString(text);
+  const candidates = [responseId, text].map(normalizeWppAdminText).filter(Boolean);
+  if (candidates.some((item) => ["admin", "modo admin", "ativar admin", "assistente admin"].includes(item))) return "";
+  const match = raw.match(/^\s*(?:admin|modo\s+admin|assistente\s+admin)\s*[:,\-]?\s+([\s\S]+)$/i);
+  return match ? cleanString(match[1]) : null;
+}
+
+function isWppAdminExit(text, responseId) {
+  const candidates = [text, responseId].map(normalizeWppAdminText).filter(Boolean);
+  return candidates.some((item) => [
+    "sair admin",
+    "sair do admin",
+    "sair do modo admin",
+    "encerrar admin",
+    "encerrar modo admin",
+    "desativar admin",
+    "admin sair",
+    "fim admin",
+  ].includes(item) || /\b(sair|encerrar|desativar|finalizar)\b.*\b(admin|modo admin)\b/.test(item));
+}
+
+function isWppAdminRestart(text, responseId) {
+  const candidates = [text, responseId].map(normalizeWppAdminText).filter(Boolean);
+  return candidates.some((item) => [
+    "reiniciar admin",
+    "reinicia admin",
+    "resetar admin",
+    "reset admin",
+    "limpar admin",
+    "recomecar admin",
+    "recomeçar admin",
+    "cancelar fluxo admin",
+  ].includes(item) || /\b(reiniciar|reinicia|resetar|reset|limpar|recomecar|cancelar fluxo)\b.*\b(admin|modo admin)\b/.test(item));
+}
+
+function isWppAdminConfirm(text, responseId) {
+  const candidates = [responseId, text].map(normalizeWppAdminText).filter(Boolean);
+  return candidates.some((item) => ["admin_confirm", "confirmar", "confirma", "sim", "ok", "executar", "pode executar"].includes(item));
+}
+
+function isWppAdminCancel(text, responseId) {
+  const candidates = [responseId, text].map(normalizeWppAdminText).filter(Boolean);
+  return candidates.some((item) => ["admin_cancel", "cancelar", "cancela", "nao", "não", "desistir"].includes(item));
+}
+
+function sanitizeWppAdminSession(raw) {
+  const session = raw && typeof raw === "object" ? raw : {};
+  const expiresAt = cleanString(session.expiresAt);
+  if (expiresAt && Date.parse(expiresAt) < Date.now()) return null;
+  return {
+    active: session.active === true,
+    draft: session.draft && typeof session.draft === "object" ? session.draft : null,
+    pending: session.pending && typeof session.pending === "object" ? session.pending : null,
+    flow: session.flow && typeof session.flow === "object" ? session.flow : null,
+    dataMode: session.dataMode === true,
+    expiresAt: expiresAt || new Date(Date.now() + WPP_ADMIN_ASSISTANT_SESSION_TTL_MS).toISOString(),
+  };
+}
+
+async function loadWppAdminSession(phone) {
+  const key = wppAdminSessionKey(phone);
+  const doc = await getSettingDoc(key);
+  const parsed = sanitizeWppAdminSession(parseJsonObject(doc?.settings_json, null));
+  if (!parsed && doc) await deletePlatformSettingDoc(key).catch(() => null);
+  return parsed || { active: false, draft: null, pending: null, expiresAt: null };
+}
+
+async function saveWppAdminSession(phone, patch = {}) {
+  const body = sanitizeWppAdminSession({
+    active: true,
+    draft: null,
+    pending: null,
+    flow: null,
+    dataMode: false,
+    ...patch,
+    expiresAt: new Date(Date.now() + WPP_ADMIN_ASSISTANT_SESSION_TTL_MS).toISOString(),
+  });
+  await upsertPlatformSettingDoc(wppAdminSessionKey(phone), body);
+  return body;
+}
+
+async function clearWppAdminSession(phone) {
+  await deletePlatformSettingDoc(wppAdminSessionKey(phone)).catch(() => null);
+}
+
+function wppAdminHelpText() {
+  return [
+    "Modo admin ativo.",
+    "Escolha uma ação abaixo ou escreva o pedido normalmente.",
+    "",
+    "Eu confirmo antes de executar ações que alteram dados.",
+  ].join("\n");
+}
+
+function wppAdminMenuRows() {
+  return [
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:pay`, title: "Link pagamento", description: "Gerar link para aluno" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:update`, title: "Alterar voo", description: "Horário, duração, instrutor, status ou obs" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:block`, title: "Bloquear agenda", description: "Bloquear aeronave em uma data" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:credit`, title: "Consultar crédito", description: "Ver saldo de um aluno" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:schedule`, title: "Agendar voo", description: "Criar novo voo na escala" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:summary`, title: "Resumo da escala", description: "Texto e print de um dia" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:instr`, title: "Definir instrutores", description: "Select para todos os voos do dia" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:status`, title: "Definir status", description: "Select para todos os voos do dia" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:batch`, title: "Conf./cancelar voos", description: "Todos os voos de aeronave(s) no dia" },
+    { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:data`, title: "Auxiliar de Dados", description: "Pergunte qualquer dado da operação" },
+  ];
+}
+
+async function sendWppAdminHelpMenu(settings, to) {
+  await sendWppListMessage(settings, {
+    to,
+    body: wppAdminHelpText(),
+    buttonText: "Ações",
+    sectionTitle: "Modo admin",
+    rows: wppAdminMenuRows(),
+  }).catch(() => sendWppTextMessage(settings, { to, body: [
+    wppAdminHelpText(),
+    "",
+    wppAdminMenuRows().map((row) => `- ${row.title}: ${row.description}`).join("\n"),
+  ].join("\n") }));
+}
+
+function wppAdminMenuCommandText(responseId) {
+  const raw = cleanString(responseId);
+  const map = {
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:pay`]: "gerar link de pagamento para um aluno",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:update`]: "alterar um voo agendado",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:block`]: "bloquear a agenda de um avião",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:credit`]: "consultar crédito de um aluno",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:schedule`]: "agendar um novo voo",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:summary`]: "resumir a escala de um dia",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:instr`]: "definir instrutores da escala de um dia",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:status`]: "definir status da escala de um dia",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:batch`]: "confirmar ou cancelar todos os voos de uma aeronave no dia",
+    [`${WPP_ADMIN_FLOW_PREFIX}:menu:data`]: "auxiliar de dados",
+  };
+  return map[raw] || "";
+}
+
+function isWppAdminDataModeStart(text, responseId) {
+  return [text, responseId].map(normalizeWppAdminText).some((item) => [
+    "auxiliar de dados",
+    "modo auxiliar de dados",
+    "abrir auxiliar de dados",
+    "consulta de dados",
+  ].includes(item));
+}
+
+function isWppAdminDataModeExit(text, responseId) {
+  return [text, responseId].map(normalizeWppAdminText).some((item) => [
+    "sair auxiliar de dados",
+    "sair do auxiliar de dados",
+    "fechar auxiliar de dados",
+    "encerrar auxiliar de dados",
+  ].includes(item));
+}
+
+async function transcribeWppAdminAudio(settings, incoming) {
+  const mediaId = cleanString(incoming?.mediaId);
+  if (!mediaId) return "";
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) throw new Error("OPENAI_API_KEY não configurada.");
+  const mediaInfo = await wppGraphRequest(settings, mediaId);
+  const mediaUrl = cleanString(mediaInfo?.url);
+  if (!mediaUrl) throw new Error("Audio do WhatsApp sem URL para download.");
+  const mediaResponse = await fetch(mediaUrl, {
+    headers: { Authorization: `Bearer ${settings.apiKey}` },
+  });
+  if (!mediaResponse.ok) throw new Error(`Falha ao baixar audio do WhatsApp (HTTP ${mediaResponse.status}).`);
+  const buffer = Buffer.from(await mediaResponse.arrayBuffer());
+  const mimeType = cleanString(mediaInfo?.mime_type || incoming?.mediaMimeType) || "audio/ogg";
+  const form = new FormData();
+  form.append("model", cleanString(process.env.OPENAI_TRANSCRIPTION_MODEL) || "whisper-1");
+  form.append("language", "pt");
+  form.append("file", new Blob([buffer], { type: mimeType }), `wpp-admin-${mediaId}.ogg`);
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  return cleanString(body?.text);
+}
+
+function mergeWppAdminFields(current = {}, incoming = {}) {
+  const out = { ...(current || {}) };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    if (value === null || value === undefined || value === "") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function applyWppAdminContinuationHints(input = {}, parsed = {}) {
+  const previous = input.previousDraft && typeof input.previousDraft === "object" ? input.previousDraft : null;
+  const fields = parsed.fields && typeof parsed.fields === "object" ? { ...parsed.fields } : {};
+  const previousFields = previous?.fields && typeof previous.fields === "object" ? previous.fields : {};
+  const action = cleanString(parsed.action || previous?.action);
+  const message = cleanString(input.message);
+  if (!message || !previous) {
+    return { ...parsed, fields, action: parsed.action || previous?.action || null };
+  }
+  const aircraftActions = new Set([
+    "schedule_new_flight",
+    "update_scheduled_flight",
+    "block_aircraft_schedule",
+    "confirm_aircraft_day_flights",
+    "cancel_aircraft_day_flights",
+  ]);
+  const normalized = normalizeWppAdminText(message);
+  const missingStart = !normalizeWppAdminClock(fields.startTime || previousFields.startTime);
+  const missingDuration = !wppAdminDurationMinutes({ ...previousFields, ...fields });
+  const onlyClock = normalizeWppAdminClock(message);
+  const durationAnswer = wppAdminParseDurationText(message);
+  if (action === "schedule_new_flight" && missingStart && onlyClock) {
+    fields.startTime = onlyClock;
+    return { ...parsed, status: "ready", fields, action: parsed.action || previous?.action || null };
+  }
+  if (action === "schedule_new_flight" && !missingStart && missingDuration && durationAnswer) {
+    fields.durationMinutes = durationAnswer;
+    return { ...parsed, status: "ready", fields, action: parsed.action || previous?.action || null };
+  }
+  if (cleanString(fields.aircraftIdent || previousFields.aircraftIdent)) {
+    return { ...parsed, fields, action: parsed.action || previous?.action || null };
+  }
+  const looksLikeAircraftAnswer =
+    aircraftActions.has(action) &&
+    !/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[\/.-]\d{1,2}\b/.test(message) &&
+    !/\b\d{1,2}(?::\d{2}|h\d{0,2})\b/i.test(message) &&
+    !["confirmar", "cancelar", "sim", "não", "nao", "ok"].includes(normalized) &&
+    message.length <= 32;
+  if (looksLikeAircraftAnswer) {
+    fields.aircraftIdent = message;
+    return { ...parsed, status: "ready", fields, action: parsed.action || previous?.action || null };
+  }
+  return { ...parsed, fields, action: parsed.action || previous?.action || null };
+}
+
+async function interpretWppAdminMessage(input = {}) {
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) throw new Error("OPENAI_API_KEY não configurada.");
+  const model = cleanString(process.env.OPENAI_WPP_ADMIN_MODEL || process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      status: { type: "string", enum: ["ready", "needs_info", "unsupported", "cancel"] },
+      action: {
+        type: ["string", "null"],
+        enum: [
+          "create_payment_link",
+          "update_scheduled_flight",
+          "block_aircraft_schedule",
+          "check_student_credit",
+          "schedule_new_flight",
+          "summarize_day_schedule",
+          "define_day_schedule_instructors",
+          "define_day_schedule_statuses",
+          "confirm_aircraft_day_flights",
+          "cancel_aircraft_day_flights",
+          null,
+        ],
+      },
+      fields: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          studentQuery: { type: ["string", "null"] },
+          instructorQuery: { type: ["string", "null"] },
+          aircraftIdent: { type: ["string", "null"] },
+          aircraftIdents: { type: ["array", "null"], items: { type: "string" } },
+          date: { type: ["string", "null"] },
+          endDate: { type: ["string", "null"] },
+          startTime: { type: ["string", "null"] },
+          endTime: { type: ["string", "null"] },
+          durationMinutes: { type: ["number", "null"] },
+          status: { type: ["string", "null"] },
+          notes: { type: ["string", "null"] },
+          scheduleId: { type: ["string", "null"] },
+          scheduleQuery: { type: ["string", "null"] },
+          hours: { type: ["number", "null"] },
+          packageQuery: { type: ["string", "null"] },
+          weekdayOnly: { type: ["boolean", "null"] },
+          cancellationReason: { type: ["string", "null"] },
+        },
+        required: [
+          "studentQuery",
+          "instructorQuery",
+          "aircraftIdent",
+          "aircraftIdents",
+          "date",
+          "endDate",
+          "startTime",
+          "endTime",
+          "durationMinutes",
+          "status",
+          "notes",
+          "scheduleId",
+          "scheduleQuery",
+          "hours",
+          "packageQuery",
+          "weekdayOnly",
+          "cancellationReason",
+        ],
+      },
+      question: { type: ["string", "null"] },
+      confidence: { type: "number" },
+    },
+    required: ["status", "action", "fields", "question", "confidence"],
+  };
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content: [
+            "Você interpreta mensagens de WhatsApp de um administrador de escola de aviação.",
+            "Converta a mensagem em UM comando estruturado. Não execute nada.",
+            "Use datas ISO YYYY-MM-DD e horários HH:MM. Hoje é informado no JSON do usuário.",
+            "Se faltarem dados essenciais, retorne needs_info e faça uma pergunta curta.",
+            "Se houver um rascunho anterior e a mensagem atual parecer apenas responder a pergunta anterior, mantenha a action anterior e preencha somente os campos novos.",
+            "Ao identificar aluno/instrutor por ANAC/CANAC/código ANAC, coloque em studentQuery/instructorQuery o número junto com o rótulo recebido, se existir.",
+            "Quando faltar aeronave e a mensagem atual for curta, trate como aircraftIdent mesmo sem hífen: psdza, PSDZA, dza e Alfa podem ser aeronaves.",
+            "Ações permitidas: create_payment_link, update_scheduled_flight, block_aircraft_schedule, check_student_credit, schedule_new_flight, summarize_day_schedule, define_day_schedule_instructors, define_day_schedule_statuses, confirm_aircraft_day_flights, cancel_aircraft_day_flights.",
+            "Use define_day_schedule_instructors quando o admin pedir para definir instrutores da escala de um dia.",
+            "Use define_day_schedule_statuses quando o admin pedir para definir status da escala de um dia.",
+            "Use confirm_aircraft_day_flights/cancel_aircraft_day_flights quando pedir todos os voos de uma ou mais aeronaves em uma data. Preencha aircraftIdents quando houver mais de uma aeronave.",
+            "Para cancel_aircraft_day_flights, cancellationReason/notes é obrigatório; se faltar, pergunte o motivo.",
+            "Status de voo devem virar: PLANNED, PENDING, CONFIRMED ou CANCELED.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentDate: wppAdminTodayIso(),
+            message: cleanString(input.message),
+            previousDraft: input.previousDraft || null,
+          }),
+        },
+      ],
+      reasoning: { effort: cleanString(process.env.OPENAI_WPP_ADMIN_REASONING) || "low" },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "wpp_admin_command",
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  const text = extractOpenAiResponseText(body);
+  if (!text) throw new Error("OpenAI não retornou comando estruturado.");
+  const parsed = JSON.parse(text);
+  return applyWppAdminContinuationHints(input, {
+    ...parsed,
+    fields: mergeWppAdminFields(input.previousDraft?.fields, parsed.fields),
+    action: parsed.action || input.previousDraft?.action || null,
+  });
+}
+
+function wppAdminTodayIso() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date()).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function normalizeWppAdminDate(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const br = raw.match(/^(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?$/);
+  if (br) {
+    const year = br[3] ? (br[3].length === 2 ? `20${br[3]}` : br[3]) : wppAdminTodayIso().slice(0, 4);
+    return `${year}-${String(br[2]).padStart(2, "0")}-${String(br[1]).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+function normalizeWppAdminClock(value) {
+  const raw = cleanString(value).toLowerCase();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{1,2})(?::|h)?(\d{2})?$/);
+  if (!match) return "";
+  const hh = Number(match[1]);
+  const mm = Number(match[2] || 0);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh > 23 || mm > 59) return "";
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function wppAdminDurationMinutes(fields) {
+  const direct = Number(fields?.durationMinutes);
+  if (Number.isFinite(direct) && direct >= 15) return Math.round(direct);
+  const parsedText = wppAdminParseDurationText(fields?.durationText || fields?.duration || fields?.text);
+  if (parsedText) return parsedText;
+  const start = normalizeWppAdminClock(fields?.startTime);
+  const end = normalizeWppAdminClock(fields?.endTime);
+  if (start && end) {
+    const sameDay = clockDiffMinutes(start, end);
+    if (sameDay) return sameDay;
+  }
+  return 0;
+}
+
+function wppAdminParseDurationText(value) {
+  const raw = normalizeWppAdminText(value);
+  if (!raw) return 0;
+  let match = raw.match(/\b(\d{1,2})\s*h(?:ora(?:s)?)?\s*(?:(\d{1,2})\s*(?:m|min|minuto(?:s)?)?)?\b/);
+  if (match) {
+    const hours = Number(match[1]);
+    const minutes = Number(match[2] || 0);
+    const total = hours * 60 + minutes;
+    return total >= 15 ? total : 0;
+  }
+  match = raw.match(/\b(\d{1,3})\s*(?:m|min|minuto(?:s)?)\b/);
+  if (match) {
+    const total = Number(match[1]);
+    return total >= 15 ? total : 0;
+  }
+  match = raw.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (match) {
+    const total = Number(match[1]) * 60 + Number(match[2]);
+    return total >= 15 ? total : 0;
+  }
+  return 0;
+}
+
+function wppAdminFlightScheduleRules(settings = {}) {
+  return settings?.schedule || defaultSchoolRules().schedule;
+}
+
+async function loadWppAdminFlightScheduleRules() {
+  const { publicSettings } = await loadSchoolRules().catch(() => ({ publicSettings: defaultSchoolRules() }));
+  return wppAdminFlightScheduleRules(publicSettings);
+}
+
+function wppAdminScheduleBlockFromFlight(startTime, durationMinutes, scheduleRules = {}) {
+  const flightStart = parseClockMinutes(normalizeWppAdminClock(startTime));
+  const flightDuration = Math.max(15, Math.round(Number(durationMinutes) || 0));
+  const bufferBefore = Math.max(0, Math.round(Number(scheduleRules?.bufferBeforeMinutes) || 0));
+  const bufferAfter = Math.max(0, Math.round(Number(scheduleRules?.bufferAfterMinutes) || 0));
+  if (flightStart === null || !flightDuration) return null;
+  const blockStart = flightStart - bufferBefore;
+  const blockEnd = flightStart + flightDuration + bufferAfter;
+  if (blockStart < 0 || blockEnd > 24 * 60) return null;
+  return {
+    flightStart,
+    flightEnd: flightStart + flightDuration,
+    flightStartTime: wppAdminMinutesToClock(flightStart),
+    flightDurationMinutes: flightDuration,
+    presentationTime: wppAdminMinutesToClock(blockStart),
+    endTime: wppAdminMinutesToClock(blockEnd),
+    blockStart,
+    blockEnd,
+    blockDurationMinutes: blockEnd - blockStart,
+    bufferBeforeMinutes: bufferBefore,
+    bufferAfterMinutes: bufferAfter,
+  };
+}
+
+function wppAdminRequestedScheduleBlock(payload = {}, scheduleRules = {}) {
+  const hasFlightMetadata = normalizeWppAdminClock(payload.flightStartTime) && Number(payload.flightDurationMinutes) >= 15;
+  if (hasFlightMetadata) {
+    const blockStart = parseClockMinutes(normalizeWppAdminClock(payload.startTime));
+    const blockDuration = Math.max(15, Math.round(Number(payload.durationMinutes) || 0));
+    const flightStart = parseClockMinutes(normalizeWppAdminClock(payload.flightStartTime));
+    const flightDuration = Math.max(15, Math.round(Number(payload.flightDurationMinutes) || 0));
+    if (blockStart === null || flightStart === null) return null;
+    return {
+      flightStart,
+      flightEnd: flightStart + flightDuration,
+      flightStartTime: wppAdminMinutesToClock(flightStart),
+      flightDurationMinutes: flightDuration,
+      presentationTime: wppAdminMinutesToClock(blockStart),
+      endTime: wppAdminMinutesToClock(blockStart + blockDuration),
+      blockStart,
+      blockEnd: blockStart + blockDuration,
+      blockDurationMinutes: blockDuration,
+      bufferBeforeMinutes: Math.max(0, Math.round(Number(payload.bufferBeforeMinutes) || Number(scheduleRules?.bufferBeforeMinutes) || 0)),
+      bufferAfterMinutes: Math.max(0, Math.round(Number(payload.bufferAfterMinutes) || Number(scheduleRules?.bufferAfterMinutes) || 0)),
+    };
+  }
+  if (payload.usesFlightTimeBlock) {
+    return wppAdminScheduleBlockFromFlight(payload.startTime, payload.durationMinutes, scheduleRules);
+  }
+  const blockStart = parseClockMinutes(normalizeWppAdminClock(payload.startTime));
+  const blockDuration = Math.max(15, Math.round(Number(payload.durationMinutes) || 0));
+  if (blockStart === null || !blockDuration) return null;
+  return {
+    flightStart: blockStart,
+    flightEnd: blockStart + blockDuration,
+    flightStartTime: wppAdminMinutesToClock(blockStart),
+    flightDurationMinutes: blockDuration,
+    presentationTime: wppAdminMinutesToClock(blockStart),
+    endTime: wppAdminMinutesToClock(blockStart + blockDuration),
+    blockStart,
+    blockEnd: blockStart + blockDuration,
+    blockDurationMinutes: blockDuration,
+    bufferBeforeMinutes: 0,
+    bufferAfterMinutes: 0,
+  };
+}
+
+function wppAdminPayloadWithScheduleBlock(payload = {}, scheduleRules = {}) {
+  const block = wppAdminScheduleBlockFromFlight(payload.startTime, payload.durationMinutes, scheduleRules);
+  if (!block) return null;
+  return {
+    ...payload,
+    startTime: block.presentationTime,
+    durationMinutes: block.blockDurationMinutes,
+    usesFlightTimeBlock: true,
+    flightStartTime: block.flightStartTime,
+    flightDurationMinutes: block.flightDurationMinutes,
+    presentationTime: block.presentationTime,
+    endTime: block.endTime,
+    bufferBeforeMinutes: block.bufferBeforeMinutes,
+    bufferAfterMinutes: block.bufferAfterMinutes,
+  };
+}
+
+function wppAdminDisplayDate(date) {
+  const iso = normalizeWppAdminDate(date);
+  return iso ? iso.split("-").reverse().join("/") : cleanString(date);
+}
+
+function wppAdminDisplayDuration(minutes) {
+  const safe = Math.max(0, Math.round(Number(minutes) || 0));
+  if (!safe) return "";
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  return [h ? `${h}h` : "", m ? `${m}min` : ""].filter(Boolean).join(" ") || `${safe}min`;
+}
+
+function wppAdminJoinPtList(items = []) {
+  const safe = items.map(cleanString).filter(Boolean);
+  if (safe.length <= 1) return safe.join("");
+  return `${safe.slice(0, -1).join(", ")} e ${safe[safe.length - 1]}`;
+}
+
+function wppAdminScheduleBufferSentence(block = {}) {
+  const parts = [];
+  if (block.bufferBeforeMinutes) parts.push(`briefing de ${wppAdminDisplayDuration(block.bufferBeforeMinutes)}`);
+  if (block.bufferAfterMinutes) parts.push(`debriefing de ${wppAdminDisplayDuration(block.bufferAfterMinutes)}`);
+  return parts.length ? `Considerei ${wppAdminJoinPtList(parts)}.` : "";
+}
+
+function wppAdminNewFlightMissingFields(fields = {}) {
+  const missing = [];
+  if (!cleanString(fields.studentQuery)) missing.push("aluno");
+  if (!cleanString(fields.aircraftIdent)) missing.push("aeronave");
+  if (!normalizeWppAdminDate(fields.date)) missing.push("data");
+  if (!normalizeWppAdminClock(fields.startTime)) missing.push("horário de início");
+  if (!wppAdminDurationMinutes(fields)) missing.push("duração");
+  return missing;
+}
+
+function wppAdminNewFlightMissingQuestion(missing = []) {
+  return [
+    `Para agendar o voo, preciso de ${wppAdminJoinPtList(missing)}.`,
+    "Pode mandar tudo junto. Ex.: aluno 2649311, PS-DZA, 14/09 às 08h por 1h.",
+  ].join("\n");
+}
+
+function wppAdminIsReadOnlyAction(action) {
+  return ["check_student_credit", "summarize_day_schedule"].includes(cleanString(action));
+}
+
+function wppAdminNextStepSuggestion(command = {}) {
+  const action = cleanString(command?.action);
+  const payload = command?.payload && typeof command.payload === "object" ? command.payload : {};
+  const date = normalizeWppAdminDate(payload.date);
+  if (action === "summarize_day_schedule") {
+    return `Próximo passo: posso ajustar os instrutores da escala de ${wppAdminDisplayDate(date)} ou definir os status desse dia.`;
+  }
+  if (action === "check_student_credit") {
+    return `Próximo passo: posso gerar um link de pagamento para ${cleanString(payload.studentLabel) || "esse aluno"} ou agendar um voo.`;
+  }
+  if (action === "create_payment_link") {
+    return "Próximo passo: posso consultar o crédito do aluno ou agendar um novo voo.";
+  }
+  if (action === "schedule_new_flight" || action === "update_scheduled_flight") {
+    return date ? `Próximo passo: posso resumir a escala de ${wppAdminDisplayDate(date)} ou ajustar instrutor/status desse dia.` : "";
+  }
+  if (action === "block_aircraft_schedule" || action === "confirm_aircraft_day_flights" || action === "cancel_aircraft_day_flights") {
+    return date ? `Próximo passo: posso resumir a escala de ${wppAdminDisplayDate(date)} para conferir como ficou.` : "";
+  }
+  return "";
+}
+
+function appendWppAdminNextStep(text, command = {}) {
+  const suggestion = wppAdminNextStepSuggestion(command);
+  return [cleanString(text), suggestion].filter(Boolean).join("\n\n");
+}
+
+function wppAdminNextStepButtons(command = {}) {
+  const action = cleanString(command?.action);
+  const payload = command?.payload && typeof command.payload === "object" ? command.payload : {};
+  const date = normalizeWppAdminDate(payload.date);
+  const studentUserId = encodeURIComponent(cleanString(payload.studentUserId));
+  if (action === "summarize_day_schedule" && date) {
+    return [
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:instr:${date}`, title: "Instrutores" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:status:${date}`, title: "Status" },
+    ];
+  }
+  if (action === "check_student_credit" && studentUserId) {
+    return [
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:pay:${studentUserId}`, title: "Gerar pagamento" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:book:${studentUserId}`, title: "Agendar voo" },
+    ];
+  }
+  if (action === "create_payment_link" && studentUserId) {
+    return [
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:credit:${studentUserId}`, title: "Ver crédito" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:book:${studentUserId}`, title: "Agendar voo" },
+    ];
+  }
+  if ((action === "schedule_new_flight" || action === "update_scheduled_flight") && date) {
+    return [
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:summary:${date}`, title: "Ver escala" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:instr:${date}`, title: "Instrutores" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:next:status:${date}`, title: "Status" },
+    ];
+  }
+  if ((action === "block_aircraft_schedule" || action === "confirm_aircraft_day_flights" || action === "cancel_aircraft_day_flights") && date) {
+    return [{ id: `${WPP_ADMIN_FLOW_PREFIX}:next:summary:${date}`, title: "Ver escala" }];
+  }
+  return [];
+}
+
+function wppAdminNextStepPrompt(command = {}) {
+  const action = cleanString(command?.action);
+  if (action === "summarize_day_schedule") return "Quer ajustar essa escala agora?";
+  if (action === "check_student_credit") return "Quer fazer algo com esse aluno?";
+  if (action === "create_payment_link") return "Quer seguir com esse aluno?";
+  if (action === "schedule_new_flight" || action === "update_scheduled_flight") return "Quer conferir ou ajustar a escala?";
+  return "Quer fazer um próximo passo?";
+}
+
+function wppAdminNextStepCommandText(responseId) {
+  const raw = cleanString(responseId);
+  let match = raw.match(/^wppadm:next:(summary|instr|status):(\d{4}-\d{2}-\d{2})$/);
+  if (match) {
+    if (match[1] === "summary") return `resumir a escala do dia ${match[2]}`;
+    if (match[1] === "instr") return `definir instrutores da escala do dia ${match[2]}`;
+    return `definir status da escala do dia ${match[2]}`;
+  }
+  match = raw.match(/^wppadm:next:(pay|book|credit):(.+)$/);
+  if (match) {
+    let student = "";
+    try {
+      student = cleanString(decodeURIComponent(match[2]));
+    } catch {
+      student = cleanString(match[2]);
+    }
+    if (!student) return "";
+    if (match[1] === "pay") return `gerar link de pagamento para o aluno ${student}`;
+    if (match[1] === "book") return `agendar voo para o aluno ${student}`;
+    return `consultar crédito do aluno ${student}`;
+  }
+  return "";
+}
+
+async function sendWppAdminResultMessage(settings, to, text, command = {}) {
+  const body = cleanString(text);
+  if (body) await sendWppTextMessage(settings, { to, body: body.slice(0, 4096) });
+  const buttons = wppAdminNextStepButtons(command);
+  if (!buttons.length) return;
+  await sendWppBotReply(settings, {
+    to,
+    body: wppAdminNextStepPrompt(command),
+    buttons,
+  }).catch(async () => {
+    const suggestion = wppAdminNextStepSuggestion(command);
+    if (suggestion) await sendWppTextMessage(settings, { to, body: suggestion.slice(0, 4096) }).catch(() => null);
+  });
+}
+
+async function sendWppAdminDataAnswerMessage(settings, to, text) {
+  const body = cleanString(text) || "Não consegui responder com os dados disponíveis.";
+  await sendWppTextMessage(settings, { to, body: body.slice(0, 4096) });
+  await sendWppBotReply(settings, {
+    to,
+    body: "Quer continuar?",
+    buttons: [
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:data`, title: "Outra pergunta" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:summary`, title: "Ver escala" },
+      { id: `${WPP_ADMIN_FLOW_PREFIX}:menu:schedule`, title: "Agendar voo" },
+    ],
+  }).catch(() => null);
+}
+
+function wppAdminSagaStatus(value, fallback = "PLANNED") {
+  const normalized = normalizeWppAdminText(value).replace(/ /g, "_").toUpperCase();
+  if (["CONFIRMED", "CONFIRMADO", "CONFIRMADA"].includes(normalized)) return "CONFIRMED";
+  if (["PENDING", "PENDENTE"].includes(normalized)) return "PENDING";
+  if (["PLANNED", "PREVISTO", "PREVISTA", "PLANEJADO", "PLANEJADA"].includes(normalized)) return "PLANNED";
+  if (["CANCELED", "CANCELLED", "CANCELADO", "CANCELADA"].includes(normalized)) return "CANCELED";
+  return fallback;
+}
+
+function wppAdminSagaStatusLabel(value) {
+  if (cleanString(value) === "BLOCK") return "Bloqueio";
+  const status = wppAdminSagaStatus(value);
+  if (status === "CONFIRMED") return "Confirmado";
+  if (status === "PENDING") return "Pendente";
+  if (status === "CANCELED") return "Cancelado";
+  return "Previsto";
+}
+
+function wppAdminSearchText(value) {
+  return normalizeSearch(value).replace(/[^a-z0-9@.+_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function wppAdminQueryTokens(value) {
+  const stop = new Set(["aluno", "aluna", "instrutor", "instrutora", "canac", "anac", "codigo", "cod", "matricula", "id", "saga", "do", "da", "de", "para", "pro"]);
+  return wppAdminSearchText(value)
+    .split(" ")
+    .map(cleanString)
+    .filter((token) => token.length >= 2 && !stop.has(token));
+}
+
+function wppAdminLevenshtein(a, b) {
+  const left = cleanString(a);
+  const right = cleanString(b);
+  if (left === right) return 0;
+  if (!left) return right.length;
+  if (!right) return left.length;
+  const prev = Array.from({ length: right.length + 1 }, (_, i) => i);
+  const curr = Array(right.length + 1).fill(0);
+  for (let i = 1; i <= left.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= right.length; j += 1) prev[j] = curr[j];
+  }
+  return prev[right.length];
+}
+
+function wppAdminSimilarity(a, b) {
+  const left = wppAdminSearchText(a);
+  const right = wppAdminSearchText(b);
+  if (!left && !right) return 1;
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  const max = Math.max(left.length, right.length);
+  return Math.max(0, 1 - wppAdminLevenshtein(left, right) / max);
+}
+
+function wppAdminBestTokenScore(queryTokens, candidateText) {
+  const words = wppAdminQueryTokens(candidateText);
+  if (!queryTokens.length || !words.length) return 0;
+  let total = 0;
+  let matched = 0;
+  for (const token of queryTokens) {
+    let best = 0;
+    for (const word of words) {
+      if (word.includes(token) || token.includes(word)) best = Math.max(best, 1);
+      else best = Math.max(best, wppAdminSimilarity(token, word));
+    }
+    if (best >= 0.68) matched += 1;
+    total += best;
+  }
+  const avg = total / queryTokens.length;
+  const coverage = matched / queryTokens.length;
+  return Math.round((avg * 55) + (coverage * 45));
+}
+
+function wppAdminNumericCandidates(value) {
+  const raw = cleanString(value);
+  const candidates = new Set();
+  for (const match of raw.matchAll(/\d{3,14}/g)) candidates.add(match[0]);
+  const allDigits = raw.replace(/\D/g, "");
+  if (allDigits.length >= 3 && allDigits.length <= 14) candidates.add(allDigits);
+  return Array.from(candidates);
+}
+
+function wppAdminAircraftKey(value) {
+  return normalizeSearch(value).replace(/[^a-z0-9]+/g, "");
+}
+
+function wppAdminAircraftSuffixKey(value) {
+  const key = wppAdminAircraftKey(value);
+  return key.length > 3 ? key.slice(-3) : key;
+}
+
+const WPP_ADMIN_PHONETIC_AIRCRAFT_LETTERS = {
+  alfa: "a",
+  alpha: "a",
+  bravo: "b",
+  charlie: "c",
+  delta: "d",
+  echo: "e",
+  foxtrot: "f",
+  golf: "g",
+  hotel: "h",
+  india: "i",
+  juliet: "j",
+  juliett: "j",
+  kilo: "k",
+  lima: "l",
+  mike: "m",
+  november: "n",
+  oscar: "o",
+  papa: "p",
+  quebec: "q",
+  romeo: "r",
+  sierra: "s",
+  tango: "t",
+  uniform: "u",
+  victor: "v",
+  whiskey: "w",
+  whisky: "w",
+  xray: "x",
+  yankee: "y",
+  zulu: "z",
+};
+
+function wppAdminPhoneticAircraftCandidates(value) {
+  const tokens = normalizeWppAdminText(value).split(/[^a-z0-9]+/).filter(Boolean);
+  const candidates = new Set();
+  for (let start = 0; start < tokens.length; start += 1) {
+    let letters = "";
+    for (let index = start; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const letter = WPP_ADMIN_PHONETIC_AIRCRAFT_LETTERS[token] || (/^[a-z0-9]$/.test(token) ? token : "");
+      if (!letter) break;
+      letters += letter;
+      if (letters.length >= 2 && letters.length <= 6) candidates.add(letters);
+    }
+  }
+  return Array.from(candidates);
+}
+
+function wppAdminProfileHaystack(profile) {
+  return wppAdminSearchText([
+    profile?.full_name,
+    profile?.nickname,
+    profile?.email,
+    profile?.user_id,
+    profile?.anac_code,
+    profile?.saga_user_id,
+    profile?.phone,
+    profile?.role,
+    profile?.active_role,
+    profile?.active_role_slug,
+    profile?.assigned_role_slugs,
+  ].filter(Boolean).join(" "));
+}
+
+async function listWppAdminProfileCandidates(raw) {
+  const directCandidates = [];
+  const numeric = wppAdminNumericCandidates(raw);
+  const exactQueries = [];
+  if (cleanString(raw)) exactQueries.push(["user_id", [cleanString(raw)]]);
+  if (numeric.length) {
+    exactQueries.push(["anac_code", numeric]);
+    exactQueries.push(["saga_user_id", numeric.flatMap((item) => [item, `saga_${item}`])]);
+  }
+  for (const [field, values] of exactQueries) {
+    directCandidates.push(
+      ...(await listDocumentsByFieldIn(
+        PROFILES_COLLECTION_ID,
+        field,
+        values,
+        [...selectQuery(PROFILE_SELECT)],
+      ).catch(() => [])),
+    );
+  }
+  const allProfiles = await listAllDocuments(PROFILES_COLLECTION_ID, [...selectQuery(PROFILE_SELECT)]).catch(() => []);
+  return Array.from(new Map([...directCandidates, ...allProfiles].map((profile) => [profile.$id || profile.user_id, profile])).values());
+}
+
+async function resolveWppAdminProfile(query, roleHint = "") {
+  const raw = cleanString(query);
+  if (!raw) return { ok: false, question: roleHint === "instrutor" ? "Qual instrutor?" : "Qual aluno?" };
+  if (!PROFILES_COLLECTION_ID) return { ok: false, question: "Coleção de perfis não configurada." };
+  const profiles = await listWppAdminProfileCandidates(raw);
+  const normalizedRaw = wppAdminSearchText(raw);
+  const tokens = wppAdminQueryTokens(raw);
+  const numeric = wppAdminNumericCandidates(raw);
+  const rows = profiles.map((profile) => {
+    const name = cleanString(profile.full_name || profile.nickname || profile.email || profile.user_id);
+    const haystack = wppAdminProfileHaystack(profile);
+    const nameHaystack = wppAdminSearchText(`${profile.full_name || ""} ${profile.nickname || ""}`);
+    const profileAnac = normalizeCanac(profile.anac_code);
+    const profileSaga = cleanString(profile.saga_user_id).replace(/^saga[_:-]?/i, "");
+    let score = 0;
+    if (cleanString(profile.user_id) === raw) score = Math.max(score, 120);
+    if (numeric.some((item) => item === profileAnac)) score = Math.max(score, 125);
+    if (numeric.some((item) => item === profileSaga)) score = Math.max(score, 118);
+    if (normalizedRaw && haystack === normalizedRaw) score = Math.max(score, 100);
+    if (normalizedRaw && haystack.includes(normalizedRaw)) score = Math.max(score, 70);
+    if (tokens.length && tokens.every((token) => nameHaystack.includes(token))) {
+      score = Math.max(score, tokens.length >= 2 ? 95 : 65);
+    } else if (tokens.length >= 2) {
+      const matched = tokens.filter((token) => nameHaystack.includes(token)).length;
+      if (matched >= 2) score = Math.max(score, 78 + matched);
+    }
+    const fuzzyNameScore = wppAdminBestTokenScore(tokens, nameHaystack);
+    if (fuzzyNameScore >= 68) score = Math.max(score, 45 + Math.round(fuzzyNameScore / 2));
+    const phraseSimilarity = wppAdminSimilarity(normalizedRaw, nameHaystack);
+    if (phraseSimilarity >= 0.58) score = Math.max(score, 45 + Math.round(phraseSimilarity * 45));
+    if (numeric.some((item) => wppPhoneMatchScore(item, profile.phone) >= 150)) score = Math.max(score, 110);
+    if (roleHint && !haystack.includes(roleHint)) score -= 8;
+    return { profile, score, label: name };
+  }).filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "pt-BR"));
+  if (!rows.length) return { ok: false, question: `Não encontrei ${roleHint === "instrutor" ? "instrutor" : "aluno"} para "${raw}". Pode mandar nome completo, telefone, ANAC ou ID SAGA?` };
+  const best = rows[0];
+  const close = rows.filter((item) => item.score === best.score).slice(0, 4);
+  if (close.length > 1 && best.score >= 100) {
+    return {
+      ok: false,
+      question: `Encontrei mais de uma pessoa: ${close.map((item) => item.label).join(", ")}. Qual delas?`,
+    };
+  }
+  return {
+    ok: true,
+    userId: cleanString(best.profile.user_id),
+    sagaUserId: cleanString(best.profile.saga_user_id),
+    label: best.label,
+    profile: best.profile,
+  };
+}
+
+async function resolveWppAdminAircraft(query) {
+  const raw = cleanString(query);
+  if (!raw) return { ok: false, question: "Qual aeronave?" };
+  const ident = normalizeAircraftIdent(raw);
+  const rawKey = wppAdminAircraftKey(raw);
+  const rawSuffix = wppAdminAircraftSuffixKey(raw);
+  const rawKeys = new Set([rawKey, rawSuffix, ...wppAdminPhoneticAircraftCandidates(raw)].filter(Boolean));
+  const mapping = await loadSagaImportMapping().catch(() => defaultSagaImportMapping());
+  const docs = AIRCRAFTS_COLLECTION_ID
+    ? await listDocumentsLimited(AIRCRAFTS_COLLECTION_ID, [...selectQuery(AIRCRAFT_SELECT)], 500).catch(() => [])
+    : [];
+  const scoreAircraft = (registrationValue, nicknameValue = "", doc = null) => {
+    const registration = cleanString(registrationValue || doc?.registration).toUpperCase();
+    const nickname = cleanString(nicknameValue || doc?.nickname);
+    const registrationKey = wppAdminAircraftKey(registration);
+    const nicknameKey = wppAdminAircraftKey(nickname);
+    const suffixKey = wppAdminAircraftSuffixKey(registration);
+    const keys = [registrationKey, nicknameKey, suffixKey].filter(Boolean);
+    const haystack = keys.join(" ");
+    let score = 0;
+    if (normalizeAircraftIdent(registration) === ident || normalizeAircraftIdent(nickname) === ident) score = Math.max(score, 120);
+    if ([...rawKeys].some((key) => registrationKey === key || nicknameKey === key)) score = Math.max(score, 118);
+    if ([...rawKeys].some((key) => suffixKey === key)) score = Math.max(score, 112);
+    if (rawSuffix && suffixKey === rawSuffix && rawKey.length >= 3) score = Math.max(score, 95);
+    if (rawKey && keys.some((key) => key.includes(rawKey) || rawKey.includes(key))) score = Math.max(score, 86);
+    const fuzzy = wppAdminBestTokenScore(wppAdminQueryTokens(raw), haystack);
+    if (fuzzy >= 72) score = Math.max(score, 45 + Math.round(fuzzy / 2));
+    return { doc, score, registration, nickname };
+  };
+  const rows = docs.map((doc) => scoreAircraft(
+    cleanString(doc.registration).toUpperCase(),
+    cleanString(doc.nickname),
+    doc,
+  )).filter((item) => item.score > 0 && normalizeAircraftIdent(item.registration))
+    .sort((a, b) => b.score - a.score || a.registration.localeCompare(b.registration, "pt-BR"));
+
+  const mappedOptions = [];
+  for (const [registration, sagaId] of Object.entries(mapping.aircraftIdByRegistration || {})) {
+    if (cleanString(sagaId)) mappedOptions.push({ registration: cleanString(registration).toUpperCase(), nickname: "" });
+  }
+  for (const value of Object.values(mapping.aircraftBySaga || {})) {
+    const registration = cleanString(value).toUpperCase();
+    if (registration) mappedOptions.push({ registration, nickname: "" });
+  }
+  const mappedRows = Array.from(new Map(mappedOptions.map((item) => [normalizeAircraftIdent(item.registration), item])).values())
+    .map((item) => scoreAircraft(item.registration, item.nickname, null))
+    .filter((item) => item.score > 0 && normalizeAircraftIdent(item.registration));
+  const allRows = Array.from(new Map([...rows, ...mappedRows].map((item) => [normalizeAircraftIdent(item.registration), item])).values())
+    .sort((a, b) => b.score - a.score || a.registration.localeCompare(b.registration, "pt-BR"));
+  if (allRows.length) {
+    const best = allRows[0];
+    const tied = allRows.filter((item) => item.score === best.score).slice(0, 4);
+    if (tied.length > 1 && best.score >= 110) {
+      return { ok: false, question: `Encontrei mais de uma aeronave: ${tied.map((item) => item.nickname ? `${item.nickname} (${item.registration})` : item.registration).join(", ")}. Qual delas?` };
+    }
+    let sagaId = resolveSagaScheduleAircraftId(best.registration, mapping);
+    if (!sagaId) {
+      const resolved = await resolveSagaScheduleAircraftIdFromSchedules(best.registration, mapping).catch(() => ({ aircraftId: "" }));
+      sagaId = cleanString(resolved.aircraftId);
+    }
+    if (!sagaId) {
+      return {
+        ok: false,
+        question: `Encontrei ${best.nickname ? `${best.nickname} (${best.registration})` : best.registration}, mas ela não tem ID SAGA no de-para. Pode mandar outra aeronave cadastrada no SAGA?`,
+      };
+    }
+    return { ok: true, ident: best.registration, label: best.nickname || best.registration };
+  }
+  return { ok: false, question: `Não encontrei aeronave para "${raw}". Pode mandar matrícula, sufixo ou apelido cadastrado? Ex.: PS-DZA, DZA ou Alfa.` };
+}
+
+function wppAdminAircraftInputs(fields = {}) {
+  const list = Array.isArray(fields.aircraftIdents) ? fields.aircraftIdents : [];
+  const raw = [
+    ...list,
+    cleanString(fields.aircraftIdent),
+  ].filter(Boolean).join(",");
+  const explicit = raw
+    .split(/[,;/]|\s+\+\s+|\s+e\s+/i)
+    .map(cleanString)
+    .filter(Boolean);
+  if (explicit.length > 1) return explicit;
+  const patternMatches = Array.from(raw.matchAll(/\b[A-Z]{2}[-\s]?[A-Z0-9]{3,4}\b/gi))
+    .map((match) => cleanString(match[0]));
+  return patternMatches.length > 1 ? patternMatches : explicit;
+}
+
+async function resolveWppAdminAircraftList(fields = {}) {
+  const inputs = wppAdminAircraftInputs(fields);
+  if (!inputs.length) return { ok: false, question: "Qual aeronave?" };
+  const resolved = [];
+  for (const item of inputs) {
+    const aircraft = await resolveWppAdminAircraft(item);
+    if (!aircraft.ok) return aircraft;
+    if (!resolved.some((row) => normalizeAircraftIdent(row.ident) === normalizeAircraftIdent(aircraft.ident))) {
+      resolved.push(aircraft);
+    }
+  }
+  return { ok: true, aircrafts: resolved };
+}
+
+function wppAdminScheduleStart(schedule) {
+  return sagaLocalDateTimeParts(schedule?.startAtRaw || schedule?.startAt);
+}
+
+function wppAdminScheduleLabel(schedule) {
+  const start = wppAdminScheduleStart(schedule);
+  return `${start.time || "??:??"} ${cleanString(schedule?.aircraft) || "?"} - ${cleanString(schedule?.studentName) || "sem aluno"}`;
+}
+
+function wppAdminScheduleToUpsertPayload(schedule, patch = {}) {
+  const start = wppAdminScheduleStart(schedule);
+  return {
+    scheduleId: cleanString(schedule?.id),
+    aircraftIdent: cleanString(schedule?.aircraft),
+    studentUserId: cleanString(schedule?.studentUserId),
+    studentSagaId: cleanString(schedule?.studentSagaId),
+    studentName: cleanString(schedule?.studentName),
+    instructorUserId: cleanString(schedule?.instructorUserId),
+    instructorSagaId: cleanString(schedule?.instructorSagaId),
+    instructorName: cleanString(schedule?.instructorName),
+    date: start.date,
+    startTime: start.time,
+    durationMinutes: wppAdminScheduleDuration(schedule),
+    sagaStatus: wppAdminSagaStatus(schedule?.status, "PLANNED"),
+    rawNotes: cleanString(schedule?.notes),
+    ...patch,
+  };
+}
+
+function wppAdminMinutesToClock(minutes) {
+  const safe = ((Math.round(Number(minutes) || 0) % (24 * 60)) + (24 * 60)) % (24 * 60);
+  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
+
+function wppAdminIntervalsOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function wppAdminScheduleBusyInterval(schedule, bufferBefore = 0, bufferAfter = 0) {
+  const start = wppAdminScheduleStart(schedule);
+  const startMin = parseClockMinutes(start.time);
+  if (startMin === null) return null;
+  const endMin = wppAdminScheduleEndMinutes(schedule, startMin);
+  if (sagaScheduleIsCancelledStatus(schedule?.status)) return null;
+  return {
+    schedule,
+    start: Math.max(0, startMin - Math.max(0, bufferBefore)),
+    end: Math.min(24 * 60, endMin + Math.max(0, bufferAfter)),
+    rawStart: startMin,
+    rawEnd: endMin,
+  };
+}
+
+function wppAdminScheduleBusyLabel(interval) {
+  const schedule = interval?.schedule || {};
+  const block = wppAdminScheduleIsBlock(schedule);
+  const person = block ? "bloqueio" : (cleanString(schedule.studentName) || "sem aluno");
+  const instructor = block ? cleanString(schedule.notes) : cleanString(schedule.instructorName);
+  return `${wppAdminMinutesToClock(interval.rawStart)}-${wppAdminMinutesToClock(interval.rawEnd)} ${person}${instructor ? ` / ${instructor}` : ""}`;
+}
+
+async function listWppAdminDayScheduleItems(date, aircrafts = []) {
+  const targetDate = normalizeWppAdminDate(date);
+  const idents = new Set((aircrafts || []).map((item) => normalizeAircraftIdent(item.ident || item)).filter(Boolean));
+  const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+  return schedules
+    .map((schedule) => ({ schedule, start: wppAdminScheduleStart(schedule) }))
+    .filter((item) => {
+      if (item.start.date !== targetDate) return false;
+      if (sagaScheduleIsCancelledStatus(item.schedule?.status)) return false;
+      if (wppAdminScheduleIsBlock(item.schedule)) return false;
+      if (idents.size && !idents.has(normalizeAircraftIdent(item.schedule?.aircraft))) return false;
+      return true;
+    })
+    .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
+}
+
+async function listWppAdminPersonFlightDocs(userId) {
+  const safeUserId = cleanString(userId);
+  if (!FLIGHTS_COLLECTION_ID || !safeUserId) return [];
+  const queriesBase = [
+    ...selectQuery(FLIGHT_DETAIL_SELECT),
+    sdk.Query.orderDesc("flight_date"),
+    sdk.Query.orderDesc("start_time"),
+    sdk.Query.limit(100),
+  ];
+  const batches = await Promise.all([
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("student_user_id", [safeUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("user_id", [safeUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+    databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+      sdk.Query.equal("instructor_user_id", [safeUserId]),
+      ...queriesBase,
+    ]).catch(() => ({ documents: [] })),
+  ]);
+  const byId = new Map();
+  for (const batch of batches) {
+    for (const doc of batch.documents || []) byId.set(doc.$id, doc);
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => `${cleanString(b.flight_date)} ${cleanString(b.start_time)}`.localeCompare(`${cleanString(a.flight_date)} ${cleanString(a.start_time)}`));
+}
+
+async function interpretWppAdminDataQuestion(question) {
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) return { subjectQuery: "", intent: "geral", date: "", endDate: "" };
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      subjectQuery: { type: ["string", "null"] },
+      intent: { type: "string" },
+      date: { type: ["string", "null"] },
+      endDate: { type: ["string", "null"] },
+    },
+    required: ["subjectQuery", "intent", "date", "endDate"],
+  };
+  const model = cleanString(process.env.OPENAI_WPP_ADMIN_MODEL || process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content: [
+            "Extraia de uma pergunta administrativa a pessoa principal citada, o assunto e datas.",
+            "Se houver nome, ANAC, telefone ou ID, coloque em subjectQuery somente esse identificador, sem palavras da pergunta.",
+            "Use datas ISO YYYY-MM-DD. Se não houver data explícita, deixe date/endDate nulos.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({ currentDate: wppAdminTodayIso(), question: cleanString(question) }),
+        },
+      ],
+      reasoning: { effort: "low" },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "wpp_admin_data_question",
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  const text = extractOpenAiResponseText(body);
+  return text ? JSON.parse(text) : { subjectQuery: "", intent: "geral", date: "", endDate: "" };
+}
+
+function wppAdminFlightDataSummary(doc) {
+  const flight = toFlight(doc);
+  const durationMinutes = Math.round((Number(flight.durationSec) || 0) / 60);
+  return {
+    id: flight.id,
+    date: flight.flightDate,
+    startTime: flight.startTime,
+    aircraft: flight.aircraftIdent,
+    route: flight.route,
+    status: flight.flightStatus,
+    duration,
+    durationMinutes,
+    studentName: flight.studentName,
+    instructorName: flight.instructorName,
+    completed: isCompletedFlight(flight),
+  };
+}
+
+async function buildWppAdminPersonDataContext(profileResult) {
+  if (!profileResult?.ok) return null;
+  const [flightDocs, creditDocs] = await Promise.all([
+    listWppAdminPersonFlightDocs(profileResult.userId),
+    listWppStudentCreditDocs(profileResult.userId).catch(() => []),
+  ]);
+  const flights = flightDocs.map(wppAdminFlightDataSummary);
+  const completed = flights.filter((flight) => flight.completed);
+  const lastCompleted = completed[0] || null;
+  const purchasedHours = creditDocs.reduce((acc, doc) => acc + (Number(doc.hours) || 0), 0);
+  const flownHours = completed.reduce((acc, flight) => acc + ((Number(flight.durationMinutes) || 0) / 60), 0);
+  return {
+    profile: {
+      userId: profileResult.userId,
+      name: profileResult.label,
+      anac: cleanString(profileResult.profile?.anac_code),
+      sagaUserId: profileResult.sagaUserId,
+      phone: cleanString(profileResult.profile?.phone),
+    },
+    today: wppAdminTodayIso(),
+    latestCompletedFlight: lastCompleted,
+    daysSinceLastFlight: lastCompleted?.date ? daysBetweenIso(lastCompleted.date, wppAdminTodayIso()) : null,
+    recentFlights: flights.slice(0, 12),
+    credits: {
+      purchasedHours: Number(purchasedHours.toFixed(2)),
+      flownHours: Number(flownHours.toFixed(2)),
+      balanceHours: Number((purchasedHours - flownHours).toFixed(2)),
+    },
+  };
+}
+
+async function buildWppAdminScheduleDataContext(date) {
+  const targetDate = normalizeWppAdminDate(date);
+  if (!targetDate) return null;
+  const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+  const rows = schedules
+    .map((schedule) => ({ schedule, start: sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt), duration: sagaScheduleDurationMinutes(schedule) || 0 }))
+    .filter((item) => item.start.date === targetDate && wppAdminSagaStatus(item.schedule?.status) !== "CANCELED")
+    .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
+  const flights = rows.map((item) => ({
+    time: item.start.time,
+    aircraft: cleanString(item.schedule?.aircraft),
+    studentName: cleanString(item.schedule?.studentName),
+    instructorName: cleanString(item.schedule?.instructorName),
+    status: wppAdminSagaStatusLabel(item.schedule?.status),
+    duration: wppAdminDisplayDuration(item.duration),
+    block: wppAdminScheduleIsBlock(item.schedule),
+  }));
+  return {
+    date: targetDate,
+    activeEvents: flights.length,
+    blocks: flights.filter((item) => item.block).length,
+    plannedFlightHours: Number((flights.reduce((acc, item) => item.block ? acc : acc + (wppAdminParseDurationText(item.duration) / 60), 0)).toFixed(2)),
+    flights: flights.slice(0, 40),
+  };
+}
+
+function answerWppAdminNoFlightDaysQuestion(question, context) {
+  const normalized = normalizeWppAdminText(question);
+  if (!context?.profile?.name || !/\b(sem voar|ultimo voo|ultimo voo|ultima vez que voou|não voa|nao voa)\b/.test(normalized)) return "";
+  const last = context.latestCompletedFlight;
+  if (!last?.date) return `${context.profile.name} não tem voo realizado registrado no histórico.`;
+  const days = context.daysSinceLastFlight;
+  const parts = [
+    `O último voo de ${context.profile.name} foi em ${wppAdminDisplayDate(last.date)}`,
+    last.startTime ? `às ${last.startTime}` : null,
+    last.aircraft ? `no ${last.aircraft}` : null,
+    last.route ? `(${last.route})` : null,
+  ].filter(Boolean).join(" ");
+  return `${parts}, ou seja, ${days} dia${days === 1 ? "" : "s"} sem voar.`;
+}
+
+async function draftWppAdminDataAnswer(question, context = {}) {
+  const apiKey = cleanString(process.env.OPENAI_API_KEY);
+  if (!apiKey) return "Não consegui acionar a IA para redigir essa resposta agora.";
+  const model = cleanString(process.env.OPENAI_WPP_ADMIN_MODEL || process.env.OPENAI_BRIEFING_MODEL) || "gpt-5.6-terra";
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content: [
+            "Você é um auxiliar de dados para um administrador de escola de aviação.",
+            "Responda em português, de forma curta, objetiva e operacional.",
+            "Use somente os dados do contexto. Se o contexto não responder a pergunta, diga exatamente o que faltou.",
+            "Não invente datas, nomes, saldos ou voos.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({ question: cleanString(question), context }),
+        },
+      ],
+      reasoning: { effort: "low" },
+    }),
+  });
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = {};
+  }
+  if (!response.ok) throw new Error(cleanString(body?.error?.message) || `OpenAI retornou HTTP ${response.status}.`);
+  return cleanString(extractOpenAiResponseText(body)) || "Não consegui responder com os dados disponíveis.";
+}
+
+async function answerWppAdminDataQuestion(question) {
+  const parsed = await interpretWppAdminDataQuestion(question).catch(() => ({ subjectQuery: cleanString(question), intent: "geral", date: "", endDate: "" }));
+  const subjectQuery = cleanString(parsed.subjectQuery);
+  let person = null;
+  if (subjectQuery) {
+    person = await resolveWppAdminProfile(subjectQuery, "").catch((err) => ({ ok: false, question: cleanString(err?.message) }));
+    if (!person.ok) {
+      return person.question || `Não encontrei uma pessoa para "${subjectQuery}". Pode mandar nome completo, telefone, ANAC ou ID SAGA?`;
+    }
+  }
+  const context = {
+    parsed,
+    person: person?.ok ? await buildWppAdminPersonDataContext(person) : null,
+    schedule: normalizeWppAdminDate(parsed.date) ? await buildWppAdminScheduleDataContext(parsed.date).catch(() => null) : null,
+  };
+  const direct = answerWppAdminNoFlightDaysQuestion(question, context.person);
+  if (direct) return direct;
+  return draftWppAdminDataAnswer(question, context);
+}
+
+async function listWppAdminDayBusySchedules(date) {
+  const targetDate = normalizeWppAdminDate(date);
+  const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+  return schedules
+    .map((schedule) => ({ schedule, start: wppAdminScheduleStart(schedule) }))
+    .filter((item) => item.start.date === targetDate && !sagaScheduleIsCancelledStatus(item.schedule?.status))
+    .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
+}
+
+async function listWppAdminAircraftOptionsFromSchedule(rows = [], scheduleRules = {}) {
+  const docs = AIRCRAFTS_COLLECTION_ID
+    ? await listDocumentsLimited(AIRCRAFTS_COLLECTION_ID, [...selectQuery(AIRCRAFT_SELECT)], 500).catch(() => [])
+    : [];
+  const hiddenValues = Array.isArray(scheduleRules.studentHiddenAircraftIdents) ? scheduleRules.studentHiddenAircraftIdents : [];
+  const waitlistValues = Array.isArray(scheduleRules.studentWaitlistAircraftIdents) ? scheduleRules.studentWaitlistAircraftIdents.map(cleanString).filter(Boolean) : [];
+  const hiddenKeys = new Set(hiddenValues.map(normalizeAircraftIdent).filter(Boolean));
+  const waitlistKeys = new Set(waitlistValues.map(normalizeAircraftIdent).filter(Boolean));
+  const options = [];
+  const seen = new Set();
+  const addOption = (ident, label, waitlist = false) => {
+    const key = normalizeAircraftIdent(ident || label);
+    if (!key || seen.has(key)) return;
+    if (!waitlist && hiddenKeys.has(key)) return;
+    seen.add(key);
+    options.push({ ident: cleanString(ident || label).toUpperCase(), label: cleanString(label || ident), waitlist });
+  };
+
+  for (const doc of docs) {
+    if (doc.active === false) continue;
+    const ident = cleanString(doc.registration).toUpperCase();
+    const label = cleanString(doc.nickname || doc.registration);
+    const type = normalizeWppAdminText(doc.type || "");
+    const identityText = normalizeWppAdminText(`${ident} ${label}`);
+    const keys = [doc.registration, doc.nickname].map(normalizeAircraftIdent).filter(Boolean);
+    const isWaitlist = keys.some((key) => waitlistKeys.has(key));
+    const isHidden = keys.some((key) => hiddenKeys.has(key));
+    const isNonPlane = ["ground", "solo", "simulador", "simulator", "visita previa", "visita_previa"].includes(type)
+      || /\b(gnd|ground|simulador|simulator|visita previa)\b/.test(identityText);
+    const isPlane = !isNonPlane && (!type || type.includes("aviao") || type.includes("air") || cleanString(doc.model_id));
+    if (isWaitlist) {
+      addOption(ident || label, label || ident, true);
+    } else if (!isHidden && isPlane) {
+      addOption(ident, label);
+    }
+  }
+
+  for (const value of waitlistValues) {
+    addOption(value, value, true);
+  }
+
+  for (const item of rows) {
+    const ident = cleanString(item.schedule?.aircraft).toUpperCase();
+    const key = normalizeAircraftIdent(ident);
+    if (ident && waitlistKeys.has(key)) {
+      addOption(ident, ident, true);
+    }
+  }
+  return options.sort((a, b) => (a.waitlist === b.waitlist ? a.label.localeCompare(b.label, "pt-BR") : a.waitlist ? 1 : -1));
+}
+
+async function buildWppAdminAvailabilityAdvice(payload = {}, cause = "") {
+  const date = normalizeWppAdminDate(payload.date);
+  if (!date) return "";
+
+  const [{ publicSettings: schoolRules }, rows] = await Promise.all([
+    loadSchoolRules().catch(() => ({ publicSettings: defaultSchoolRules() })),
+    listWppAdminDayBusySchedules(date),
+  ]);
+  const scheduleRules = wppAdminFlightScheduleRules(schoolRules);
+  const requestedBlock = wppAdminRequestedScheduleBlock(payload, scheduleRules);
+  const requestedStart = requestedBlock?.flightStart ?? parseClockMinutes(normalizeWppAdminClock(payload.startTime));
+  const duration = requestedBlock?.flightDurationMinutes || Math.max(30, Math.round(Number(payload.durationMinutes) || 60));
+  const slotMinutes = [15, 30, 45, 60].includes(Number(scheduleRules.slotMinutes)) ? Number(scheduleRules.slotMinutes) : 30;
+  const dayStart = parseClockMinutes(scheduleRules.scheduleStartTime) ?? 6 * 60;
+  const latestBusyEnd = rows.reduce((max, item) => {
+    const start = parseClockMinutes(item.start.time);
+    if (start === null) return max;
+    return Math.max(max, wppAdminScheduleEndMinutes(item.schedule, start));
+  }, 0);
+  const requestedEnd = requestedBlock?.blockEnd || (requestedStart === null ? 0 : requestedStart + duration);
+  const defaultEnd = scheduleRules.allowNightFlights ? 22 * 60 : 18 * 60;
+  const dayEnd = Math.min(24 * 60, Math.max(defaultEnd, latestBusyEnd, requestedEnd, dayStart + duration));
+  const aircrafts = await listWppAdminAircraftOptionsFromSchedule(rows, scheduleRules);
+  const busyByAircraft = new Map();
+  for (const item of rows) {
+    const key = normalizeAircraftIdent(item.schedule?.aircraft);
+    if (!key) continue;
+    const interval = wppAdminScheduleBusyInterval(item.schedule);
+    if (!interval) continue;
+    if (!busyByAircraft.has(key)) busyByAircraft.set(key, []);
+    busyByAircraft.get(key).push(interval);
+  }
+
+  const requestedAircraft = normalizeAircraftIdent(payload.aircraftIdent);
+  const prioritized = [
+    ...aircrafts.filter((item) => requestedAircraft && normalizeAircraftIdent(item.ident) === requestedAircraft),
+    ...aircrafts.filter((item) => !requestedAircraft || normalizeAircraftIdent(item.ident) !== requestedAircraft),
+  ].slice(0, 10);
+
+  const freeAtRequested = requestedStart === null ? [] : prioritized.filter((aircraft) => {
+    const busy = busyByAircraft.get(normalizeAircraftIdent(aircraft.ident)) || [];
+    const blockStart = requestedBlock?.blockStart ?? requestedStart;
+    const blockEnd = requestedBlock?.blockEnd ?? requestedStart + duration;
+    return !busy.some((interval) => wppAdminIntervalsOverlap(blockStart, blockEnd, interval.start, interval.end));
+  });
+
+  const slotLines = prioritized.map((aircraft) => {
+    const busy = busyByAircraft.get(normalizeAircraftIdent(aircraft.ident)) || [];
+    const slots = [];
+    for (let start = dayStart; start < 24 * 60 && slots.length < 4; start += slotMinutes) {
+      const block = wppAdminScheduleBlockFromFlight(wppAdminMinutesToClock(start), duration, scheduleRules);
+      if (!block) continue;
+      if (block.blockEnd > dayEnd) break;
+      if (busy.some((interval) => wppAdminIntervalsOverlap(block.blockStart, block.blockEnd, interval.start, interval.end))) continue;
+      slots.push(`${block.flightStartTime}-${wppAdminMinutesToClock(block.flightEnd)} (agenda ${block.presentationTime}-${block.endTime})`);
+    }
+    return slots.length ? `${aircraft.label}: ${slots.join(", ")}` : "";
+  }).filter(Boolean).slice(0, 6);
+
+  const requestedBusy = requestedAircraft
+    ? (busyByAircraft.get(requestedAircraft) || []).map(wppAdminScheduleBusyLabel).slice(0, 8)
+    : [];
+  const requestedLabel = cleanString(payload.aircraftLabel || payload.aircraftIdent);
+  return [
+    cause ? `Não consegui salvar porque ${cause}` : "Não consegui salvar nesse horário.",
+    requestedBlock ? wppAdminScheduleBufferSentence(requestedBlock) : null,
+    requestedStart !== null && requestedLabel ? `${requestedLabel} em ${wppAdminDisplayDate(date)} está assim: ${requestedBusy.length ? requestedBusy.join("; ") : "sem ocupações registradas"}.` : null,
+    requestedStart !== null && freeAtRequested.length
+      ? `No mesmo horário (${wppAdminMinutesToClock(requestedStart)} por ${wppAdminDisplayDuration(duration)}), encontrei livre: ${freeAtRequested.slice(0, 6).map((item) => item.label).join(", ")}.`
+      : null,
+    slotLines.length ? `Outros encaixes possíveis:\n${slotLines.map((line) => `- ${line}`).join("\n")}` : "Não encontrei encaixes livres nesse dia com essa duração.",
+    "Pode me mandar uma dessas opções, por exemplo: 'troca para PS-ABC às 09h30'.",
+  ].filter(Boolean).join("\n");
+}
+
+async function wppAdminScheduleConflictQuestion(payload = {}) {
+  const date = normalizeWppAdminDate(payload.date);
+  const aircraft = normalizeAircraftIdent(payload.aircraftIdent);
+  if (!date || !aircraft) return "";
+  const scheduleRules = await loadWppAdminFlightScheduleRules();
+  const block = wppAdminRequestedScheduleBlock(payload, scheduleRules);
+  if (!block) return "";
+  const rows = await listWppAdminDayBusySchedules(date);
+  const conflict = rows.find((item) => {
+    if (cleanString(item.schedule?.id) && cleanString(item.schedule?.id) === cleanString(payload.scheduleId)) return false;
+    if (normalizeAircraftIdent(item.schedule?.aircraft) !== aircraft) return false;
+    const interval = wppAdminScheduleBusyInterval(item.schedule);
+    return interval && wppAdminIntervalsOverlap(block.blockStart, block.blockEnd, interval.start, interval.end);
+  });
+  if (!conflict) return "";
+  return buildWppAdminAvailabilityAdvice(payload, "a aeronave já está ocupada nesse horário.");
+}
+
+function wppAdminIsInstructorProfile(profile) {
+  const haystack = wppAdminSearchText([
+    profile?.role,
+    profile?.active_role,
+    profile?.active_role_slug,
+    profile?.custom_role_slug,
+    Array.isArray(profile?.assigned_role_slugs) ? profile.assigned_role_slugs.join(" ") : profile?.assigned_role_slugs,
+    profile?.labels,
+    profile?.full_name,
+  ].filter(Boolean).join(" "));
+  return /\binstrutor\b|\binva\b|\bdiretor\b/.test(haystack);
+}
+
+function sanitizeWppAdminInstructorOption(item) {
+  const raw = item && typeof item === "object" ? item : {};
+  const label = cleanString(raw.label);
+  const sagaUserId = cleanString(raw.sagaUserId);
+  if (!label || !sagaUserId) return null;
+  return {
+    userId: cleanString(raw.userId),
+    sagaUserId,
+    label,
+    hours: Number(raw.hours) || 0,
+    flights: Number(raw.flights) || 0,
+  };
+}
+
+async function loadCachedWppAdminInstructorOptions() {
+  const doc = await getSettingDoc(WPP_ADMIN_TOP_INSTRUCTORS_CACHE_KEY).catch(() => null);
+  const parsed = parseJsonObject(doc?.settings_json, null);
+  const generatedAt = Date.parse(cleanString(parsed?.generatedAt));
+  if (!Number.isFinite(generatedAt) || Date.now() - generatedAt > WPP_ADMIN_TOP_INSTRUCTORS_CACHE_TTL_MS) return null;
+  const options = (Array.isArray(parsed?.options) ? parsed.options : [])
+    .map(sanitizeWppAdminInstructorOption)
+    .filter(Boolean);
+  return options.length ? options : null;
+}
+
+async function listWppAdminInstructorOptions() {
+  const cached = await loadCachedWppAdminInstructorOptions();
+  if (cached?.length) return cached;
+  const profiles = PROFILES_COLLECTION_ID
+    ? await listAllDocuments(PROFILES_COLLECTION_ID, [...selectQuery(PROFILE_SELECT)]).catch(() => [])
+    : [];
+  const byUserId = new Map();
+  const instructorProfiles = profiles
+    .filter((profile) => wppAdminIsInstructorProfile(profile) && cleanString(profile.saga_user_id))
+    .map((profile) => ({
+      userId: cleanString(profile.user_id),
+      sagaUserId: cleanString(profile.saga_user_id),
+      label: cleanString(profile.nickname || profile.full_name || profile.email || profile.user_id),
+    }))
+    .filter((item) => item.label);
+  for (const item of instructorProfiles) {
+    if (item.userId) byUserId.set(item.userId, item);
+  }
+
+  const today = wppAdminTodayIso();
+  const fromDate = addIsoDateDays(today, -30);
+  const docs = FLIGHTS_COLLECTION_ID
+    ? await listAllDocuments(FLIGHTS_COLLECTION_ID, [
+        sdk.Query.greaterThanEqual("flight_date", fromDate),
+        sdk.Query.lessThanEqual("flight_date", today),
+        sdk.Query.equal("flight_status", ["Realizado"]),
+        ...selectQuery(["$id", "instructor_user_id", "duration_sec", "flight_date"]),
+      ]).catch(() => [])
+    : [];
+  const stats = new Map();
+  for (const doc of docs) {
+    const instructorUserId = cleanString(doc.instructor_user_id);
+    if (!instructorUserId || !byUserId.has(instructorUserId)) continue;
+    const current = stats.get(instructorUserId) || { flights: 0, hours: 0 };
+    current.flights += 1;
+    current.hours += Math.max(0, Number(doc.duration_sec) || 0) / 3600;
+    stats.set(instructorUserId, current);
+  }
+
+  const ranked = instructorProfiles
+    .map((item) => ({ ...item, ...(stats.get(item.userId) || { flights: 0, hours: 0 }) }))
+    .filter((item) => item.flights > 0)
+    .sort((a, b) => b.hours - a.hours || b.flights - a.flights || a.label.localeCompare(b.label, "pt-BR"))
+    .slice(0, 10)
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  const options = ranked.length
+    ? ranked
+    : instructorProfiles.slice(0, 10).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  await upsertPlatformSettingDoc(WPP_ADMIN_TOP_INSTRUCTORS_CACHE_KEY, {
+    generatedAt: nowIso(),
+    fromDate,
+    toDate: today,
+    options,
+  }).catch(() => null);
+  return options;
+}
+
+async function resolveWppAdminCreditPackage(fields = {}) {
+  const { settings } = await loadFlightCreditSalesConfig();
+  const packages = publicFlightCreditSalesConfig(settings, null, true).packages
+    .filter((pkg) => !fields.weekdayOnly || pkg.weekdayDiscountEligible !== false)
+    .sort((a, b) => a.hours - b.hours);
+  if (!packages.length) return { ok: false, question: "Nenhum pacote de horas ativo foi encontrado." };
+  const query = normalizeSearch(fields.packageQuery);
+  const hours = Number(fields.hours);
+  let selected = null;
+  if (query) {
+    selected = packages.find((pkg) => normalizeSearch(`${pkg.id} ${pkg.aircraftModelName} ${pkg.hours} horas`).includes(query));
+  }
+  if (!selected && Number.isFinite(hours) && hours > 0) {
+    selected = packages.find((pkg) => Math.abs(pkg.hours - hours) < 0.01)
+      || [...packages].reverse().find((pkg) => pkg.hours <= hours)
+      || packages[0];
+  }
+  if (!selected) selected = packages.find((pkg) => pkg.isDefault) || (packages.length === 1 ? packages[0] : null);
+  if (!selected) {
+    return {
+      ok: false,
+      question: `Qual pacote? Opções: ${packages.slice(0, 5).map((pkg) => `${formatWppHours(pkg.hours)} ${pkg.aircraftModelName}`).join(", ")}.`,
+    };
+  }
+  const weekdayDiscountPct = parseWeekdayDiscountPct(settings?.weekdayDiscountPct) || 0;
+  const hourPrice = fields.weekdayOnly === true && weekdayDiscountPct
+    ? Math.round(selected.hourPrice * (1 - weekdayDiscountPct / 100) * 100) / 100
+    : selected.hourPrice;
+  return {
+    ok: true,
+    package: selected,
+    hours: Number.isFinite(hours) && hours > 0 ? hours : selected.hours,
+    hourPrice,
+    weekdayDiscountPct,
+  };
+}
+
+async function resolveWppAdminSchedule(fields = {}) {
+  const scheduleId = cleanString(fields.scheduleId);
+  const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+  if (scheduleId) {
+    const found = schedules.find((item) => cleanString(item.id) === scheduleId);
+    if (found) return { ok: true, schedule: found };
+    return { ok: false, question: `Não encontrei o voo/agendamento ${scheduleId}.` };
+  }
+  const date = normalizeWppAdminDate(fields.date);
+  if (!date) return { ok: false, question: "Qual data do voo que devo alterar?" };
+  const startTime = normalizeWppAdminClock(fields.startTime);
+  const aircraft = normalizeAircraftIdent(fields.aircraftIdent);
+  const studentQuery = wppAdminSearchText(fields.studentQuery);
+  const instructorQuery = wppAdminSearchText(fields.instructorQuery);
+  const studentTokens = wppAdminQueryTokens(fields.studentQuery);
+  const instructorTokens = wppAdminQueryTokens(fields.instructorQuery);
+  const candidates = schedules.map((schedule) => {
+    const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+    let score = 0;
+    if (start.date === date) score += 45;
+    else return { schedule, score: -1 };
+    if (startTime && start.time === startTime) score += 30;
+    if (aircraft && normalizeAircraftIdent(schedule.aircraft) === aircraft) score += 25;
+    const studentHaystack = wppAdminSearchText(`${schedule.studentName} ${schedule.studentUserId} ${schedule.studentSagaId}`);
+    const instructorHaystack = wppAdminSearchText(`${schedule.instructorName} ${schedule.instructorUserId} ${schedule.instructorSagaId}`);
+    if (studentQuery && studentHaystack.includes(studentQuery)) score += 35;
+    else if (studentTokens.length) score += Math.round(wppAdminBestTokenScore(studentTokens, studentHaystack) * 0.3);
+    if (instructorQuery && instructorHaystack.includes(instructorQuery)) score += 20;
+    else if (instructorTokens.length) score += Math.round(wppAdminBestTokenScore(instructorTokens, instructorHaystack) * 0.22);
+    return { schedule, score };
+  }).filter((item) => item.score >= 45)
+    .sort((a, b) => b.score - a.score);
+  if (!candidates.length) return { ok: false, question: "Não achei esse voo na escala. Pode informar aluno, data, horário e aeronave?" };
+  const bestScore = candidates[0].score;
+  const close = candidates.filter((item) => item.score >= bestScore - 5).slice(0, 5);
+  if (close.length > 1) {
+    return {
+      ok: false,
+      question: `Achei mais de um voo em ${wppAdminDisplayDate(date)}: ${close.map(({ schedule }) => {
+        const start = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+        return `${start.time} ${schedule.aircraft} ${schedule.studentName || "sem aluno"} (ID ${schedule.id})`;
+      }).join("; ")}. Qual ID devo alterar?`,
+    };
+  }
+  return { ok: true, schedule: close[0].schedule };
+}
+
+function wppAdminScheduleDuration(schedule) {
+  return sagaScheduleDurationMinutes(schedule) || 60;
+}
+
+function wppAdminEndDate(fields) {
+  return normalizeWppAdminDate(fields.endDate) || normalizeWppAdminDate(fields.date);
+}
+
+function wppAdminSpanDurationMinutes(fields) {
+  const direct = wppAdminDurationMinutes(fields);
+  const date = normalizeWppAdminDate(fields.date);
+  const endDate = wppAdminEndDate(fields);
+  const start = normalizeWppAdminClock(fields.startTime);
+  const end = normalizeWppAdminClock(fields.endTime);
+  if (date && endDate && start && end) {
+    const startMs = Date.parse(`${date}T${start}:00`);
+    const endMs = Date.parse(`${endDate}T${end}:00`);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) return Math.round((endMs - startMs) / 60000);
+  }
+  return direct;
+}
+
+async function prepareWppAdminCommand(parsed) {
+  const action = cleanString(parsed?.action);
+  const fields = parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {};
+  if (!action) return { ok: false, draft: parsed, question: parsed?.question || "O que você quer fazer no modo admin?" };
+
+  if (action === "create_payment_link") {
+    const student = await resolveWppAdminProfile(fields.studentQuery, "aluno");
+    if (!student.ok) return { ok: false, draft: parsed, question: student.question };
+    const pkg = await resolveWppAdminCreditPackage(fields);
+    if (!pkg.ok) return { ok: false, draft: parsed, question: pkg.question };
+    const total = Math.round(pkg.hours * pkg.hourPrice * 100) / 100;
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: {
+          studentUserId: student.userId,
+          packageId: pkg.package.id,
+          customHours: pkg.hours,
+          weekdayOnly: fields.weekdayOnly === true,
+        },
+        summary: [
+          "Ação: gerar link de pagamento",
+          `Aluno: ${student.label}`,
+          `Pacote/modelo: ${pkg.package.aircraftModelName}`,
+          `Horas: ${formatWppHours(pkg.hours)}`,
+          `Valor da hora: ${formatMoneyLabel(pkg.hourPrice, "BRL")}`,
+          `Valor estimado: ${formatMoneyLabel(total, "BRL")}`,
+          fields.weekdayOnly === true ? "Modalidade: seg-sex" : null,
+          fields.weekdayOnly === true && pkg.weekdayDiscountPct ? `Desconto seg-sex: ${pkg.weekdayDiscountPct}%` : null,
+        ].filter(Boolean),
+      },
+    };
+  }
+
+  if (action === "check_student_credit") {
+    const student = await resolveWppAdminProfile(fields.studentQuery, "aluno");
+    if (!student.ok) return { ok: false, draft: parsed, question: student.question };
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: { studentUserId: student.userId, studentLabel: student.label },
+        summary: ["Ação: consultar crédito do aluno", `Aluno: ${student.label}`],
+      },
+    };
+  }
+
+  if (action === "summarize_day_schedule") {
+    const date = normalizeWppAdminDate(fields.date);
+    if (!date) return { ok: false, draft: parsed, question: "Qual dia da escala devo resumir?" };
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: { date },
+        summary: ["Ação: resumir escala do dia", `Data: ${wppAdminDisplayDate(date)}`],
+      },
+    };
+  }
+
+  if (action === "define_day_schedule_instructors" || action === "define_day_schedule_statuses") {
+    const date = normalizeWppAdminDate(fields.date);
+    if (!date) return { ok: false, draft: parsed, question: "Qual dia da escala devo ajustar?" };
+    const rows = await listWppAdminDayScheduleItems(date);
+    if (!rows.length) return { ok: false, draft: parsed, question: `Não encontrei voos ativos na escala de ${wppAdminDisplayDate(date)}.` };
+    const aircrafts = Array.from(new Set(rows.map((item) => cleanString(item.schedule.aircraft)).filter(Boolean))).sort();
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: { date },
+        summary: [
+          action === "define_day_schedule_instructors" ? "Ação: definir instrutores da escala" : "Ação: definir status da escala",
+          `Data: ${wppAdminDisplayDate(date)}`,
+          `Voos ativos: ${rows.length}`,
+          aircrafts.length ? `Aeronaves: ${aircrafts.join(", ")}` : null,
+          "Voos já cancelados serão ignorados.",
+        ].filter(Boolean),
+      },
+    };
+  }
+
+  if (action === "confirm_aircraft_day_flights" || action === "cancel_aircraft_day_flights") {
+    const date = normalizeWppAdminDate(fields.date);
+    if (!date) return { ok: false, draft: parsed, question: "Qual dia da escala devo ajustar?" };
+    const aircraftList = await resolveWppAdminAircraftList(fields);
+    if (!aircraftList.ok) return { ok: false, draft: parsed, question: aircraftList.question };
+    const reason = cleanString(fields.cancellationReason || fields.notes);
+    if (action === "cancel_aircraft_day_flights" && !reason) {
+      return { ok: false, draft: parsed, question: "Qual motivo devo registrar para o cancelamento?" };
+    }
+    const rows = await listWppAdminDayScheduleItems(date, aircraftList.aircrafts);
+    if (!rows.length) {
+      return {
+        ok: false,
+        draft: parsed,
+        question: `Não encontrei voos ativos em ${wppAdminDisplayDate(date)} para ${aircraftList.aircrafts.map((item) => item.label).join(", ")}.`,
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: {
+          date,
+          aircrafts: aircraftList.aircrafts.map((item) => ({ ident: item.ident, label: item.label })),
+          cancellationReason: reason,
+        },
+        summary: [
+          action === "confirm_aircraft_day_flights" ? "Ação: confirmar voos por aeronave" : "Ação: cancelar voos por aeronave",
+          `Data: ${wppAdminDisplayDate(date)}`,
+          `Aeronaves: ${aircraftList.aircrafts.map((item) => item.label).join(", ")}`,
+          `Voos ativos encontrados: ${rows.length}`,
+          action === "cancel_aircraft_day_flights" ? `Motivo: ${reason}` : null,
+          "Voos já cancelados serão ignorados e nenhuma mensagem será disparada para alunos.",
+        ].filter(Boolean),
+      },
+    };
+  }
+
+  if (action === "block_aircraft_schedule") {
+    const aircraft = await resolveWppAdminAircraft(fields.aircraftIdent);
+    if (!aircraft.ok) return { ok: false, draft: parsed, question: aircraft.question };
+    const date = normalizeWppAdminDate(fields.date);
+    const startTime = normalizeWppAdminClock(fields.startTime);
+    const durationMinutes = wppAdminSpanDurationMinutes(fields);
+    if (!date) return { ok: false, draft: parsed, question: "Qual data de início do bloqueio?" };
+    if (!startTime) return { ok: false, draft: parsed, question: "Qual horário de início do bloqueio?" };
+    if (!durationMinutes || durationMinutes < 15) return { ok: false, draft: parsed, question: "Qual horário final ou duração do bloqueio?" };
+    const notes = sagaBlockNotes(cleanString(fields.notes) || "Bloqueio de agenda via WhatsApp admin");
+    return {
+      ok: true,
+      command: {
+        action,
+        payload: {
+          aircraftIdent: aircraft.ident,
+          date,
+          startTime,
+          durationMinutes,
+          notes,
+        },
+        summary: [
+          "Ação: bloquear agenda de aeronave",
+          `Aeronave: ${aircraft.label}`,
+          `Início: ${wppAdminDisplayDate(date)} ${startTime}`,
+          `Duração: ${wppAdminDisplayDuration(durationMinutes)}`,
+          `Obs: ${notes}`,
+        ],
+      },
+    };
+  }
+
+  if (action === "schedule_new_flight") {
+    const date = normalizeWppAdminDate(fields.date);
+    const startTime = normalizeWppAdminClock(fields.startTime);
+    const durationMinutes = wppAdminDurationMinutes(fields);
+    const missing = wppAdminNewFlightMissingFields({ ...fields, date, startTime, durationMinutes });
+    if (missing.length) {
+      return { ok: false, draft: parsed, question: wppAdminNewFlightMissingQuestion(missing) };
+    }
+    const student = await resolveWppAdminProfile(fields.studentQuery, "aluno");
+    if (!student.ok) return { ok: false, draft: parsed, question: student.question };
+    const aircraft = await resolveWppAdminAircraft(fields.aircraftIdent);
+    if (!aircraft.ok) return { ok: false, draft: parsed, question: aircraft.question };
+    const instructor = cleanString(fields.instructorQuery)
+      ? await resolveWppAdminProfile(fields.instructorQuery, "instrutor")
+      : { ok: true, userId: "", label: "Sem instrutor" };
+    if (!instructor.ok) return { ok: false, draft: parsed, question: instructor.question };
+    const scheduleRules = await loadWppAdminFlightScheduleRules();
+    const payload = wppAdminPayloadWithScheduleBlock({
+      aircraftIdent: aircraft.ident,
+      aircraftLabel: aircraft.label,
+      studentUserId: student.userId,
+      instructorUserId: instructor.userId || "",
+      date,
+      startTime,
+      durationMinutes,
+      sagaStatus: wppAdminSagaStatus(fields.status, "PLANNED"),
+      rawNotes: cleanString(fields.notes),
+    }, scheduleRules);
+    if (!payload) {
+      return {
+        ok: false,
+        draft: parsed,
+        question: "Não consegui montar o bloco de agenda com briefing e debriefing para esse horário. Pode me mandar outro horário de início?",
+      };
+    }
+    const conflictQuestion = await wppAdminScheduleConflictQuestion(payload);
+    if (conflictQuestion) {
+      return {
+        ok: false,
+        draft: {
+          ...parsed,
+          fields: {
+            ...fields,
+            studentQuery: student.label,
+            instructorQuery: instructor.userId ? instructor.label : fields.instructorQuery,
+            aircraftIdent: aircraft.ident,
+            date,
+            startTime,
+            durationMinutes,
+          },
+        },
+        question: conflictQuestion,
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        action,
+        payload,
+        summary: [
+          "Ação: agendar novo voo",
+          `Aluno: ${student.label}`,
+          `Instrutor: ${instructor.label}`,
+          `Aeronave: ${aircraft.label}`,
+          `Início do voo: ${wppAdminDisplayDate(date)} ${payload.flightStartTime}`,
+          `Duração do voo: ${wppAdminDisplayDuration(payload.flightDurationMinutes)}`,
+          `Briefing: ${payload.presentationTime}`,
+          `Bloco na agenda: ${payload.presentationTime}-${payload.endTime}`,
+          `Status: ${wppAdminSagaStatusLabel(fields.status)}`,
+          cleanString(fields.notes) ? `Obs: ${cleanString(fields.notes)}` : null,
+        ].filter(Boolean),
+      },
+    };
+  }
+
+  if (action === "update_scheduled_flight") {
+    const resolved = await resolveWppAdminSchedule(fields);
+    if (!resolved.ok) return { ok: false, draft: parsed, question: resolved.question };
+    const schedule = resolved.schedule;
+    const currentStart = sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt);
+    const aircraft = cleanString(fields.aircraftIdent)
+      ? await resolveWppAdminAircraft(fields.aircraftIdent)
+      : { ok: true, ident: cleanString(schedule.aircraft), label: cleanString(schedule.aircraft) };
+    if (!aircraft.ok) return { ok: false, draft: parsed, question: aircraft.question };
+    const instructor = cleanString(fields.instructorQuery)
+      ? await resolveWppAdminProfile(fields.instructorQuery, "instrutor")
+      : { ok: true, userId: cleanString(schedule.instructorUserId), sagaUserId: cleanString(schedule.instructorSagaId), label: cleanString(schedule.instructorName) || "Sem instrutor" };
+    if (!instructor.ok) return { ok: false, draft: parsed, question: instructor.question };
+    const date = normalizeWppAdminDate(fields.date) || currentStart.date;
+    const startTime = normalizeWppAdminClock(fields.startTime) || currentStart.time;
+    const durationMinutes = wppAdminDurationMinutes(fields) || wppAdminScheduleDuration(schedule);
+    const status = wppAdminSagaStatus(fields.status, schedule.status || "PLANNED");
+    const notes = Object.prototype.hasOwnProperty.call(fields, "notes") && fields.notes !== null
+      ? cleanString(fields.notes)
+      : cleanString(schedule.notes);
+    const payload = {
+      scheduleId: cleanString(schedule.id),
+      aircraftIdent: aircraft.ident,
+      aircraftLabel: aircraft.label,
+      studentUserId: cleanString(schedule.studentUserId),
+      studentSagaId: cleanString(schedule.studentSagaId),
+      studentName: cleanString(schedule.studentName),
+      instructorUserId: instructor.userId || "",
+      instructorSagaId: instructor.sagaUserId || cleanString(schedule.instructorSagaId),
+      instructorName: instructor.label || cleanString(schedule.instructorName),
+      date,
+      startTime,
+      durationMinutes,
+      sagaStatus: status,
+      rawNotes: notes,
+    };
+    const conflictQuestion = await wppAdminScheduleConflictQuestion(payload);
+    if (conflictQuestion) {
+      return {
+        ok: false,
+        draft: {
+          ...parsed,
+          fields: {
+            ...fields,
+            scheduleId: cleanString(schedule.id),
+            aircraftIdent: aircraft.ident,
+            date,
+            startTime,
+            durationMinutes,
+            status,
+          },
+        },
+        question: conflictQuestion,
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        action,
+        payload,
+        summary: [
+          "Ação: alterar voo agendado",
+          `Voo: ${cleanString(schedule.id)} - ${schedule.studentName || "sem aluno"} (${schedule.aircraft})`,
+          `Início: ${wppAdminDisplayDate(date)} ${startTime}`,
+          `Duração: ${wppAdminDisplayDuration(durationMinutes)}`,
+          `Instrutor: ${instructor.label || "Sem instrutor"}`,
+          `Status: ${wppAdminSagaStatusLabel(status)}`,
+          notes ? `Obs: ${notes}` : null,
+        ].filter(Boolean),
+      },
+    };
+  }
+
+  return { ok: false, draft: parsed, question: parsed?.question || "Ainda não sei executar esse pedido pelo modo admin." };
+}
+
+function wppAdminScheduleIsBlock(schedule) {
+  return sagaScheduleHasBlockMarker(schedule?.notes)
+    || cleanString(schedule?.studentSagaId).replace(/^saga[_:-]?/i, "") === SAGA_BLOCK_USER_ID
+    || cleanString(schedule?.instructorSagaId).replace(/^saga[_:-]?/i, "") === SAGA_BLOCK_USER_ID
+    || /bloqueio/i.test(`${schedule?.notes || ""} ${schedule?.studentName || ""} ${schedule?.aircraft || ""}`);
+}
+
+const WPP_ADMIN_DAY_LABEL = { 0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb" };
+const WPP_ADMIN_STATUS_COLORS = {
+  CONFIRMED: { fill: "#047857", border: "#34d399", text: "#ecfdf5" },
+  PENDING: { fill: "#b45309", border: "#fbbf24", text: "#fffbeb" },
+  PLANNED: { fill: "#0369a1", border: "#38bdf8", text: "#f0f9ff" },
+  CANCELED: { fill: "#475569", border: "#94a3b8", text: "#f8fafc" },
+  BLOCK: { fill: "#262626", border: "#737373", text: "#f5f5f5" },
+};
+
+function wppAdminEscapeXml(value) {
+  return cleanString(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function wppAdminShortText(value, max = 22) {
+  const text = cleanString(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(1, max - 1)).trim()}…`;
+}
+
+function wppAdminClockMinutes(value) {
+  const time = normalizeWppAdminClock(value);
+  if (!time) return null;
+  const [hh, mm] = time.split(":").map(Number);
+  return hh * 60 + mm;
+}
+
+function wppAdminDayOfWeek(date) {
+  return new Date(`${normalizeWppAdminDate(date)}T12:00:00Z`).getUTCDay();
+}
+
+function wppAdminFormatIdent(value) {
+  const raw = cleanString(value).toUpperCase();
+  if (/^[A-Z]{2}-[A-Z0-9]+$/.test(raw)) return raw;
+  const ident = normalizeAircraftIdent(value);
+  if (ident.length >= 5) return `${ident.slice(0, 2)}-${ident.slice(2)}`;
+  return raw || ident;
+}
+
+function wppAdminScheduleEndMinutes(schedule, startMinutes) {
+  const end = sagaLocalDateTimeParts(schedule?.endAtRaw || schedule?.endAt).time;
+  const parsedEnd = wppAdminClockMinutes(end);
+  if (parsedEnd !== null && parsedEnd > startMinutes) return parsedEnd;
+  return Math.min(24 * 60, startMinutes + Math.max(15, sagaScheduleDurationMinutes(schedule) || 60));
+}
+
+function buildWppAdminDayScheduleSvg(date, rows) {
+  const safeRows = (Array.isArray(rows) ? rows : [])
+    .filter((item) => wppAdminSagaStatus(item?.schedule?.status) !== "CANCELED");
+  const aircrafts = Array.from(new Set(safeRows.map((item) => cleanString(item.schedule?.aircraft).toUpperCase()).filter(Boolean))).sort();
+  const columns = aircrafts.length ? aircrafts : ["SEM AERONAVE"];
+  const starts = safeRows.map((item) => wppAdminClockMinutes(item.start?.time)).filter((value) => value !== null);
+  const ends = safeRows.map((item) => {
+    const start = wppAdminClockMinutes(item.start?.time);
+    return start === null ? null : wppAdminScheduleEndMinutes(item.schedule, start);
+  }).filter((value) => value !== null);
+  const minStart = starts.length ? Math.max(0, Math.floor(Math.min(...starts, 6 * 60) / 60) * 60) : 6 * 60;
+  const maxEnd = ends.length ? Math.min(24 * 60, Math.ceil(Math.max(...ends, 18 * 60) / 60) * 60 + 60) : 19 * 60;
+  const hourCount = Math.max(4, Math.ceil((maxEnd - minStart) / 60));
+  const rowH = 58;
+  const colW = 162;
+  const pad = 22;
+  const leftGutter = 64;
+  const titleH = 72;
+  const headerH = 54;
+  const boardH = hourCount * rowH;
+  const width = leftGutter + columns.length * colW + pad * 2;
+  const height = titleH + headerH + boardH + pad;
+  const hours = Array.from({ length: hourCount + 1 }, (_, i) => minStart + i * 60);
+
+  const headers = columns.map((aircraft, index) => {
+    const x = leftGutter + pad + index * colW;
+    const count = safeRows.filter((item) => cleanString(item.schedule?.aircraft).toUpperCase() === aircraft).length;
+    return `
+      <rect x="${x + 2}" y="${titleH}" width="${colW - 6}" height="${headerH - 8}" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="${x + colW / 2}" y="${titleH + 24}" text-anchor="middle" fill="#f8fafc" font-size="17" font-weight="800" font-family="Segoe UI, Arial">${wppAdminEscapeXml(wppAdminFormatIdent(aircraft))}</text>
+      <text x="${x + colW / 2}" y="${titleH + 42}" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="Segoe UI, Arial">${count} evento${count === 1 ? "" : "s"}</text>
+    `;
+  }).join("");
+
+  const hourLabels = hours.map((minute, index) => {
+    const y = titleH + headerH + index * rowH;
+    return `
+      <text x="${leftGutter + pad - 12}" y="${y + 5}" text-anchor="end" fill="#94a3b8" font-size="13" font-family="ui-monospace, Consolas, monospace">${String(Math.floor(minute / 60)).padStart(2, "0")}h</text>
+      <line x1="${leftGutter + pad}" y1="${y}" x2="${width - pad}" y2="${y}" stroke="#33415580"/>
+    `;
+  }).join("");
+
+  const columnBackdrops = columns.map((aircraft, index) => {
+    const x = leftGutter + pad + index * colW;
+    return `<rect x="${x}" y="${titleH + headerH}" width="${colW - 6}" height="${boardH}" rx="8" fill="#020617" stroke="#33415599"/>`;
+  }).join("");
+
+  const cards = safeRows.map((item) => {
+    const schedule = item.schedule;
+    const aircraft = cleanString(schedule?.aircraft).toUpperCase() || columns[0];
+    const col = Math.max(0, columns.indexOf(aircraft));
+    const x = leftGutter + pad + col * colW + 7;
+    const startMin = wppAdminClockMinutes(item.start?.time);
+    if (startMin === null) return "";
+    const endMin = wppAdminScheduleEndMinutes(schedule, startMin);
+    const top = titleH + headerH + Math.max(0, ((startMin - minStart) / 60) * rowH);
+    const h = Math.max(42, Math.min(boardH, ((endMin - startMin) / 60) * rowH) - 3);
+    const block = wppAdminScheduleIsBlock(schedule);
+    const status = block ? "BLOCK" : wppAdminSagaStatus(schedule?.status);
+    const color = WPP_ADMIN_STATUS_COLORS[status] || WPP_ADMIN_STATUS_COLORS.PLANNED;
+    const time = `${item.start.time} - ${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
+    const student = block ? "Bloqueio de agenda" : cleanString(schedule?.studentName) || "Sem aluno";
+    const instructor = block ? cleanString(schedule?.notes) || "Bloqueado" : cleanString(schedule?.instructorName) || "Sem instrutor";
+    return `
+      <rect x="${x}" y="${top}" width="${colW - 20}" height="${h}" rx="7" fill="${color.fill}" stroke="${color.border}" stroke-width="1.5"/>
+      <text x="${x + 9}" y="${top + 16}" fill="${color.text}" font-size="12" font-weight="800" font-family="ui-monospace, Consolas, monospace">${wppAdminEscapeXml(time)}</text>
+      <text x="${x + 9}" y="${top + 34}" fill="${color.text}" font-size="13" font-weight="800" font-family="Segoe UI, Arial">${wppAdminEscapeXml(wppAdminShortText(student, 21))}</text>
+      ${h >= 60 ? `<text x="${x + 9}" y="${top + 51}" fill="#dbeafe" font-size="11" font-family="Segoe UI, Arial">${wppAdminEscapeXml(wppAdminShortText(wppAdminSagaStatusLabel(status), 12))} · ${wppAdminEscapeXml(wppAdminShortText(instructor, 21))}</text>` : ""}
+    `;
+  }).join("");
+
+  const dow = WPP_ADMIN_DAY_LABEL[wppAdminDayOfWeek(date)] || "";
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  <rect x="8" y="8" width="${width - 16}" height="${height - 16}" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="${pad + 4}" y="32" fill="#e2e8f0" font-size="21" font-weight="800" font-family="Segoe UI, Arial">Escala do dia</text>
+  <text x="${pad + 4}" y="56" fill="#94a3b8" font-size="14" font-family="Segoe UI, Arial">${wppAdminEscapeXml(`${dow} ${wppAdminDisplayDate(date)}`)} · aluno, status e instrutor</text>
+  ${headers}
+  ${columnBackdrops}
+  ${hourLabels}
+  ${cards}
+</svg>`;
+}
+
+async function sendWppAdminScheduleImage(settings, to, date, rows) {
+  const svg = buildWppAdminDayScheduleSvg(date, rows);
+  const png = await renderWppSvgToPng(svg, { scale: 3 });
+  const stamp = normalizeWppAdminDate(date).replace(/-/g, "");
+  const link = await uploadWppPngBuffer(png, `wpp-admin-escala-${stamp}.png`);
+  await sendWppImageMessage(settings, {
+    to,
+    link,
+    caption: `Print da escala de ${wppAdminDisplayDate(date)}`,
+  });
+}
+
+function wppAdminScheduleToFlowItem(schedule) {
+  const start = wppAdminScheduleStart(schedule);
+  return {
+    scheduleId: cleanString(schedule?.id),
+    aircraftIdent: cleanString(schedule?.aircraft),
+    studentUserId: cleanString(schedule?.studentUserId),
+    studentSagaId: cleanString(schedule?.studentSagaId),
+    studentName: cleanString(schedule?.studentName),
+    instructorUserId: cleanString(schedule?.instructorUserId),
+    instructorSagaId: cleanString(schedule?.instructorSagaId),
+    instructorName: cleanString(schedule?.instructorName),
+    date: start.date,
+    startTime: start.time,
+    durationMinutes: wppAdminScheduleDuration(schedule),
+    sagaStatus: wppAdminSagaStatus(schedule?.status, "PLANNED"),
+    rawNotes: cleanString(schedule?.notes),
+  };
+}
+
+function wppAdminFlowItemLabel(item) {
+  return `${cleanString(item?.startTime) || "??:??"} ${cleanString(item?.aircraftIdent) || "?"} - ${cleanString(item?.studentName) || "sem aluno"}`;
+}
+
+function wppAdminFlowItemPayload(item, patch = {}) {
+  return {
+    scheduleId: cleanString(item?.scheduleId),
+    aircraftIdent: cleanString(item?.aircraftIdent),
+    studentUserId: cleanString(item?.studentUserId),
+    studentSagaId: cleanString(item?.studentSagaId),
+    studentName: cleanString(item?.studentName),
+    instructorUserId: cleanString(item?.instructorUserId),
+    instructorSagaId: cleanString(item?.instructorSagaId),
+    instructorName: cleanString(item?.instructorName),
+    date: cleanString(item?.date),
+    startTime: cleanString(item?.startTime),
+    durationMinutes: Number(item?.durationMinutes) || 60,
+    sagaStatus: wppAdminSagaStatus(item?.sagaStatus, "PLANNED"),
+    rawNotes: cleanString(item?.rawNotes),
+    ...patch,
+  };
+}
+
+function wppAdminInstructorFlowButtons(flow, itemIndex) {
+  const instructors = (Array.isArray(flow?.instructors) ? flow.instructors : []).slice(0, 10);
+  return instructors.map((item, index) => ({
+    id: `${WPP_ADMIN_FLOW_PREFIX}:instr:${itemIndex}:${index}`,
+    title: item.label,
+  }));
+}
+
+function wppAdminStatusFlowButtons(itemIndex) {
+  return WPP_ADMIN_STATUS_OPTIONS.map((item) => ({
+    id: `${WPP_ADMIN_FLOW_PREFIX}:status:${itemIndex}:${item.status}`,
+    title: item.title,
+  }));
+}
+
+async function sendWppAdminScaleFlowPrompt(settings, to, flow) {
+  const items = Array.isArray(flow?.items) ? flow.items : [];
+  if (!items.length) return false;
+  const type = cleanString(flow?.type);
+  const title = type === "instructors" ? "Instrutor" : "Status";
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.done === true) continue;
+    const current = type === "instructors"
+      ? cleanString(item.instructorName) || "Sem instrutor"
+      : wppAdminSagaStatusLabel(item.sagaStatus);
+    const body = [
+      `${title} do voo ${index + 1}/${items.length}`,
+      wppAdminFlowItemLabel(item),
+      `Atual: ${current}`,
+    ].join("\n").slice(0, 1024);
+    await sendWppBotReply(settings, {
+      to,
+      body,
+      buttons: type === "instructors" ? wppAdminInstructorFlowButtons(flow, index) : wppAdminStatusFlowButtons(index),
+      listButtonText: "Escolher",
+      listSectionTitle: type === "instructors" ? "Instrutores" : "Status",
+    }).catch(() => sendWppTextMessage(settings, {
+      to,
+      body: `${body}\n\nNão consegui enviar o select desse voo. Responda "reiniciar admin" para tentar de novo.`,
+    }));
+  }
+  return true;
+}
+
+function wppAdminFlowDoneText(flow) {
+  const total = Number(flow?.totalItems) || (Array.isArray(flow?.items) ? flow.items.length : 0);
+  const updated = Number(flow?.updated) || 0;
+  const skipped = Number(flow?.skipped) || 0;
+  const failed = Number(flow?.failed) || 0;
+  const date = normalizeWppAdminDate(flow?.date);
+  return [
+    `Fluxo concluído para ${wppAdminDisplayDate(date || flow?.date)}.`,
+    `Voos: ${total}. Atualizados: ${updated}. Pulados: ${skipped}. Falhas: ${failed}.`,
+    "Nenhuma mensagem foi disparada para alunos.",
+  ].filter(Boolean).join("\n");
+}
+
+async function createWppAdminScaleFlow(action, payload = {}, options = {}) {
+  const date = normalizeWppAdminDate(payload.date);
+  const rows = await listWppAdminDayScheduleItems(date);
+  const items = rows.map((item) => wppAdminScheduleToFlowItem(item.schedule)).filter((item) => item.scheduleId);
+  if (!items.length) return { text: `Não encontrei voos ativos na escala de ${wppAdminDisplayDate(date)}.` };
+  const type = action === "define_day_schedule_instructors" ? "instructors" : "statuses";
+  const instructors = type === "instructors" ? await listWppAdminInstructorOptions() : [];
+  if (type === "instructors" && !instructors.length) return { text: "Não encontrei instrutores com ID SAGA vinculado." };
+  if (options.settings && options.incoming) {
+    await sendWppAdminScheduleImage(options.settings, options.incoming.from, date, rows).catch((err) => {
+      console.warn(`[wppAdmin] scale flow image failed date=${date} error=${cleanString(err?.message).slice(0, 240)}`);
+    });
+  }
+  return {
+    text: [
+      `Fluxo iniciado para ${wppAdminDisplayDate(date)}.`,
+      `Encontrei ${items.length} voo(s) ativo(s). Vou mandar um select por voo, todos de uma vez.`,
+      "Voos já cancelados foram ignorados.",
+    ].join("\n"),
+    flow: {
+      type,
+      date,
+      items,
+      totalItems: items.length,
+      instructors: instructors.slice(0, 10),
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+    },
+  };
+}
+
+function wppAdminFlowSelection(responseId) {
+  const raw = cleanString(responseId);
+  let match = raw.match(/^wppadm:instr:(\d+):(\d+)$/);
+  if (match) return { type: "instructors", index: Number(match[1]), value: Number(match[2]) };
+  match = raw.match(/^wppadm:status:(\d+):(CONFIRMED|PENDING|PLANNED|CANCELED)$/);
+  if (match) return { type: "statuses", index: Number(match[1]), value: match[2] };
+  return null;
+}
+
+function wppAdminFlowRemainingCount(flow) {
+  return (Array.isArray(flow?.items) ? flow.items : []).filter((item) => item.done !== true).length;
+}
+
+function wppAdminInstructorPatchFromSelection(selection, flow) {
+  const selected = (Array.isArray(flow.instructors) ? flow.instructors : [])[Number(selection?.value)];
+  if (!selected) return { error: "Instrutor não encontrado nessa opção." };
+  return {
+    patch: {
+      instructorUserId: cleanString(selected.userId),
+      instructorSagaId: cleanString(selected.sagaUserId),
+      instructorName: cleanString(selected.label),
+    },
+    label: cleanString(selected.label),
+  };
+}
+
+function wppAdminStatusPatchFromSelection(selection) {
+  const status = wppAdminSagaStatus(selection?.value, "");
+  if (!status) return { error: "Status não encontrado nessa opção." };
+  return { patch: { sagaStatus: status }, label: wppAdminSagaStatusLabel(status) };
+}
+
+async function handleWppAdminScaleFlowTurn(settings, incoming, session, phone) {
+  const flow = session?.flow && typeof session.flow === "object" ? session.flow : null;
+  if (!flow) return null;
+  if (isWppAdminCancel(incoming.text, incoming.responseId)) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Fluxo de escala interrompido. Modo admin continua ativo." });
+    return { handled: true, status: "flow_cancelled" };
+  }
+
+  const items = Array.isArray(flow.items) ? flow.items : [];
+  if (!items.length) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: wppAdminFlowDoneText(flow) });
+    return { handled: true, status: "flow_completed" };
+  }
+
+  const selection = wppAdminFlowSelection(incoming.responseId);
+  if (!selection || selection.type !== flow.type || selection.index < 0 || selection.index >= items.length) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Não consegui identificar esse select. Se quiser começar de novo, responda reiniciar admin." });
+    return { handled: true, status: "flow_invalid_choice" };
+  }
+
+  const item = items[selection.index];
+  if (!item || item.done === true) {
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Esse voo já foi processado nesse fluxo." });
+    return { handled: true, status: "flow_duplicate_choice" };
+  }
+
+  const choice = flow.type === "instructors"
+    ? wppAdminInstructorPatchFromSelection(selection, flow)
+    : wppAdminStatusPatchFromSelection(selection);
+  const nextFlow = {
+    ...flow,
+    items: items.map((row) => ({ ...row })),
+    updated: Number(flow.updated) || 0,
+    skipped: Number(flow.skipped) || 0,
+    failed: Number(flow.failed) || 0,
+  };
+
+  let line = "";
+  if (choice.error || !choice.patch) {
+    nextFlow.failed += 1;
+    line = `${selection.index + 1}. ${wppAdminFlowItemLabel(item)}: ${choice.error || "escolha inválida"}`;
+  } else {
+    try {
+      await sagaUpsertScheduleDirect(null, wppAdminFlowItemPayload(item, choice.patch));
+      nextFlow.updated += 1;
+      nextFlow.items[selection.index] = { ...nextFlow.items[selection.index], done: true };
+      line = `${selection.index + 1}. ${wppAdminFlowItemLabel(item)}: ${choice.label}`;
+    } catch (err) {
+      nextFlow.failed += 1;
+      line = `${selection.index + 1}. ${wppAdminFlowItemLabel(item)}: falha - ${cleanString(err?.message).slice(0, 160) || "erro ao salvar"}`;
+    }
+  }
+
+  const remaining = wppAdminFlowRemainingCount(nextFlow);
+  if (!remaining) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null });
+    await sendWppAdminResultMessage(
+      settings,
+      incoming.from,
+      ["Atualização feita:", line, "", wppAdminFlowDoneText(nextFlow)].join("\n"),
+      { action: "block_aircraft_schedule", payload: { date: nextFlow.date } },
+    );
+    return { handled: true, status: "flow_completed" };
+  }
+
+  await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: nextFlow });
+  await sendWppTextMessage(settings, {
+    to: incoming.from,
+    body: [
+      "Atualização feita:",
+      line,
+      `${remaining} voo(s) ainda aguardando resposta nos selects já enviados.`,
+    ].join("\n").slice(0, 4096),
+  });
+  return { handled: true, status: "flow_progress" };
+}
+
+async function withResolvedWppAdminCommandAircraft(command = {}) {
+  const action = cleanString(command?.action);
+  if (!["block_aircraft_schedule", "schedule_new_flight", "update_scheduled_flight"].includes(action)) return command;
+  const payload = command?.payload && typeof command.payload === "object" ? command.payload : {};
+  if (!cleanString(payload.aircraftIdent)) return command;
+  const aircraft = await resolveWppAdminAircraft(payload.aircraftIdent);
+  if (!aircraft.ok) {
+    throw Object.assign(new Error(aircraft.question || "Aeronave não encontrada."), { status: 422 });
+  }
+  return {
+    ...command,
+    payload: {
+      ...payload,
+      aircraftIdent: aircraft.ident,
+      aircraftLabel: aircraft.label || payload.aircraftLabel,
+    },
+  };
+}
+
+async function executeWppAdminCommand(command, options = {}) {
+  const resolvedCommand = await withResolvedWppAdminCommandAircraft(command);
+  const action = cleanString(resolvedCommand?.action);
+  const payload = resolvedCommand?.payload && typeof resolvedCommand.payload === "object" ? resolvedCommand.payload : {};
+  if (action === "create_payment_link") {
+    const checkout = await createFlightCreditCheckoutForUser(
+      payload.studentUserId,
+      payload.packageId,
+      payload.customHours,
+      payload.weekdayOnly === true,
+      { requireStudentPurchasesEnabled: false },
+    );
+    return [`Link de pagamento criado:`, checkout.paymentUrl].join("\n");
+  }
+  if (action === "check_student_credit") {
+    const [creditDocs, flightDocs] = await Promise.all([
+      listWppStudentCreditDocs(payload.studentUserId),
+      listWppStudentJourneyFlightDocs(payload.studentUserId),
+    ]);
+    const purchasedHours = creditDocs.reduce((acc, doc) => acc + (Number(doc.hours) || 0), 0);
+    const completedFlights = flightDocs.map(toFlight).filter(isCompletedFlight);
+    const flownHours = completedFlights.reduce((acc, flight) => acc + ((Number(flight.durationSec) || 0) / 3600), 0);
+    const balance = purchasedHours - flownHours;
+    const byModel = Array.from(creditDocs.reduce((map, doc) => {
+      const name = cleanString(doc.aircraft_model_name) || "Modelo não identificado";
+      map.set(name, (map.get(name) || 0) + (Number(doc.hours) || 0));
+      return map;
+    }, new Map()).entries()).sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+    const modelLines = byModel.slice(0, 8).map(([name, hours]) => `- ${name}: ${formatWppHours(hours)} compradas`);
+    return [
+      `Crédito de ${payload.studentLabel || payload.studentUserId}:`,
+      `Compradas: ${formatWppHours(purchasedHours)}`,
+      `Consumidas em voos realizados: ${formatWppHours(flownHours)}`,
+      `Saldo atual: ${formatWppHours(balance)}`,
+      modelLines.length ? "\nPor modelo:\n" + modelLines.join("\n") : null,
+    ].filter(Boolean).join("\n");
+  }
+  if (action === "summarize_day_schedule") {
+    const date = normalizeWppAdminDate(payload.date);
+    const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+    const rows = schedules
+      .map((schedule) => ({ schedule, start: sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt), duration: sagaScheduleDurationMinutes(schedule) || 0 }))
+      .filter((item) => item.start.date === date)
+      .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
+    const activeRows = rows.filter((item) => wppAdminSagaStatus(item.schedule?.status) !== "CANCELED");
+    const canceledCount = rows.length - activeRows.length;
+    if (!activeRows.length) {
+      return [
+        `Não encontrei voos ativos na escala de ${wppAdminDisplayDate(date)}.`,
+        canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : null,
+      ].filter(Boolean).join("\n");
+    }
+    const blocks = activeRows.filter((item) => wppAdminScheduleIsBlock(item.schedule)).length;
+    const totalMinutes = activeRows.reduce((acc, item) => {
+      if (wppAdminScheduleIsBlock(item.schedule)) return acc;
+      return acc + item.duration;
+    }, 0);
+    const lines = activeRows.slice(0, 30).map((item) => {
+      const s = item.schedule;
+      return `- ${item.start.time} ${s.aircraft || "?"} | ${s.studentName || "sem aluno"} | ${s.instructorName || "sem instrutor"} | ${wppAdminDisplayDuration(item.duration)} | ${wppAdminSagaStatusLabel(s.status)}`;
+    });
+    if (options.settings && options.incoming) {
+      await sendWppAdminScheduleImage(options.settings, options.incoming.from, date, activeRows).catch((err) => {
+        console.warn(`[wppAdmin] schedule image failed date=${date} error=${cleanString(err?.message).slice(0, 240)}`);
+      });
+    }
+    return [
+      `Escala de ${wppAdminDisplayDate(date)}: ${activeRows.length} evento(s) ativo(s), ${blocks} bloqueio(s), ${formatWppHours(totalMinutes / 60)} planejadas.`,
+      canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : null,
+      lines.join("\n"),
+    ].filter(Boolean).join("\n");
+  }
+  if (action === "block_aircraft_schedule") {
+    const result = await sagaUpsertScheduleDirect(null, {
+      aircraftIdent: payload.aircraftIdent,
+      studentSagaId: SAGA_NO_STUDENT_ID,
+      studentName: "Ninguém",
+      instructorSagaId: SAGA_NO_STUDENT_ID,
+      date: payload.date,
+      startTime: payload.startTime,
+      durationMinutes: payload.durationMinutes,
+      sagaStatus: "CONFIRMED",
+      rawNotes: sagaBlockNotes(payload.notes || "Bloqueio de agenda via WhatsApp admin"),
+    });
+    return result.message || "Bloqueio criado na agenda.";
+  }
+  if (action === "define_day_schedule_instructors" || action === "define_day_schedule_statuses") {
+    return createWppAdminScaleFlow(action, payload, options);
+  }
+  if (action === "confirm_aircraft_day_flights" || action === "cancel_aircraft_day_flights") {
+    const aircrafts = Array.isArray(payload.aircrafts) ? payload.aircrafts : [];
+    const date = normalizeWppAdminDate(payload.date);
+    const rows = await listWppAdminDayScheduleItems(date, aircrafts);
+    const targetStatus = action === "confirm_aircraft_day_flights" ? "CONFIRMED" : "CANCELED";
+    const reason = cleanString(payload.cancellationReason);
+    let updated = 0;
+    let failed = 0;
+    const errors = [];
+    for (const item of rows) {
+      const schedule = item.schedule;
+      const notes = action === "cancel_aircraft_day_flights"
+        ? [cleanString(schedule.notes), `Cancelado via WhatsApp admin: ${reason}`].filter(Boolean).join(" | ")
+        : cleanString(schedule.notes);
+      try {
+        await sagaUpsertScheduleDirect(null, wppAdminScheduleToUpsertPayload(schedule, {
+          sagaStatus: targetStatus,
+          rawNotes: notes,
+        }));
+        updated += 1;
+      } catch (err) {
+        failed += 1;
+        errors.push(`${wppAdminScheduleLabel(schedule)}: ${cleanString(err?.message).slice(0, 120)}`);
+      }
+    }
+    return [
+      `${targetStatus === "CONFIRMED" ? "Confirmação" : "Cancelamento"} concluído para ${wppAdminDisplayDate(date)}.`,
+      `Voos ativos encontrados: ${rows.length}. Atualizados: ${updated}. Falhas: ${failed}.`,
+      "Voos já cancelados foram ignorados e nenhuma mensagem foi disparada para alunos.",
+      errors.length ? `Falhas:\n${errors.slice(0, 5).map((line) => `- ${line}`).join("\n")}` : null,
+    ].filter(Boolean).join("\n");
+  }
+  if (action === "schedule_new_flight" || action === "update_scheduled_flight") {
+    try {
+      const result = await sagaUpsertScheduleDirect(null, payload);
+      return result.message || "Evento salvo na agenda.";
+    } catch (err) {
+      const message = cleanString(err?.message);
+      if (/ocupad|occupied|conflit|conflict|indispon/i.test(message)) {
+        const advice = await buildWppAdminAvailabilityAdvice(payload, message || "a aeronave está ocupada nesse horário.");
+        return advice || `Não consegui salvar: ${message}`;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Comando admin desconhecido.");
+}
+
+async function handleWppAdminAssistantTurn(settings, incoming, log) {
+  if (!wppAdminPhoneAllowed(settings, incoming)) return { handled: false };
+  const phone = incoming.lookupFrom || incoming.from;
+  const session = await loadWppAdminSession(phone);
+  const textForControl = cleanString(incoming.text);
+  const startRemainder = wppAdminStartRemainder(textForControl, incoming.responseId);
+  const wantsStart = startRemainder !== null;
+
+  if (isWppAdminExit(textForControl, incoming.responseId)) {
+    await clearWppAdminSession(phone);
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Modo admin desativado." });
+    return { handled: true, status: "disabled" };
+  }
+
+  if (isWppAdminRestart(textForControl, incoming.responseId)) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null, dataMode: false });
+    await sendWppAdminHelpMenu(settings, incoming.from);
+    return { handled: true, status: "restarted" };
+  }
+
+  if (!session.active && !wantsStart) return { handled: false };
+
+  if (wantsStart && !startRemainder) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null, dataMode: false });
+    await sendWppAdminHelpMenu(settings, incoming.from);
+    return { handled: true, status: "enabled" };
+  }
+
+  if (session.flow && !wantsStart) {
+    const flowResult = await handleWppAdminScaleFlowTurn(settings, incoming, session, phone);
+    if (flowResult?.handled) return flowResult;
+  }
+
+  if (session.pending) {
+    if (isWppAdminCancel(textForControl, incoming.responseId)) {
+      await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: session.flow || null });
+      await sendWppTextMessage(settings, { to: incoming.from, body: "Comando cancelado. Modo admin continua ativo." });
+      return { handled: true, status: "cancelled" };
+    }
+    if (isWppAdminConfirm(textForControl, incoming.responseId)) {
+      const result = await executeWppAdminCommand(session.pending, { settings, incoming });
+      const resultText = typeof result === "string" ? result : cleanString(result?.text);
+      const flow = result && typeof result === "object" && result.flow && typeof result.flow === "object" ? result.flow : null;
+      await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow });
+      if (resultText) await sendWppAdminResultMessage(settings, incoming.from, resultText, session.pending);
+      if (flow) await sendWppAdminScaleFlowPrompt(settings, incoming.from, flow);
+      return { handled: true, status: "executed", action: session.pending.action };
+    }
+    await sendWppBotReply(settings, {
+      to: incoming.from,
+      body: "Tenho um comando aguardando confirmação. Responda Confirmar para executar ou Cancelar para descartar.",
+      buttons: WPP_ADMIN_CONFIRM_BUTTONS,
+    }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body: "Responda Confirmar para executar ou Cancelar para descartar." }));
+    return { handled: true, status: "awaiting_confirmation" };
+  }
+
+  const menuCommand = wppAdminMenuCommandText(incoming.responseId);
+  if (menuCommand === "auxiliar de dados" || isWppAdminDataModeStart(textForControl, incoming.responseId)) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null, dataMode: true });
+    await sendWppTextMessage(settings, {
+      to: incoming.from,
+      body: "Auxiliar de Dados ativo. Pode perguntar qualquer dado da operação; vou tentar localizar nos registros antes de responder.",
+    });
+    return { handled: true, status: "data_mode_enabled" };
+  }
+  if (session.dataMode && isWppAdminDataModeExit(textForControl, incoming.responseId)) {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null, dataMode: false });
+    await sendWppAdminHelpMenu(settings, incoming.from);
+    return { handled: true, status: "data_mode_disabled" };
+  }
+
+  let messageText = wppAdminNextStepCommandText(incoming.responseId) || menuCommand || startRemainder || textForControl;
+  if (incoming.mediaId && cleanString(incoming.type) === "audio") {
+    messageText = await transcribeWppAdminAudio(settings, incoming);
+  }
+  if (!messageText) {
+    await saveWppAdminSession(phone, { active: true, draft: session.draft, pending: null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Não consegui ler a mensagem. Pode enviar o pedido em texto?" });
+    return { handled: true, status: "empty" };
+  }
+
+  if (session.dataMode && !menuCommand && !wppAdminNextStepCommandText(incoming.responseId) && !wantsStart) {
+    const answer = await answerWppAdminDataQuestion(messageText);
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null, dataMode: true });
+    await sendWppAdminDataAnswerMessage(settings, incoming.from, answer);
+    return { handled: true, status: "data_answered" };
+  }
+
+  const parsed = await interpretWppAdminMessage({ message: messageText, previousDraft: session.draft });
+  if (parsed.status === "cancel") {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: "Combinado, descartei o rascunho. Modo admin continua ativo." });
+    return { handled: true, status: "draft_cancelled" };
+  }
+  if (parsed.status === "unsupported") {
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: session.flow || null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: parsed.question || "Ainda não sei executar esse tipo de pedido pelo WhatsApp admin." });
+    return { handled: true, status: "unsupported" };
+  }
+
+  const prepared = await prepareWppAdminCommand(parsed);
+  if (!prepared.ok) {
+    await saveWppAdminSession(phone, { active: true, draft: prepared.draft || parsed, pending: null, flow: session.flow || null });
+    await sendWppTextMessage(settings, { to: incoming.from, body: prepared.question || parsed.question || "Preciso de mais um dado para continuar." });
+    return { handled: true, status: "needs_info", action: parsed.action || null };
+  }
+
+  if (wppAdminIsReadOnlyAction(prepared.command.action)) {
+    const result = await executeWppAdminCommand(prepared.command, { settings, incoming });
+    const resultText = typeof result === "string" ? result : cleanString(result?.text);
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow: session.flow || null });
+    if (resultText) await sendWppAdminResultMessage(settings, incoming.from, resultText, prepared.command);
+    return { handled: true, status: "executed_read_only", action: prepared.command.action };
+  }
+
+  if (["define_day_schedule_instructors", "define_day_schedule_statuses"].includes(prepared.command.action)) {
+    const result = await executeWppAdminCommand(prepared.command, { settings, incoming });
+    const resultText = typeof result === "string" ? result : cleanString(result?.text);
+    const flow = result && typeof result === "object" && result.flow && typeof result.flow === "object" ? result.flow : null;
+    await saveWppAdminSession(phone, { active: true, draft: null, pending: null, flow });
+    if (resultText) await sendWppTextMessage(settings, { to: incoming.from, body: resultText.slice(0, 4096) });
+    if (flow) await sendWppAdminScaleFlowPrompt(settings, incoming.from, flow);
+    return { handled: true, status: "flow_started", action: prepared.command.action };
+  }
+
+  await saveWppAdminSession(phone, { active: true, draft: null, pending: prepared.command, flow: null });
+  const body = [
+    "Entendi assim:",
+    ...prepared.command.summary.map((line) => `- ${line}`),
+    "",
+    "Confirma a execução?",
+  ].join("\n");
+  await sendWppBotReply(settings, {
+    to: incoming.from,
+    body,
+    buttons: WPP_ADMIN_CONFIRM_BUTTONS,
+  }).catch(() => sendWppTextMessage(settings, { to: incoming.from, body: `${body}\n\nResponda Confirmar ou Cancelar.` }));
+  if (typeof log === "function") log(`[wppAdmin] pending action=${prepared.command.action} from=${normalizeWppRecipientPhone(phone)}`);
+  return { handled: true, status: "pending_confirmation", action: prepared.command.action };
+}
+
 async function runWppIncomingActions(settings, incoming, actions) {
   const results = [];
   for (const action of sanitizeWppIncomingActions(actions)) {
@@ -22492,6 +25307,32 @@ async function handleWppIncomingWebhook(payload, log) {
           actionResults.push({ action: "start_flight_booking", status: result.status, matchedRuleId: null });
           continue;
         }
+      }
+
+      let adminAssistant = null;
+      try {
+        adminAssistant = await handleWppAdminAssistantTurn(settings, incoming, log);
+      } catch (err) {
+        if (wppAdminPhoneAllowed(settings, incoming)) {
+          const message = cleanString(err?.message).slice(0, 500) || "Falha ao processar o comando admin.";
+          await sendWppTextMessage(settings, {
+            to: incoming.from,
+            body: `Não consegui concluir o comando admin: ${message}`,
+          }).catch(() => null);
+          replied += 1;
+          actionResults.push({ action: "admin_assistant_error", status: "failed", matchedRuleId: null });
+          continue;
+        }
+        throw err;
+      }
+      if (adminAssistant?.handled) {
+        replied += 1;
+        actionResults.push({
+          action: `admin_assistant_${adminAssistant.action || "mode"}`,
+          status: adminAssistant.status,
+          matchedRuleId: null,
+        });
+        continue;
       }
 
       const reply = resolveWppIncomingReply(incomingAutoReply, incoming);
@@ -30808,6 +33649,10 @@ function cleanSagaScheduleDirectNotes(value) {
     .join(" | ");
 }
 
+function sagaScheduleHasBlockMarker(value) {
+  return cleanString(value).includes(SAGA_BLOCK_MARKER);
+}
+
 async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   if (actorUserId) await requireInstructorOrAdmin(actorUserId);
   let mapping = await loadSagaImportMapping();
@@ -30823,9 +33668,20 @@ async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
     throw Object.assign(new Error(`ID SAGA da aeronave ${aircraftIdent || "informada"} nao encontrado no de-para.`), { status: 422 });
   }
 
+  // rawNotes substitui o texto inteiro (usado p/ preservar notas existentes em alteração/cancelamento).
+  const notes = Object.prototype.hasOwnProperty.call(payload, "rawNotes")
+    ? cleanSagaScheduleDirectNotes(payload.rawNotes)
+    : [
+        cleanSagaScheduleDirectNotes(payload.notes),
+      ].filter(Boolean).join(" | ");
+  const markedBlock = sagaScheduleHasBlockMarker(notes);
+
   let studentSagaId = cleanString(payload.studentSagaId);
   let studentName = cleanString(payload.studentName);
-  if (!studentSagaId) {
+  if (markedBlock) {
+    studentSagaId = SAGA_NO_STUDENT_ID;
+    studentName = "";
+  } else if (!studentSagaId) {
     const studentUserId = cleanString(payload.studentUserId);
     if (!studentUserId) throw Object.assign(new Error("Aluno nao informado."), { status: 400 });
     const profile = await getProfileByUserId(studentUserId).catch(() => null);
@@ -30839,7 +33695,10 @@ async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   let instructorSagaId = cleanString(payload.instructorSagaId);
   let instructorName = cleanString(payload.instructorName);
   const instructorUserId = cleanString(payload.instructorUserId);
-  if (!instructorSagaId && instructorUserId) {
+  if (markedBlock) {
+    instructorSagaId = SAGA_NO_STUDENT_ID;
+    instructorName = "";
+  } else if (!instructorSagaId && instructorUserId) {
     const instructorProfile = await getProfileByUserId(instructorUserId).catch(() => null);
     instructorSagaId = cleanString(instructorProfile?.saga_user_id);
     instructorName = instructorName || cleanString(instructorProfile?.full_name);
@@ -30852,12 +33711,6 @@ async function sagaUpsertScheduleDirect(actorUserId, payload = {}) {
   const sagaStatus = ["PLANNED", "PENDING", "CONFIRMED", "CANCELED"].includes(requestedStatus) ? requestedStatus : "PLANNED";
 
   const { startAt, endAt } = sagaDirectScheduleDateTimes(payload.date, payload.startTime, payload.durationMinutes);
-  // rawNotes substitui o texto inteiro (usado p/ preservar notas existentes em alteração/cancelamento).
-  const notes = Object.prototype.hasOwnProperty.call(payload, "rawNotes")
-    ? cleanSagaScheduleDirectNotes(payload.rawNotes)
-    : [
-        cleanSagaScheduleDirectNotes(payload.notes),
-      ].filter(Boolean).join(" | ");
 
   const requestPayload = {
     aircraft_id: aircraftId,
@@ -31545,6 +34398,7 @@ function sanitizeAiswebWeatherAlert(input, current = null) {
     matchMode: cleanString(raw.matchMode) === "all" ? "all" : "any",
     repeatMode: cleanString(raw.repeatMode) === "continuous" ? "continuous" : "once_until_normal",
     criteria: criteria.length ? criteria.slice(0, 12) : [sanitizeAiswebWeatherAlertCriterion({})],
+    deliveryChannels: aiswebService.sanitizeAlertDeliveryChannels(raw.deliveryChannels ?? current?.deliveryChannels),
     enabled: raw.enabled === undefined ? current?.enabled !== false : raw.enabled !== false,
     createdAt: cleanString(current?.createdAt) || cleanString(raw.createdAt) || now,
     updatedAt: now,
@@ -31606,6 +34460,29 @@ async function saveAiswebWeatherAlertForUser(actorUserId, input) {
   const alerts = [alert, ...store.alerts.filter((item) => item.id !== alert.id)].slice(0, 60);
   await saveAiswebWeatherAlertsStore(actorUserId, { ...store, alerts });
   return alert;
+}
+
+async function saveAiswebAlertDeliveryChannelsForUser(actorUserId, input) {
+  const deliveryChannels = aiswebService.sanitizeAlertDeliveryChannels(input?.deliveryChannels || input);
+  const settings = await aiswebService.loadSettings({ getSettingDoc, upsertPlatformSettingDoc }).catch(() => ({ defaultIcao: "" }));
+  const [currentWatchlist, store] = await Promise.all([
+    aiswebService.loadWatchlist({ getSettingDoc, upsertPlatformSettingDoc }, actorUserId, settings.defaultIcao).catch(() => null),
+    loadAiswebWeatherAlertsStore(actorUserId),
+  ]);
+  const watchlist = await aiswebService.saveWatchlist(
+    { getSettingDoc, upsertPlatformSettingDoc },
+    actorUserId,
+    {
+      icaoCodes: currentWatchlist?.icaoCodes || [],
+      deliveryChannels,
+      notamAlerts: currentWatchlist?.notamAlerts || {},
+      supplementAlerts: currentWatchlist?.supplementAlerts || {},
+      adWarningAlerts: currentWatchlist?.adWarningAlerts || {},
+    },
+  );
+  const alerts = store.alerts.map((alert) => sanitizeAiswebWeatherAlert({ ...alert, deliveryChannels }, alert));
+  await saveAiswebWeatherAlertsStore(actorUserId, { ...store, alerts });
+  return { watchlist, alerts };
 }
 
 async function deleteAiswebWeatherAlertForUser(actorUserId, alertId) {
@@ -31790,6 +34667,10 @@ async function sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, m
   return sendEmailToUser(emailSettings, brand, { email: userEmail, name: userName }, message);
 }
 
+function aiswebAlertWantsChannel(source, channel) {
+  return aiswebService.sanitizeAlertDeliveryChannels(source?.deliveryChannels).includes(channel);
+}
+
 async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, notified: 0 };
@@ -31840,6 +34721,10 @@ async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
       if (store.history.length) await saveAiswebWeatherAlertsStore(userId, store).catch(() => null);
       continue;
     }
+    const watchlist = await aiswebService
+      .loadWatchlist({ getSettingDoc, upsertPlatformSettingDoc }, userId, "")
+      .catch(() => null);
+    const deliverySource = watchlist || null;
 
     scannedUsers += 1;
     let userEmail = "";
@@ -31901,27 +34786,31 @@ async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
 
       let emailStatus = "skipped";
       let wppStatus = "skipped";
-      try {
-        const result = await sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, match, brand, emailSettings);
-        emailStatus = result?.status || "sent";
-      } catch (err) {
-        emailStatus = "failed";
-        errors += 1;
-        log(`[aisweb-weather-alert] email failed ${userId}/${alert.id}: ${err?.message || err}`);
+      if (aiswebAlertWantsChannel(deliverySource || alert, "email")) {
+        try {
+          const result = await sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, match, brand, emailSettings);
+          emailStatus = result?.status || "sent";
+        } catch (err) {
+          emailStatus = "failed";
+          errors += 1;
+          log(`[aisweb-weather-alert] email failed ${userId}/${alert.id}: ${err?.message || err}`);
+        }
       }
-      try {
-        const wppResult = await sendAiswebAlertWpp(userId, "METAR/TAF", {
-          id: alert.id,
-          number: alert.name,
-          icao: match.icao,
-          text: [match.summary, ...match.details].join("\n"),
-          validFrom: nowIso(),
-        });
-        wppStatus = wppResult?.status || "sent";
-        if (wppStatus === "failed") log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${wppResult.reason}`);
-      } catch (err) {
-        wppStatus = "failed";
-        log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${err?.message || err}`);
+      if (aiswebAlertWantsChannel(deliverySource || alert, "wpp")) {
+        try {
+          const wppResult = await sendAiswebAlertWpp(userId, "METAR/TAF", {
+            id: alert.id,
+            number: alert.name,
+            icao: match.icao,
+            text: [match.summary, ...match.details].join("\n"),
+            validFrom: nowIso(),
+          });
+          wppStatus = wppResult?.status || "sent";
+          if (wppStatus === "failed") log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${wppResult.reason}`);
+        } catch (err) {
+          wppStatus = "failed";
+          log(`[aisweb-weather-alert] wpp failed ${userId}/${alert.id}: ${err?.message || err}`);
+        }
       }
 
       notified += 1;
@@ -32812,7 +35701,7 @@ async function runAiswebNotamAlertScan(log = () => {}) {
         log(`[aisweb-notam] user lookup failed ${userId}: ${err?.message || err}`);
       }
 
-      if (email) {
+      if (email && aiswebAlertWantsChannel(watchlist, "email")) {
         for (const notam of newNotams) {
           try {
             const result = await sendAiswebNotamAlertEmail(
@@ -32830,14 +35719,16 @@ async function runAiswebNotamAlertScan(log = () => {}) {
           }
         }
       }
-      for (const notam of newNotams) {
-        try {
-          const wppResult = await sendAiswebAlertWpp(userId, "NOTAM", notam);
-          if (wppResult?.status === "failed") {
-            log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${wppResult.reason}`);
+      if (aiswebAlertWantsChannel(watchlist, "wpp")) {
+        for (const notam of newNotams) {
+          try {
+            const wppResult = await sendAiswebAlertWpp(userId, "NOTAM", notam);
+            if (wppResult?.status === "failed") {
+              log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${wppResult.reason}`);
+            }
+          } catch (err) {
+            log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${err?.message || err}`);
           }
-        } catch (err) {
-          log(`[aisweb-notam] wpp failed ${userId}/${notam.id}: ${err?.message || err}`);
         }
       }
     }
@@ -32845,6 +35736,7 @@ async function runAiswebNotamAlertScan(log = () => {}) {
     if (changed || newNotams.length) {
       const payload = {
         icaoCodes: watchlist.icaoCodes,
+        deliveryChannels: watchlist.deliveryChannels || raw.deliveryChannels || ["email", "wpp"],
         notamAlerts: watchlist.notamAlerts,
         supplementAlerts: watchlist.supplementAlerts || raw.supplementAlerts || {},
         adWarningAlerts: watchlist.adWarningAlerts || raw.adWarningAlerts || {},
@@ -32973,7 +35865,7 @@ async function runAiswebSupplementAlertScan(log = () => {}) {
         log(`[aisweb-sup] user lookup failed ${userId}: ${err?.message || err}`);
       }
 
-      if (email) {
+      if (email && aiswebAlertWantsChannel(watchlist, "email")) {
         for (const item of newItems) {
           try {
             const result = await sendAiswebSupplementAlertEmail(
@@ -32991,14 +35883,16 @@ async function runAiswebSupplementAlertScan(log = () => {}) {
           }
         }
       }
-      for (const item of newItems) {
-        try {
-          const wppResult = await sendAiswebAlertWpp(userId, "SUPLEMENTO AIP", item);
-          if (wppResult?.status === "failed") {
-            log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+      if (aiswebAlertWantsChannel(watchlist, "wpp")) {
+        for (const item of newItems) {
+          try {
+            const wppResult = await sendAiswebAlertWpp(userId, "SUPLEMENTO AIP", item);
+            if (wppResult?.status === "failed") {
+              log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+            }
+          } catch (err) {
+            log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
           }
-        } catch (err) {
-          log(`[aisweb-sup] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
         }
       }
     }
@@ -33006,6 +35900,7 @@ async function runAiswebSupplementAlertScan(log = () => {}) {
     if (changed || newItems.length) {
       const payload = {
         icaoCodes: watchlist.icaoCodes,
+        deliveryChannels: watchlist.deliveryChannels || raw.deliveryChannels || ["email", "wpp"],
         notamAlerts: watchlist.notamAlerts || raw.notamAlerts || {},
         supplementAlerts: watchlist.supplementAlerts,
         adWarningAlerts: watchlist.adWarningAlerts || raw.adWarningAlerts || {},
@@ -33132,7 +36027,7 @@ async function runAiswebAdWarningAlertScan(log = () => {}) {
         log(`[aisweb-adw] user lookup failed ${userId}: ${err?.message || err}`);
       }
 
-      if (email) {
+      if (email && aiswebAlertWantsChannel(watchlist, "email")) {
         for (const item of newItems) {
           try {
             const result = await sendAiswebAdWarningAlertEmail(
@@ -33150,14 +36045,16 @@ async function runAiswebAdWarningAlertScan(log = () => {}) {
           }
         }
       }
-      for (const item of newItems) {
-        try {
-          const wppResult = await sendAiswebAlertWpp(userId, "AVISO DE AERODROMO", item);
-          if (wppResult?.status === "failed") {
-            log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+      if (aiswebAlertWantsChannel(watchlist, "wpp")) {
+        for (const item of newItems) {
+          try {
+            const wppResult = await sendAiswebAlertWpp(userId, "AVISO DE AERODROMO", item);
+            if (wppResult?.status === "failed") {
+              log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${wppResult.reason}`);
+            }
+          } catch (err) {
+            log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
           }
-        } catch (err) {
-          log(`[aisweb-adw] wpp failed ${userId}/${item.id}: ${err?.message || err}`);
         }
       }
     }
@@ -33165,6 +36062,7 @@ async function runAiswebAdWarningAlertScan(log = () => {}) {
     if (changed || newItems.length) {
       const payload = {
         icaoCodes: watchlist.icaoCodes,
+        deliveryChannels: watchlist.deliveryChannels || raw.deliveryChannels || ["email", "wpp"],
         notamAlerts: watchlist.notamAlerts || raw.notamAlerts || {},
         supplementAlerts: watchlist.supplementAlerts || raw.supplementAlerts || {},
         adWarningAlerts: watchlist.adWarningAlerts,
@@ -35804,6 +38702,7 @@ module.exports = async ({ req, res, log, error }) => {
         actorUserId,
         {
           icaoCodes: payload.icaoCodes || payload.watchlist?.icaoCodes || [],
+          deliveryChannels: payload.deliveryChannels || payload.watchlist?.deliveryChannels,
           notamAlerts: payload.notamAlerts || payload.watchlist?.notamAlerts,
           supplementAlerts: payload.supplementAlerts || payload.watchlist?.supplementAlerts,
           adWarningAlerts: payload.adWarningAlerts || payload.watchlist?.adWarningAlerts,
@@ -35822,6 +38721,12 @@ module.exports = async ({ req, res, log, error }) => {
       if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
       const alert = await saveAiswebWeatherAlertForUser(actorUserId, payload.alert || payload);
       return jsonResponse(res, 200, { alert });
+    }
+
+    if (action === "saveAiswebAlertDeliveryChannels") {
+      if (!actorUserId) throw Object.assign(new Error("Unauthorized request."), { status: 401 });
+      const result = await saveAiswebAlertDeliveryChannelsForUser(actorUserId, payload);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "deleteAiswebWeatherAlert") {

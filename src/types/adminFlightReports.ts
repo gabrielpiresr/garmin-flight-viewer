@@ -157,6 +157,7 @@ export type AdminFlightReportRow = {
   scheduleDemandId: string | null;
   studentUserId: string | null;
   instructorUserId: string | null;
+  isNight?: boolean;
   firstDepIcao: string | null;
   lastArrIcao: string | null;
   telemetryPresentOnDoc: boolean;

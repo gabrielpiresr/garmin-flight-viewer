@@ -34,6 +34,9 @@ const AdminStudentsWorkspace = lazy(() => import("./AdminStudentsWorkspace").the
 const AdminUsersTab = lazy(() => import("./AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
 const FleetTab = lazy(() => import("./FleetTab").then((module) => ({ default: module.FleetTab })));
 const FlightReportsTab = lazy(() => import("./FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })));
+const InstructorReportsTab = lazy(() =>
+  import("./InstructorReportsTab").then((module) => ({ default: module.InstructorReportsTab })),
+);
 const AdminAllFlightsTab = lazy(() =>
   import("./AdminAllFlightsTab").then((module) => ({ default: module.AdminAllFlightsTab })),
 );
@@ -140,7 +143,7 @@ type AdminSection =
   | "provas";
 
 type FleetSubTab = "aircraft" | "models" | "program" | "work-orders";
-type ReportsSubTab = "all-flights" | "flight-reports" | "signatures" | "no-telemetry" | "alerts";
+type ReportsSubTab = "all-flights" | "flight-reports" | "instructors" | "signatures" | "no-telemetry" | "alerts";
 type ContentsSubTab = "maneuvers" | "manuals" | "manuais-internos" | "help" | "instructor-help" | "student-manual" | "exercises" | "flight-review" | "painel" | "fpl-sim";
 type DisparosSubTab = "email-mkt" | "notices";
 type ProvasSubTab = "banco" | "liberacoes";
@@ -506,6 +509,16 @@ const REPORTS_TABS = [
     ),
   },
   {
+    id: "instructors",
+    label: "Instrutores",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+        <path d="M11.7 2.805a.75.75 0 01.6 0l9 3.857a.75.75 0 010 1.378l-9 3.857a.75.75 0 01-.6 0l-9-3.857a.75.75 0 010-1.378l9-3.857z" />
+        <path d="M3.75 10.5a.75.75 0 01.75.75v3.75c0 .557.31 1.07.804 1.33l5.25 2.763a3 3 0 002.892 0l5.25-2.763a1.5 1.5 0 00.804-1.33v-3.75a.75.75 0 011.5 0v3.75a3 3 0 01-1.607 2.66l-5.25 2.763a4.5 4.5 0 01-4.286 0l-5.25-2.763A3 3 0 013 15v-3.75a.75.75 0 01.75-.75z" />
+      </svg>
+    ),
+  },
+  {
     id: "signatures",
     label: "Assinaturas",
     icon: (
@@ -673,6 +686,7 @@ const SCHEDULE_ROUTES = [
 const REPORTS_ROUTES = [
   { id: "all-flights", path: "/admin/todos-os-voos", aliases: [] as string[] },
   { id: "flight-reports", path: "/admin/relatorios", aliases: [] as string[] },
+  { id: "instructors", path: "/admin/relatorios/instrutores", aliases: [] as string[] },
   { id: "signatures", path: "/admin/assinaturas", aliases: [] as string[] },
   { id: "no-telemetry", path: "/admin/sem-telemetria", aliases: [] as string[] },
   { id: "alerts", path: "/admin/alertas", aliases: [] as string[] },
@@ -786,6 +800,7 @@ const FLEET_TAB_KEYS: Record<string, AdminTabKey> = {
 const REPORTS_TAB_KEYS: Record<string, AdminTabKey> = {
   "all-flights": "reports.all-flights",
   "flight-reports": "reports.relatorios",
+  instructors: "reports.instrutores",
   signatures: "reports.assinaturas",
   "no-telemetry": "reports.sem-telemetria",
   alerts: "reports.alertas",
@@ -1208,6 +1223,9 @@ export function AdminLayout() {
               ) : null}
               {openedReportsTabs.has("flight-reports") ? (
                 <div hidden={reportsTab !== "flight-reports"}><LazyTab><FlightReportsTab /></LazyTab></div>
+              ) : null}
+              {openedReportsTabs.has("instructors") ? (
+                <div hidden={reportsTab !== "instructors"}><LazyTab><InstructorReportsTab /></LazyTab></div>
               ) : null}
               {openedReportsTabs.has("signatures") ? (
                 <div hidden={reportsTab !== "signatures"}><LazyTab><AdminSignaturesTab /></LazyTab></div>

@@ -22,6 +22,7 @@ function parseModelCosts(raw: string | null | undefined): InstructorModelCost[] 
         hourlyNightRate: Number(obj.hourlyNightRate ?? 0),
         fixedDayRate: Number(obj.fixedDayRate ?? 0),
         fixedNightRate: Number(obj.fixedNightRate ?? 0),
+        groundSchoolRate: Number(obj.groundSchoolRate ?? 0),
       };
     });
   } catch {
@@ -52,6 +53,26 @@ export async function getInstructorCosts(instructorUserId: string): Promise<Inst
   } catch {
     return null;
   }
+}
+
+export async function listInstructorCosts(instructorUserIds: string[]): Promise<InstructorCosts[]> {
+  if (!isReady() || !databases || !DB_ID || !INSTRUCTOR_COSTS_COL_ID) return [];
+  const ids = Array.from(new Set(instructorUserIds.map((id) => id.trim()).filter(Boolean)));
+  if (!ids.length) return [];
+
+  const rows: InstructorCosts[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    try {
+      const res = await databases.listDocuments(DB_ID, INSTRUCTOR_COSTS_COL_ID, [
+        Query.equal("instructor_user_id", ids.slice(i, i + 50)),
+        Query.limit(100),
+      ]);
+      rows.push(...res.documents.map((doc) => toDoc(doc as unknown as Record<string, unknown>)));
+    } catch {
+      // Keep the report usable even if a legacy permission row is not readable.
+    }
+  }
+  return rows;
 }
 
 export async function saveInstructorCosts(

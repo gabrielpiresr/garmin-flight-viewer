@@ -1907,6 +1907,20 @@ function sanitizeAdWarningAlerts(rawAlerts, icaoCodes) {
   return sanitizeNotamAlerts(rawAlerts, icaoCodes);
 }
 
+function sanitizeAlertDeliveryChannels(rawChannels) {
+  const source = Array.isArray(rawChannels) ? rawChannels : [];
+  const seen = new Set();
+  const channels = [];
+  for (const raw of source) {
+    const channel = cleanString(raw).toLowerCase();
+    if ((channel === "email" || channel === "wpp") && !seen.has(channel)) {
+      seen.add(channel);
+      channels.push(channel);
+    }
+  }
+  return channels.length ? channels : ["email", "wpp"];
+}
+
 function sanitizeSeenNotamIds(rawSeen, icaoCodes, notamAlerts) {
   const out = {};
   const allowed = new Set(icaoCodes.filter((icao) => notamAlerts[icao] === true));
@@ -1943,6 +1957,7 @@ function publicWatchlist(raw, updatedAt) {
   const adWarningAlerts = sanitizeAdWarningAlerts(raw?.adWarningAlerts, icaoCodes);
   return {
     icaoCodes,
+    deliveryChannels: sanitizeAlertDeliveryChannels(raw?.deliveryChannels),
     notamAlerts,
     supplementAlerts,
     adWarningAlerts,
@@ -1956,6 +1971,7 @@ async function loadWatchlist(deps, userId, defaultIcao) {
     const icaoCodes = sanitizeIcaoList([], { fallbackDefault: defaultIcao });
     return {
       icaoCodes,
+      deliveryChannels: sanitizeAlertDeliveryChannels(undefined),
       notamAlerts: sanitizeNotamAlerts({}, icaoCodes),
       supplementAlerts: sanitizeSupplementAlerts({}, icaoCodes),
       adWarningAlerts: sanitizeAdWarningAlerts({}, icaoCodes),
@@ -1980,6 +1996,7 @@ async function loadWatchlist(deps, userId, defaultIcao) {
   const adWarningAlerts = sanitizeAdWarningAlerts(raw.adWarningAlerts, icaoCodes);
   return {
     icaoCodes,
+    deliveryChannels: sanitizeAlertDeliveryChannels(raw.deliveryChannels),
     notamAlerts,
     supplementAlerts,
     adWarningAlerts,
@@ -2019,6 +2036,13 @@ async function saveWatchlist(deps, userId, input = {}) {
         ? input.adWarningAlerts
         : previous.adWarningAlerts,
     icaoCodes,
+  );
+  const deliveryChannels = sanitizeAlertDeliveryChannels(
+    Array.isArray(input)
+      ? previous.deliveryChannels
+      : input?.deliveryChannels != null
+        ? input.deliveryChannels
+        : previous.deliveryChannels,
   );
 
   const nextSeen = { ...(previous.seenNotamIds || {}) };
@@ -2062,6 +2086,7 @@ async function saveWatchlist(deps, userId, input = {}) {
 
   const next = {
     icaoCodes,
+    deliveryChannels,
     notamAlerts,
     supplementAlerts,
     adWarningAlerts,
@@ -2298,6 +2323,7 @@ module.exports = {
   loadWatchlist,
   saveWatchlist,
   publicWatchlist,
+  sanitizeAlertDeliveryChannels,
   userIdFromWatchlistKey,
   mergeSeenNotamIds,
   metarWatchKey,

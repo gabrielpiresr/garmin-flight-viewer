@@ -15,6 +15,7 @@ export type AdminTabKey =
   | "reports"
   | "reports.all-flights"
   | "reports.relatorios"
+  | "reports.instrutores"
   | "reports.assinaturas"
   | "reports.sem-telemetria"
   | "reports.alertas"
@@ -223,6 +224,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
   "reports": "Relatórios",
   "reports.all-flights": "Relatórios › Todos os Voos",
   "reports.relatorios": "Relatórios › Relatórios",
+  "reports.instrutores": "Relatórios › Instrutores",
   "reports.assinaturas": "Relatórios › Assinaturas",
   "reports.sem-telemetria": "Relatórios › Flight Review",
   "reports.alertas": "Relatórios › Alertas",

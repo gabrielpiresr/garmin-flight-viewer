@@ -626,10 +626,12 @@ export async function saveInstructorPaymentSnapshot(
   // ── Resolve aircraft model ───────────────────────────────────────────────
   let modelId: string | null = null;
   let modelName: string | null = null;
+  let isGroundSchool = false;
   if (aircraftIdent) {
     const aircraft = await getAircraftByRegistration(aircraftIdent, DEFAULT_SCHOOL_ID);
     if (aircraft) {
       modelId = aircraft.model_id ?? null;
+      isGroundSchool = aircraft.type === "ground";
       const { listModels } = await import("./aircraftModelsDb");
       const models = await listModels();
       const model = models.find((m) => m.id === modelId);
@@ -640,9 +642,13 @@ export async function saveInstructorPaymentSnapshot(
   // ── Instructor cost calculation ──────────────────────────────────────────
   const costs = await getInstructorCosts(instructorUserId);
   const modelCost = costs?.modelCosts.find((mc) => mc.modelId === modelId);
-  const hourlyRate = isNight ? (modelCost?.hourlyNightRate ?? 0) : (modelCost?.hourlyDayRate ?? 0);
-  const fixedRate = isNight ? (modelCost?.fixedNightRate ?? 0) : (modelCost?.fixedDayRate ?? 0);
-  const flightHours = totalMinutes / 60;
+  const hourlyRate = isGroundSchool ? 0 : isNight ? (modelCost?.hourlyNightRate ?? 0) : (modelCost?.hourlyDayRate ?? 0);
+  const fixedRate = isGroundSchool
+    ? (modelCost?.groundSchoolRate ?? 0)
+    : isNight
+      ? (modelCost?.fixedNightRate ?? 0)
+      : (modelCost?.fixedDayRate ?? 0);
+  const flightHours = isGroundSchool ? 0 : totalMinutes / 60;
   const totalCalculated = hourlyRate * flightHours + fixedRate;
 
   // ── Student payment calculation ──────────────────────────────────────────

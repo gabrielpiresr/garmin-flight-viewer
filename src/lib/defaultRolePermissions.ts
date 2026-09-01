@@ -12,7 +12,7 @@ const ALL_ADMIN_TABS: AdminTabKey[] = [
   "home",
   "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "schedule.projecoes", "schedule.configuracoes",
   "students",
-  "reports", "reports.all-flights", "reports.relatorios", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
+  "reports", "reports.all-flights", "reports.relatorios", "reports.instrutores", "reports.assinaturas", "reports.sem-telemetria", "reports.alertas",
   "fleet", "fleet.avioes", "fleet.modelos", "fleet.programa", "fleet.ordens-servico",
   "contents", "contents.manobras", "contents.manuais", "contents.manuais-internos", "contents.ajuda", "contents.ajuda-instrutor", "contents.painel", "contents.exercicios", "contents.fpl-sim",
   "provas", "provas.banco", "provas.liberacoes",

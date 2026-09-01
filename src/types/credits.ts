@@ -13,6 +13,7 @@ export type StudentCreditPurchase = {
   notes: string;
   isNight: boolean;
   weekdayOnly: boolean;
+  isGroundSchool?: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string | null;
@@ -36,6 +37,7 @@ export type StudentCreditFlightDebit = {
   allocatedHours: number;
   unallocatedHours: number;
   allocations: StudentCreditAllocation[];
+  isGroundSchool?: boolean;
 };
 
 export type StudentCreditModelSummary = {

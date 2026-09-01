@@ -437,6 +437,7 @@ function brNowStamp() {
 }
 
 function studentActionNote(action, studentLabel) {
+  if (action === "Solicitado") return `Voo solicitado pelo aluno em ${brNowStamp()}`;
   return `${action} pelo aluno em ${brNowStamp()}`;
 }
 
@@ -475,6 +476,7 @@ function cleanScheduleHistoryNotes(value) {
       return part
         .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno\s+.+?\s+em\s+(\d{2}\/\d{2}\/\d{4})\s+(?:as|às)\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
         .replace(/^(Solicitado|Alterado|Cancelado) pelo aluno em (\d{2}\/\d{2}\/\d{4})\s+as\s+(\d{2}:\d{2})/i, "$1 pelo aluno em $2 às $3")
+        .replace(/^Voo solicitado pelo aluno em (\d{2}\/\d{2}\/\d{4})\s+as\s+(\d{2}:\d{2})/i, "Voo solicitado pelo aluno em $1 às $2")
         .replace(/^Flexibilidade:/i, "Flex.:");
     })
     .join(" | ");

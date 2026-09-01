@@ -211,6 +211,31 @@ function modelName(modelId: string | null, modelsById: Map<string, AircraftModel
   return modelsById.get(modelId)?.name || "Modelo não identificado";
 }
 
+function groundSchoolSets(aircrafts: Aircraft[]): { registrations: Set<string> } {
+  const groundAircrafts = aircrafts.filter((aircraft) => aircraft.type === "ground");
+  return {
+    registrations: new Set(groundAircrafts.map((aircraft) => normalizeRegistration(aircraft.registration)).filter(Boolean)),
+  };
+}
+
+function hasGroundSchoolText(value: string | null | undefined): boolean {
+  return /\bground(?:\s+schools?)?\b/i.test(String(value || ""));
+}
+
+function isGroundSchoolPurchase(purchase: StudentCreditPurchase): boolean {
+  return hasGroundSchoolText(purchase.aircraftModelName) || hasGroundSchoolText(purchase.notes);
+}
+
+function groundSchoolPurchaseLabel(purchase: StudentCreditPurchase): string {
+  const model = purchase.aircraftModelName.trim();
+  if (!model || hasGroundSchoolText(model)) return "Ground School";
+  return `Ground School · ${model}`;
+}
+
+function isGroundSchoolAdjustment(adjustment: StudentCreditStatement["adjustments"][number]): boolean {
+  return hasGroundSchoolText(adjustment.reason);
+}
+
 /** Scheduled imports and explicit pending/confirmed flights are not consumed credits yet. */
 function isCreditStatementScheduledFlight(item: SavedFlightListItem): boolean {
   if (isGhostFlightListItem(item)) return true;
@@ -320,14 +345,20 @@ function replayCreditLedger(params: {
   aircrafts: Aircraft[];
   modelsById: Map<string, AircraftModel>;
   simplified: boolean;
+  groundRegistrations: Set<string>;
 }): LedgerReplay {
   const aircraftByRegistration = new Map(
     params.aircrafts.map((aircraft) => [normalizeRegistration(aircraft.registration), aircraft]),
   );
-  const mutableCredits: MutableCredit[] = params.purchases.map((purchase) => ({
-    ...purchase,
-    remainingHours: 0,
-  }));
+  const mutableCredits: MutableCredit[] = params.purchases.map((purchase) => {
+    const isGroundSchool = isGroundSchoolPurchase(purchase);
+    return {
+      ...purchase,
+      isGroundSchool,
+      aircraftModelName: isGroundSchool ? groundSchoolPurchaseLabel(purchase) : purchase.aircraftModelName,
+      remainingHours: 0,
+    };
+  });
   const creditsById = new Map(mutableCredits.map((credit) => [credit.id, credit]));
 
   type TimelineEvent =
@@ -355,15 +386,18 @@ function replayCreditLedger(params: {
 
   const debits: StudentCreditFlightDebit[] = [];
   let debtHours = 0;
+  let groundDebtHours = 0;
 
   for (const event of events) {
     if (event.kind === "purchase") {
       const credit = creditsById.get(event.creditId);
       if (!credit) continue;
       let incoming = credit.hours;
-      if (debtHours > EPSILON) {
-        const cover = Math.min(debtHours, incoming);
-        debtHours = roundHours(debtHours - cover);
+      const targetDebt = credit.isGroundSchool ? groundDebtHours : debtHours;
+      if (targetDebt > EPSILON) {
+        const cover = Math.min(targetDebt, incoming);
+        if (credit.isGroundSchool) groundDebtHours = roundHours(groundDebtHours - cover);
+        else debtHours = roundHours(debtHours - cover);
         incoming = roundHours(incoming - cover);
       }
       credit.remainingHours = incoming;
@@ -373,8 +407,9 @@ function replayCreditLedger(params: {
     const flight = event.flight;
     const aircraft = aircraftByRegistration.get(normalizeRegistration(flight.aircraftIdent));
     const aircraftModelId = aircraft?.model_id || null;
+    const isGroundSchool = aircraft?.type === "ground" || params.groundRegistrations.has(normalizeRegistration(flight.aircraftIdent));
     const eligibleCredits = mutableCredits
-      .filter((credit) => creditEligibleForFlight(credit, flight, params.simplified))
+      .filter((credit) => credit.isGroundSchool === isGroundSchool && creditEligibleForFlight(credit, flight, params.simplified))
       .sort(creditLifoSort);
 
     let remainingDebit = flight.hours;
@@ -388,7 +423,8 @@ function replayCreditLedger(params: {
     }
 
     if (remainingDebit > EPSILON) {
-      debtHours = roundHours(debtHours + remainingDebit);
+      if (isGroundSchool) groundDebtHours = roundHours(groundDebtHours + remainingDebit);
+      else debtHours = roundHours(debtHours + remainingDebit);
     }
 
     const allocatedHours = roundHours(flight.hours - remainingDebit);
@@ -399,11 +435,12 @@ function replayCreditLedger(params: {
       aircraftIdent: flight.aircraftIdent,
       isNight: flight.isNight,
       aircraftModelId,
-      aircraftModelName: modelName(aircraftModelId, params.modelsById),
+      aircraftModelName: isGroundSchool ? "Ground School" : modelName(aircraftModelId, params.modelsById),
       hours: flight.hours,
       allocatedHours,
       unallocatedHours: roundHours(remainingDebit),
       allocations,
+      isGroundSchool,
     });
   }
 
@@ -562,12 +599,14 @@ export function buildStudentCreditStatement(params: {
   const simplified = params.nightHoursDifferentFromDay === false;
   const generatedDate = asIsoDate(params.generatedAt || todayIso());
   const modelsById = new Map(params.models.map((model) => [model.id, model]));
+  const ground = groundSchoolSets(params.aircrafts);
   const { mutableCredits, debits: replayDebits, debtHours } = replayCreditLedger({
     purchases: params.purchases,
     flights: params.flights,
     aircrafts: params.aircrafts,
     modelsById,
     simplified,
+    groundRegistrations: ground.registrations,
   });
   const debits = simplified
     ? replayDebits.map((debit) => ({
@@ -576,15 +615,18 @@ export function buildStudentCreditStatement(params: {
         unallocatedHours: 0,
       }))
     : replayDebits;
+  const flightCreditPurchases = mutableCredits.filter((credit) => !credit.isGroundSchool);
+  const flightCreditDebits = debits.filter((debit) => !debit.isGroundSchool);
 
   const modelIds = new Set<string>();
-  for (const credit of mutableCredits) modelIds.add(credit.aircraftModelId);
-  for (const debit of debits) modelIds.add(debit.aircraftModelId || "unresolved");
+  for (const credit of flightCreditPurchases) modelIds.add(credit.aircraftModelId);
+  for (const debit of flightCreditDebits) modelIds.add(debit.aircraftModelId || "unresolved");
 
   const adjustments = params.adjustments ?? [];
+  const flightCreditAdjustments = adjustments.filter((adjustment) => !isGroundSchoolAdjustment(adjustment));
   const adjustmentsByModel = new Map<string, number>();
   const adjustmentRowsByModel = new Map<string, StudentCreditStatement["adjustments"]>();
-  for (const adj of adjustments) {
+  for (const adj of flightCreditAdjustments) {
     const modelId = String(adj.aircraftModelId || "").trim() || "unresolved";
     const penalty = Math.abs(Math.min(0, adj.hours));
     if (penalty <= EPSILON) continue;
@@ -601,19 +643,19 @@ export function buildStudentCreditStatement(params: {
         modelId === "unresolved"
           ? "Modelo não identificado"
           : modelsById.get(modelId)?.name ||
-            mutableCredits.find((credit) => credit.aircraftModelId === modelId)?.aircraftModelName ||
+            flightCreditPurchases.find((credit) => credit.aircraftModelId === modelId)?.aircraftModelName ||
             "Modelo não identificado";
       const summary = summarizeModel(
         modelId,
         modelLabel,
-        mutableCredits.filter((credit) => credit.aircraftModelId === modelId),
-        debits.filter((debit) => (debit.aircraftModelId || "unresolved") === modelId),
+        flightCreditPurchases.filter((credit) => credit.aircraftModelId === modelId),
+        flightCreditDebits.filter((debit) => (debit.aircraftModelId || "unresolved") === modelId),
         generatedDate,
         simplified,
       );
       const penaltyHours = adjustmentsByModel.get(modelId) ?? 0;
       let pools = poolHoursFromCredits(
-        mutableCredits.filter((credit) => credit.aircraftModelId === modelId),
+        flightCreditPurchases.filter((credit) => credit.aircraftModelId === modelId),
         generatedDate,
         simplified,
       );
@@ -639,14 +681,14 @@ export function buildStudentCreditStatement(params: {
     .sort((a, b) => a.aircraftModelName.localeCompare(b.aircraftModelName, "pt-BR"));
 
   const globalPools = applyGlobalPenaltiesToPools(
-    poolHoursFromCredits(mutableCredits, generatedDate, simplified),
-    adjustments,
+    poolHoursFromCredits(flightCreditPurchases, generatedDate, simplified),
+    flightCreditAdjustments,
   );
-  const penalties = totalPenaltyHours(adjustments);
-  const totalPurchasedHours = roundHours(params.purchases.reduce((acc, item) => acc + item.hours, 0));
-  const totalFlownHours = roundHours(debits.reduce((acc, item) => acc + item.hours, 0));
+  const penalties = totalPenaltyHours(flightCreditAdjustments);
+  const totalPurchasedHours = roundHours(flightCreditPurchases.reduce((acc, item) => acc + item.hours, 0));
+  const totalFlownHours = roundHours(flightCreditDebits.reduce((acc, item) => acc + item.hours, 0));
   const totalRemainingHours = roundSignedHours(
-    mutableCredits
+    flightCreditPurchases
       .filter((credit) => simplified || credit.expiresAt >= generatedDate)
       .reduce((acc, credit) => acc + credit.remainingHours, 0),
   );
@@ -662,7 +704,7 @@ export function buildStudentCreditStatement(params: {
   return {
     userId: params.userId,
     generatedAt: generatedDate,
-    purchases: [...params.purchases].sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate)),
+    purchases: [...mutableCredits].sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate)),
     flightDebits: [...debits].sort((a, b) => b.flightDate.localeCompare(a.flightDate)),
     adjustments,
     summaries,
@@ -677,7 +719,7 @@ export function buildStudentCreditStatement(params: {
       anyDayAvailableHours: globalPoolSummary.anyDayAvailableHours,
       unallocatedFlightHours: outstandingDebtHours,
       debtHours: roundHours(debtHours),
-      amountPaid: Number(params.purchases.reduce((acc, item) => acc + item.amountPaid, 0).toFixed(2)),
+      amountPaid: Number(flightCreditPurchases.reduce((acc, item) => acc + item.amountPaid, 0).toFixed(2)),
     },
   };
 }

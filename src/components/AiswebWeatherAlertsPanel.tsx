@@ -6,6 +6,7 @@ import {
   saveAiswebWeatherAlert,
 } from "../lib/aiswebDb";
 import type {
+  AiswebAlertDeliveryChannel,
   AiswebWeatherAlert,
   AiswebWeatherAlertComparator,
   AiswebWeatherAlertCondition,
@@ -85,6 +86,7 @@ const emptyDraft = (): Partial<AiswebWeatherAlert> => ({
   matchMode: "any",
   repeatMode: "once_until_normal",
   criteria: [emptyCriterion()],
+  deliveryChannels: ["email", "wpp"],
   enabled: true,
 });
 
@@ -182,6 +184,63 @@ function Switch({
   );
 }
 
+function normalizeDeliveryChannels(channels: AiswebAlertDeliveryChannel[] | undefined): AiswebAlertDeliveryChannel[] {
+  const picked = new Set((channels || []).filter((channel) => channel === "email" || channel === "wpp"));
+  if (!picked.size) return ["email", "wpp"];
+  return (["wpp", "email"] as AiswebAlertDeliveryChannel[]).filter((channel) => picked.has(channel));
+}
+
+function deliveryValue(channels: AiswebAlertDeliveryChannel[] | undefined): "wpp" | "email" | "both" {
+  const normalized = normalizeDeliveryChannels(channels);
+  if (normalized.length > 1) return "both";
+  return normalized[0] === "email" ? "email" : "wpp";
+}
+
+function deliveryChannelsFromValue(value: "wpp" | "email" | "both"): AiswebAlertDeliveryChannel[] {
+  if (value === "email") return ["email"];
+  if (value === "wpp") return ["wpp"];
+  return ["email", "wpp"];
+}
+
+function DeliveryChannelPicker({
+  value,
+  saving,
+  onChange,
+}: {
+  value: AiswebAlertDeliveryChannel[];
+  saving: boolean;
+  onChange: (channels: AiswebAlertDeliveryChannel[]) => void;
+}) {
+  const current = deliveryValue(value);
+  const options: Array<{ value: "both" | "wpp" | "email"; label: string }> = [
+    { value: "both", label: "Ambos" },
+    { value: "wpp", label: "WhatsApp" },
+    { value: "email", label: "E-mail" },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-900/40 p-3">
+      <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Receber por</span>
+      <div className="inline-flex overflow-hidden rounded-lg border border-slate-700">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            disabled={saving}
+            onClick={() => onChange(deliveryChannelsFromValue(option.value))}
+            className={`border-r border-slate-700 px-3 py-1.5 text-xs font-semibold last:border-r-0 disabled:opacity-50 ${
+              current === option.value
+                ? "bg-cyan-500/20 text-cyan-200"
+                : "bg-slate-950 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ValueWithUnit({
   children,
   unit,
@@ -253,7 +312,15 @@ function HistoryPanel({ history, loading, onRefresh }: {
   );
 }
 
-export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
+export function AiswebWeatherAlertsPanel({
+  tab,
+  deliveryChannels = ["email", "wpp"],
+  onDeliveryChannelsChange,
+}: {
+  tab: WeatherAlertsTab;
+  deliveryChannels?: AiswebAlertDeliveryChannel[];
+  onDeliveryChannelsChange?: (channels: AiswebAlertDeliveryChannel[]) => Promise<AiswebWeatherAlert[] | void>;
+}) {
   const { showToast } = useToast();
   const [alerts, setAlerts] = useState<AiswebWeatherAlert[]>([]);
   const [history, setHistory] = useState<AiswebWeatherAlertHistoryItem[]>([]);
@@ -264,6 +331,7 @@ export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [savingDeliveryChannels, setSavingDeliveryChannels] = useState(false);
 
   const criteria = useMemo(() => draft.criteria?.length ? draft.criteria : [emptyCriterion()], [draft.criteria]);
 
@@ -314,13 +382,13 @@ export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
   }
 
   function openNewModal() {
-    setDraft(emptyDraft());
+    setDraft({ ...emptyDraft(), deliveryChannels: normalizeDeliveryChannels(deliveryChannels) });
     setDraftIcaos([]);
     setModalOpen(true);
   }
 
   function openEditModal(alert: AiswebWeatherAlert) {
-    setDraft(alert);
+    setDraft({ ...alert, deliveryChannels: normalizeDeliveryChannels(alert.deliveryChannels || deliveryChannels) });
     setDraftIcaos(alert.icaoCodes);
     setModalOpen(true);
   }
@@ -350,6 +418,7 @@ export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
         name,
         icaoCodes,
         criteria,
+        deliveryChannels: normalizeDeliveryChannels(draft.deliveryChannels || deliveryChannels),
       });
       setAlerts((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
       setDraft(emptyDraft());
@@ -403,6 +472,25 @@ export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
     }
   }
 
+  async function handleDeliveryChannelsChange(channels: AiswebAlertDeliveryChannel[]) {
+    const next = normalizeDeliveryChannels(channels);
+    if (!onDeliveryChannelsChange) return;
+    setSavingDeliveryChannels(true);
+    try {
+      const updatedAlerts = await onDeliveryChannelsChange(next);
+      if (updatedAlerts) setAlerts(updatedAlerts);
+      setDraft((current) => ({ ...current, deliveryChannels: next }));
+      showToast({ variant: "success", message: "Preferência de recebimento salva." });
+    } catch (error) {
+      showToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Falha ao salvar canais.",
+      });
+    } finally {
+      setSavingDeliveryChannels(false);
+    }
+  }
+
   if (tab === "history") {
     return <HistoryPanel history={history} loading={loading} onRefresh={() => void load()} />;
   }
@@ -423,6 +511,12 @@ export function AiswebWeatherAlertsPanel({ tab }: { tab: WeatherAlertsTab }) {
           </button>
         </div>
       </div>
+
+      <DeliveryChannelPicker
+        value={normalizeDeliveryChannels(deliveryChannels)}
+        saving={savingDeliveryChannels}
+        onChange={(channels) => void handleDeliveryChannelsChange(channels)}
+      />
 
       {loading ? <p className="text-sm text-slate-500">Carregando alertas...</p> : null}
       {!loading && alerts.length === 0 ? (

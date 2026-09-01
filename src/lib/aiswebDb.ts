@@ -81,6 +81,7 @@ async function execute(payload: Record<string, unknown>): Promise<AiswebResponse
 function normalizeWatchlist(watchlist?: AiswebWatchlist | null): AiswebWatchlist {
   return {
     icaoCodes: watchlist?.icaoCodes || [],
+    deliveryChannels: watchlist?.deliveryChannels?.length ? watchlist.deliveryChannels : ["email", "wpp"],
     notamAlerts: watchlist?.notamAlerts || {},
     supplementAlerts: watchlist?.supplementAlerts || {},
     adWarningAlerts: watchlist?.adWarningAlerts || {},
@@ -155,6 +156,7 @@ export async function saveAiswebWatchlist(
     notamAlerts?: Record<string, boolean>;
     supplementAlerts?: Record<string, boolean>;
     adWarningAlerts?: Record<string, boolean>;
+    deliveryChannels?: Array<"email" | "wpp">;
   } | Record<string, boolean>,
 ): Promise<AiswebWatchlist> {
   // Compat: segundo arg antigo era só notamAlerts Record
@@ -175,6 +177,9 @@ export async function saveAiswebWatchlist(
   const response = await execute({
     action: "saveAiswebWatchlist",
     icaoCodes,
+    ...(!isLegacy && (alerts as { deliveryChannels?: Array<"email" | "wpp"> } | undefined)?.deliveryChannels
+      ? { deliveryChannels: (alerts as { deliveryChannels?: Array<"email" | "wpp"> }).deliveryChannels }
+      : {}),
     ...(notamAlerts ? { notamAlerts } : {}),
     ...(supplementAlerts ? { supplementAlerts } : {}),
     ...(adWarningAlerts ? { adWarningAlerts } : {}),
@@ -220,6 +225,25 @@ export async function saveAiswebWeatherAlert(
   });
   if (!response.alert) throw new Error("Alerta meteorológico não retornado.");
   return response.alert;
+}
+
+export async function saveAiswebAlertDeliveryChannels(
+  deliveryChannels: Array<"email" | "wpp">,
+): Promise<{
+  watchlist: AiswebWatchlist;
+  alerts: AiswebWeatherAlert[];
+}> {
+  const response = await execute({
+    action: "saveAiswebAlertDeliveryChannels",
+    deliveryChannels,
+  });
+  if (!response.watchlist || !Array.isArray(response.alerts)) {
+    throw new Error("Preferência de canais AISWEB não retornada.");
+  }
+  return {
+    watchlist: normalizeWatchlist(response.watchlist),
+    alerts: response.alerts,
+  };
 }
 
 export async function deleteAiswebWeatherAlert(alertId: string): Promise<void> {

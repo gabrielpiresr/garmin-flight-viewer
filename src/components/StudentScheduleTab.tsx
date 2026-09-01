@@ -1821,8 +1821,9 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       setWeekStart((current) => addDays(current, direction * 7));
       return;
     }
-    // Diária no desktop: as setas trocam a SEMANA inteira (mantendo o dia da semana).
+    // Diária no desktop: as setas trocam a semana e abrem no primeiro dia.
     if (!isMobile) {
+      setSelectedDay(DAY_ORDER[0]!);
       setWeekStart((current) => addDays(current, direction * 7));
       return;
     }
@@ -1833,7 +1834,7 @@ export function StudentScheduleTab({ actingForStudent, onStaffCreditsCta }: Stud
       return;
     }
     setWeekStart((current) => addDays(current, direction * 7));
-    setSelectedDay(direction < 0 ? DAY_ORDER[DAY_ORDER.length - 1]! : DAY_ORDER[0]!);
+    setSelectedDay(DAY_ORDER[0]!);
   }
 
   function handleItemClick(item: CalendarFlightItem) {
