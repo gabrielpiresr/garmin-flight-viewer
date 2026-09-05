@@ -1,10 +1,21 @@
+import fs from "node:fs";
 import { Client, Databases, Permission, Role } from "node-appwrite";
 
-const ENDPOINT = process.env.APPWRITE_ENDPOINT;
-const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
+for (const file of [".env.local", ".env"]) {
+  if (!fs.existsSync(file)) continue;
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const index = line.indexOf("=");
+    if (index <= 0 || line.trim().startsWith("#")) continue;
+    const key = line.slice(0, index).trim();
+    if (!process.env[key]) process.env[key] = line.slice(index + 1).trim().replace(/^['"]|['"]$/g, "");
+  }
+}
+
+const ENDPOINT = process.env.APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_ENDPOINT;
+const PROJECT_ID = process.env.APPWRITE_PROJECT_ID || process.env.VITE_APPWRITE_PROJECT_ID;
 const API_KEY = process.env.APPWRITE_API_KEY;
-const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
-const COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
+const DATABASE_ID = process.env.APPWRITE_DATABASE_ID || process.env.VITE_APPWRITE_DATABASE_ID;
+const COLLECTION_ID = process.env.APPWRITE_INSTRUCTOR_COSTS_COL_ID || process.env.VITE_APPWRITE_INSTRUCTOR_COSTS_COL_ID || "instructor_costs";
 
 if (!ENDPOINT || !PROJECT_ID || !API_KEY || !DATABASE_ID) {
   console.error("Missing env vars. Required: APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID");
@@ -77,6 +88,7 @@ async function main() {
   await attr(() => db.createStringAttribute(DATABASE_ID, COLLECTION_ID, "school_id", 64, false), "school_id");
   await attr(() => db.createStringAttribute(DATABASE_ID, COLLECTION_ID, "instructor_user_id", 64, true), "instructor_user_id");
   await attr(() => db.createFloatAttribute(DATABASE_ID, COLLECTION_ID, "monthly_fixed_cost", false, 0), "monthly_fixed_cost");
+  await attr(() => db.createFloatAttribute(DATABASE_ID, COLLECTION_ID, "cancellation_penalty_share_pct", false, 50), "cancellation_penalty_share_pct");
   await attr(() => db.createStringAttribute(DATABASE_ID, COLLECTION_ID, "model_costs_json", 65535, false), "model_costs_json");
   await attr(() => db.createStringAttribute(DATABASE_ID, COLLECTION_ID, "updated_at", 32, false), "updated_at");
   await attr(() => db.createStringAttribute(DATABASE_ID, COLLECTION_ID, "updated_by", 64, false), "updated_by");

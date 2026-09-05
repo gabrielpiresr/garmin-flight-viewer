@@ -72,6 +72,7 @@ export async function saveWppNotificationTemplates(
   input: {
     flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
     tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+    adminDailyScheduleSummaryTemplate: WppTomorrowFlightReminderTemplateSettings;
     paymentReceivedTemplate: WppTransactionalTemplateSettings;
     bookingRequestedTemplate: WppTransactionalTemplateSettings;
     soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
@@ -201,6 +202,11 @@ export async function stopMyMetarWatch(icao: string): Promise<WppHub["watches"]>
 
 export async function ensureAiswebAlertWppTemplate(): Promise<WppTemplate | null> {
   const response = await execute({ action: "ensureAiswebAlertWppTemplate" });
+  return response.template ?? null;
+}
+
+export async function ensureWppAdminDailyScheduleTemplate(): Promise<WppTemplate | null> {
+  const response = await execute({ action: "ensureWppAdminDailyScheduleTemplate" });
   return response.template ?? null;
 }
 

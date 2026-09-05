@@ -4085,8 +4085,10 @@ async function getInstructorCostsForUser(instructorUserId) {
   ]).catch(() => ({ documents: [] }));
   const doc = page.documents?.[0];
   if (!doc) return null;
+  const cancellationPenaltySharePct = Number(doc.cancellation_penalty_share_pct ?? 50);
   return {
     monthlyFixedCost: Number(doc.monthly_fixed_cost ?? 0) || 0,
+    cancellationPenaltySharePct: Number.isFinite(cancellationPenaltySharePct) ? cancellationPenaltySharePct : 50,
     modelCosts: parseJsonList(doc.model_costs_json).map((item) => ({
       modelId: cleanString(item.modelId),
       hourlyDayRate: Number(item.hourlyDayRate ?? 0) || 0,
@@ -15327,6 +15329,10 @@ function sagaBlockNotes(...parts) {
 const WPP_METAR_TRIAL_PREFIX = "wppMetarTrial:";
 const WPP_METAR_TRIAL_LIMIT = 10;
 const WPP_AISWEB_ALERT_TEMPLATE_NAME = "alerta_aisweb";
+const WPP_ADMIN_DAILY_SCHEDULE_TEMPLATE_NAME = "resumo_escala_admin_amanha";
+const WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_TEMPLATE_NAME = "resumo_escala_coord_led_amanha";
+const WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_GREETING_PHONE = "5511997242667";
+const WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_GREETING = "Oi ledzinho do meu coração";
 const AISWEB_WEATHER_ALERTS_PREFIX = "aiswebWeatherAlerts:";
 const AISWEB_WEATHER_ALERT_HISTORY_DAYS = 30;
 const AISWEB_WEATHER_ALERT_HISTORY_LIMIT = 120;
@@ -15339,6 +15345,11 @@ const DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS = [
   "aircraft",
   "mission",
   "instructor",
+];
+const DEFAULT_WPP_ADMIN_DAILY_SCHEDULE_PARAMETERS = [
+  "flight_date",
+  "summary",
+  "schedule_lines",
 ];
 const DEFAULT_WPP_PAYMENT_RECEIVED_PARAMETERS = [
   "student_name",
@@ -17387,6 +17398,7 @@ function defaultWppSettings() {
       language: "pt_BR",
     },
     tomorrowFlightReminderTemplate: defaultWppTomorrowFlightReminderTemplate(),
+    adminDailyScheduleSummaryTemplate: defaultWppAdminDailyScheduleSummaryTemplate(),
     paymentReceivedTemplate: defaultWppPaymentReceivedTemplate(),
     bookingRequestedTemplate: defaultWppBookingRequestedTemplate(),
     soloFlightApprovalTemplate: defaultWppSoloFlightApprovalTemplate(),
@@ -17434,6 +17446,16 @@ function defaultWppTomorrowFlightReminderTemplate() {
     language: "pt_BR",
     sendHour: 19,
     bodyParameters: DEFAULT_WPP_TOMORROW_FLIGHT_REMINDER_PARAMETERS,
+  };
+}
+
+function defaultWppAdminDailyScheduleSummaryTemplate() {
+  return {
+    enabled: false,
+    templateName: WPP_ADMIN_DAILY_SCHEDULE_TEMPLATE_NAME,
+    language: "pt_BR",
+    sendHour: 20,
+    bodyParameters: DEFAULT_WPP_ADMIN_DAILY_SCHEDULE_PARAMETERS,
   };
 }
 
@@ -17567,6 +17589,7 @@ function publicWppSettings(settings, updatedAt) {
     apiKeyConfigured: Boolean(cleanString(safe.apiKey)),
     flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(safe.flightReviewReadyTemplate),
     tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(safe.tomorrowFlightReminderTemplate),
+    adminDailyScheduleSummaryTemplate: sanitizeWppAdminDailyScheduleSummaryTemplate(safe.adminDailyScheduleSummaryTemplate),
     paymentReceivedTemplate: sanitizeWppTransactionalTemplate(safe.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
     bookingRequestedTemplate: sanitizeWppTransactionalTemplate(safe.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
     soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(safe.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
@@ -17601,6 +17624,7 @@ async function loadWppSettings() {
       ...settings,
       flightReviewReadyTemplate: sanitizeWppFlightReviewReadyTemplate(settings.flightReviewReadyTemplate),
       tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(settings.tomorrowFlightReminderTemplate),
+      adminDailyScheduleSummaryTemplate: sanitizeWppAdminDailyScheduleSummaryTemplate(settings.adminDailyScheduleSummaryTemplate),
       paymentReceivedTemplate: sanitizeWppTransactionalTemplate(settings.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
       bookingRequestedTemplate: sanitizeWppTransactionalTemplate(settings.bookingRequestedTemplate, defaultWppBookingRequestedTemplate()),
       soloFlightApprovalTemplate: sanitizeWppTransactionalTemplate(settings.soloFlightApprovalTemplate, defaultWppSoloFlightApprovalTemplate()),
@@ -17647,6 +17671,9 @@ async function saveWppSettings(input) {
     tomorrowFlightReminderTemplate: raw.tomorrowFlightReminderTemplate
       ? sanitizeWppTomorrowFlightReminderTemplate(raw.tomorrowFlightReminderTemplate)
       : sanitizeWppTomorrowFlightReminderTemplate(current.tomorrowFlightReminderTemplate),
+    adminDailyScheduleSummaryTemplate: raw.adminDailyScheduleSummaryTemplate
+      ? sanitizeWppAdminDailyScheduleSummaryTemplate(raw.adminDailyScheduleSummaryTemplate)
+      : sanitizeWppAdminDailyScheduleSummaryTemplate(current.adminDailyScheduleSummaryTemplate),
     paymentReceivedTemplate: raw.paymentReceivedTemplate
       ? sanitizeWppTransactionalTemplate(raw.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate())
       : sanitizeWppTransactionalTemplate(current.paymentReceivedTemplate, defaultWppPaymentReceivedTemplate()),
@@ -17693,6 +17720,9 @@ async function saveWppNotificationTemplates(input) {
     ),
     tomorrowFlightReminderTemplate: sanitizeWppTomorrowFlightReminderTemplate(
       input?.tomorrowFlightReminderTemplate || current.tomorrowFlightReminderTemplate,
+    ),
+    adminDailyScheduleSummaryTemplate: sanitizeWppAdminDailyScheduleSummaryTemplate(
+      input?.adminDailyScheduleSummaryTemplate || current.adminDailyScheduleSummaryTemplate,
     ),
     paymentReceivedTemplate: sanitizeWppTransactionalTemplate(
       input?.paymentReceivedTemplate || current.paymentReceivedTemplate,
@@ -18557,6 +18587,13 @@ function sanitizeWppTemplateParameterKeys(value, defaults = DEFAULT_WPP_TOMORROW
     "destination",
     "alternates",
     "request_type",
+    "summary",
+    "opening_line",
+    "schedule_lines",
+    "active_count",
+    "blocks_count",
+    "hours_total",
+    "canceled_count",
   ]);
   const raw = Array.isArray(value) ? value : defaults;
   const next = raw.map(cleanString).filter((item) => allowed.has(item)).slice(0, 12);
@@ -18566,6 +18603,21 @@ function sanitizeWppTemplateParameterKeys(value, defaults = DEFAULT_WPP_TOMORROW
 function sanitizeWppTomorrowFlightReminderTemplate(input) {
   const raw = input && typeof input === "object" ? input : {};
   const defaults = defaultWppTomorrowFlightReminderTemplate();
+  const templateName = cleanString(raw.templateName || raw.name || defaults.templateName).toLowerCase();
+  const language = cleanString(raw.language) || defaults.language;
+  const sendHour = Math.max(0, Math.min(23, Math.round(Number(raw.sendHour ?? defaults.sendHour))));
+  return {
+    enabled: raw.enabled === undefined ? defaults.enabled : raw.enabled !== false,
+    templateName: /^[a-z0-9_]+$/.test(templateName) ? templateName : defaults.templateName,
+    language: /^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language) ? language : defaults.language,
+    sendHour: Number.isFinite(sendHour) ? sendHour : defaults.sendHour,
+    bodyParameters: sanitizeWppTemplateParameterKeys(raw.bodyParameters, defaults.bodyParameters),
+  };
+}
+
+function sanitizeWppAdminDailyScheduleSummaryTemplate(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const defaults = defaultWppAdminDailyScheduleSummaryTemplate();
   const templateName = cleanString(raw.templateName || raw.name || defaults.templateName).toLowerCase();
   const language = cleanString(raw.language) || defaults.language;
   const sendHour = Math.max(0, Math.min(23, Math.round(Number(raw.sendHour ?? defaults.sendHour))));
@@ -19767,6 +19819,90 @@ async function ensureAiswebAlertWppTemplate() {
     await deleteWppTemplate(WPP_AISWEB_ALERT_TEMPLATE_NAME).catch(() => null);
   }
   return createWppTemplate(spec);
+}
+
+async function ensureWppAdminDailyScheduleTemplate() {
+  const templates = await listWppTemplates().catch(() => []);
+  const byName = new Map(templates.map((template) => [cleanString(template.name), template]));
+  const existing = byName.get(WPP_ADMIN_DAILY_SCHEDULE_TEMPLATE_NAME);
+  const spec = {
+    name: WPP_ADMIN_DAILY_SCHEDULE_TEMPLATE_NAME,
+    category: "UTILITY",
+    language: "pt_BR",
+    headerText: "Resumo da escala",
+    bodyText:
+      "Resumo da escala de {{1}}.\n\n" +
+      "{{2}}\n\n" +
+      "{{3}}\n\n" +
+      "Para receber o print da escala, toque no botão abaixo.",
+    footerText: "Mensagem automática",
+    bodyExamples: [
+      "05/09/2026",
+      "12 evento(s) ativo(s), 1 bloqueio(s), 8h30 planejadas.",
+      "- 08:00 PR-ABC | Maria | João | 1h00 | Confirmado",
+    ],
+    buttons: [
+      { type: "QUICK_REPLY", text: "Solicitar imagem" },
+    ],
+  };
+  if (existing && cleanString(existing.status).toUpperCase() !== "REJECTED") {
+    const body = cleanString((existing.components || []).find((item) => cleanString(item?.type).toUpperCase() === "BODY")?.text);
+    const hasImageCta = body.includes("print da escala");
+    const hasButton = soloFlightTemplateHasQuickReplyButtons(existing, ["Solicitar imagem"]);
+    if (existing.id && (!hasImageCta || !body.includes("Resumo da escala de {{1}}") || !hasButton)) return updateWppTemplate({ ...spec, id: existing.id });
+    return existing;
+  }
+  if (existing) {
+    await deleteWppTemplate(WPP_ADMIN_DAILY_SCHEDULE_TEMPLATE_NAME).catch(() => null);
+  }
+  return createWppTemplate(spec);
+}
+
+async function ensureWppAdminDailyScheduleSpecialTemplate() {
+  const templates = await listWppTemplates().catch(() => []);
+  const byName = new Map(templates.map((template) => [cleanString(template.name), template]));
+  const existing = byName.get(WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_TEMPLATE_NAME);
+  const spec = {
+    name: WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_TEMPLATE_NAME,
+    category: "UTILITY",
+    language: "pt_BR",
+    headerText: "Resumo da escala",
+    bodyText:
+      `${WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_GREETING}\n\n` +
+      "Resumo da escala de {{1}}.\n\n" +
+      "{{2}}\n\n" +
+      "{{3}}\n\n" +
+      "Para receber o print da escala, toque no botão abaixo.",
+    footerText: "Mensagem automática",
+    bodyExamples: [
+      "05/09/2026",
+      "12 evento(s) ativo(s), 1 bloqueio(s), 8h30 planejadas.",
+      "- 08:00 PR-ABC | Maria | João | 1h00 | Confirmado",
+    ],
+    buttons: [
+      { type: "QUICK_REPLY", text: "Solicitar imagem" },
+    ],
+  };
+  if (existing && cleanString(existing.status).toUpperCase() !== "REJECTED") {
+    const body = cleanString((existing.components || []).find((item) => cleanString(item?.type).toUpperCase() === "BODY")?.text);
+    const hasGreeting = body.startsWith(WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_GREETING);
+    const hasImageCta = body.includes("print da escala");
+    const hasButton = soloFlightTemplateHasQuickReplyButtons(existing, ["Solicitar imagem"]);
+    if (existing.id && (!hasGreeting || !hasImageCta || !hasButton)) return updateWppTemplate({ ...spec, id: existing.id });
+    return existing;
+  }
+  if (existing) {
+    await deleteWppTemplate(WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_TEMPLATE_NAME).catch(() => null);
+  }
+  return createWppTemplate(spec);
+}
+
+async function ensureWppAdminDailyScheduleTemplates() {
+  const [regular, special] = await Promise.all([
+    ensureWppAdminDailyScheduleTemplate(),
+    ensureWppAdminDailyScheduleSpecialTemplate(),
+  ]);
+  return { regular, special };
 }
 
 function isWppWebhookVerification(req) {
@@ -24827,6 +24963,209 @@ async function withResolvedWppAdminCommandAircraft(command = {}) {
   };
 }
 
+async function buildWppAdminDayScheduleSummary(dateInput) {
+  const date = normalizeWppAdminDate(dateInput);
+  const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
+  const rows = schedules
+    .map((schedule) => ({ schedule, start: sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt), duration: sagaScheduleDurationMinutes(schedule) || 0 }))
+    .filter((item) => item.start.date === date)
+    .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
+  const activeRows = rows.filter((item) => wppAdminSagaStatus(item.schedule?.status) !== "CANCELED");
+  const canceledCount = rows.length - activeRows.length;
+  const blocks = activeRows.filter((item) => wppAdminScheduleIsBlock(item.schedule)).length;
+  const totalMinutes = activeRows.reduce((acc, item) => {
+    if (wppAdminScheduleIsBlock(item.schedule)) return acc;
+    return acc + item.duration;
+  }, 0);
+  const summary = activeRows.length
+    ? `${activeRows.length} evento(s) ativo(s), ${blocks} bloqueio(s), ${formatWppHours(totalMinutes / 60)} planejadas.`
+    : "Não encontrei voos ativos na escala.";
+  const lines = activeRows.slice(0, 30).map((item) => {
+    const s = item.schedule;
+    return `- ${item.start.time} ${s.aircraft || "?"} | ${s.studentName || "sem aluno"} | ${s.instructorName || "sem instrutor"} | ${wppAdminDisplayDuration(item.duration)} | ${wppAdminSagaStatusLabel(s.status)}`;
+  });
+  const ignoredLine = canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : "";
+  const text = activeRows.length
+    ? [
+        `Escala de ${wppAdminDisplayDate(date)}: ${summary}`,
+        ignoredLine,
+        lines.join("\n"),
+      ].filter(Boolean).join("\n")
+    : [
+        `Não encontrei voos ativos na escala de ${wppAdminDisplayDate(date)}.`,
+        ignoredLine,
+      ].filter(Boolean).join("\n");
+  return {
+    date,
+    rows,
+    activeRows,
+    canceledCount,
+    blocks,
+    totalMinutes,
+    lines,
+    text,
+    context: {
+      flight_date: wppAdminDisplayDate(date),
+      summary,
+      schedule_lines: (lines.length ? lines.join("\n") : ignoredLine || "-").slice(0, 900),
+      active_count: String(activeRows.length),
+      blocks_count: String(blocks),
+      hours_total: formatWppHours(totalMinutes / 60),
+      canceled_count: String(canceledCount),
+    },
+  };
+}
+
+async function acquireWppAdminDailyScheduleRunLock(targetDate) {
+  if (!AUDIT_EVENTS_COLLECTION_ID) return true;
+  const safeDate = cleanString(targetDate);
+  if (!safeDate) return false;
+  const docId = `wpp_adm_${sha256(safeDate).slice(0, 28)}`;
+  const snapshot = snapshotJson({ targetDate: safeDate, createdAt: nowIso() });
+  try {
+    await databases.createDocument(
+      DATABASE_ID,
+      AUDIT_EVENTS_COLLECTION_ID,
+      docId,
+      {
+        event_type: "wpp_admin_daily_schedule_summary_lock",
+        entity_type: "wpp_admin_daily_schedule_summary",
+        entity_id: safeDate,
+        actor_user_id: "",
+        actor_role: "system",
+        school_id: SCHOOL_ID,
+        occurred_at: nowIso(),
+        ip: null,
+        user_agent: null,
+        reason: null,
+        before_snapshot_json: "null",
+        after_snapshot_json: snapshot,
+        before_hash: sha256("null"),
+        after_hash: sha256(snapshot),
+        event_hash: sha256(snapshot),
+      },
+      AUDIT_DOC_PERMS,
+    );
+    return true;
+  } catch (err) {
+    const code = Number(err?.code || err?.status || 0);
+    if (code === 409 || /already exists|document.*exists|duplicate/i.test(cleanString(err?.message))) return false;
+    console.warn(`[wppAdminDailySchedule] lock unavailable: ${cleanString(err?.message).slice(0, 240)}`);
+    return true;
+  }
+}
+
+async function listWppAdminDailyScheduleRecipients(settings) {
+  const phone = normalizeWppRecipientPhone(settings?.soloFlightCoordinatorPhone);
+  if (!phone) return [];
+  const profile = await findWppStudentByPhone(phone).catch(() => null);
+  const userId = cleanString(profile?.user_id) || `course_coordinator_${sha256(phone).slice(0, 16)}`;
+  return [{
+    userId,
+    name: cleanString(profile?.nickname || profile?.full_name || profile?.email) || "Coordenador de curso",
+    phone,
+  }];
+}
+
+function wppAdminDailyScheduleTemplateName(config, recipient) {
+  const phone = normalizeWppRecipientPhone(recipient?.phone);
+  return phone === WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_GREETING_PHONE
+    ? WPP_ADMIN_DAILY_SCHEDULE_SPECIAL_TEMPLATE_NAME
+    : config.templateName;
+}
+
+function wppAdminDailyScheduleTemplateContext(summary, recipient) {
+  const dateText = wppAdminDisplayDate(summary?.date);
+  return {
+    ...summary.context,
+    opening_line: `Resumo da escala de ${dateText}.`,
+    flight_date: dateText,
+  };
+}
+
+async function runWppAdminDailyScheduleSummaryScan(options = {}) {
+  const { settings } = await loadWppSettings();
+  const config = sanitizeWppAdminDailyScheduleSummaryTemplate(settings.adminDailyScheduleSummaryTemplate);
+  if (!config.enabled) return { ok: true, skipped: true, reason: "disabled" };
+  if (!cleanString(settings.apiKey) || !cleanString(settings.phoneNumberId) || !cleanString(settings.wabaId)) {
+    return { ok: true, skipped: true, reason: "wpp_unconfigured" };
+  }
+
+  const localNow = saoPauloDateParts();
+  const sendHour = Number.isFinite(Number(options.sendHour)) ? Number(options.sendHour) : config.sendHour;
+  if (options.force !== true && localNow.hour !== sendHour) {
+    return { ok: true, skipped: true, reason: "outside_send_hour", hour: localNow.hour, sendHour };
+  }
+
+  const targetDate = cleanString(options.targetDate) || addIsoDateDays(localNow.date, 1);
+  const recipients = await listWppAdminDailyScheduleRecipients(settings);
+  if (!recipients.length) return { ok: true, skipped: true, reason: "course_coordinator_phone_missing", targetDate };
+  const acquired = options.force === true ? true : await acquireWppAdminDailyScheduleRunLock(targetDate);
+  if (!acquired) return { ok: true, skipped: true, reason: "already_ran", targetDate };
+
+  const summary = await buildWppAdminDayScheduleSummary(targetDate);
+  await ensureWppAdminDailyScheduleTemplates().catch((err) => {
+    console.warn(`[wppAdminDailySchedule] template ensure failed: ${cleanString(err?.message).slice(0, 240)}`);
+  });
+
+  const deliveries = [];
+  for (const recipient of recipients) {
+    const dedupeKey = `wpp.admin_daily_schedule.${targetDate}.${recipient.userId}`;
+    if (await alreadyDelivered(dedupeKey, "wpp", recipient.userId)) {
+      deliveries.push({ userId: recipient.userId, status: "skipped", reason: "already_delivered" });
+      continue;
+    }
+    try {
+      const bodyParameters = resolveWppTemplateParameters(
+        config.bodyParameters,
+        wppAdminDailyScheduleTemplateContext(summary, recipient),
+      );
+      const messageId = await sendWppTemplateMessage({
+        to: recipient.phone,
+        templateName: wppAdminDailyScheduleTemplateName(config, recipient),
+        language: config.language,
+        bodyParameters,
+      });
+      await logDelivery("schedule.published", dedupeKey, "wpp", recipient.userId, "sent", messageId, null);
+      deliveries.push({ userId: recipient.userId, status: "sent", providerMessageId: messageId });
+    } catch (err) {
+      const message = cleanString(err?.message).slice(0, 512) || "Falha ao enviar resumo da escala.";
+      await logDelivery("schedule.published", dedupeKey, "wpp", recipient.userId, "failed", null, message);
+      deliveries.push({ userId: recipient.userId, status: "failed", reason: message });
+    }
+  }
+  return {
+    ok: true,
+    targetDate,
+    totalRecipients: recipients.length,
+    totalEvents: summary.activeRows.length,
+    sent: deliveries.filter((item) => item.status === "sent").length,
+    failed: deliveries.filter((item) => item.status === "failed").length,
+    skipped: deliveries.filter((item) => item.status === "skipped").length,
+    deliveries,
+  };
+}
+
+function isWppAdminDailyScheduleImageRequest(incoming) {
+  const text = normalizeWppAdminText(`${incoming?.responseId || ""} ${incoming?.text || ""}`);
+  return /\bsolicitar\s+imagem\b/.test(text) || /\bimagem\s+da\s+escala\b/.test(text) || /\bprint\s+da\s+escala\b/.test(text);
+}
+
+async function wppIncomingPhoneIsCourseCoordinator(settings, incoming) {
+  const coordinatorPhone = normalizeWppRecipientPhone(settings?.soloFlightCoordinatorPhone);
+  const from = normalizeWppRecipientPhone(incoming?.lookupFrom || incoming?.from);
+  return Boolean(coordinatorPhone && from && wppPhoneMatchScore(from, coordinatorPhone) >= 120);
+}
+
+async function handleWppAdminDailyScheduleImageRequest(settings, incoming) {
+  if (!isWppAdminDailyScheduleImageRequest(incoming)) return { handled: false };
+  if (!(await wppIncomingPhoneIsCourseCoordinator(settings, incoming))) return { handled: false };
+  const date = addIsoDateDays(saoPauloDateParts().date, 1);
+  const summary = await buildWppAdminDayScheduleSummary(date);
+  await sendWppAdminScheduleImage(settings, incoming.from, date, summary.activeRows);
+  return { handled: true, status: "image_sent", targetDate: date };
+}
+
 async function executeWppAdminCommand(command, options = {}) {
   const resolvedCommand = await withResolvedWppAdminCommandAircraft(command);
   const action = cleanString(resolvedCommand?.action);
@@ -24865,39 +25204,13 @@ async function executeWppAdminCommand(command, options = {}) {
     ].filter(Boolean).join("\n");
   }
   if (action === "summarize_day_schedule") {
-    const date = normalizeWppAdminDate(payload.date);
-    const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
-    const rows = schedules
-      .map((schedule) => ({ schedule, start: sagaLocalDateTimeParts(schedule.startAtRaw || schedule.startAt), duration: sagaScheduleDurationMinutes(schedule) || 0 }))
-      .filter((item) => item.start.date === date)
-      .sort((a, b) => `${a.start.time}${a.schedule.aircraft}`.localeCompare(`${b.start.time}${b.schedule.aircraft}`));
-    const activeRows = rows.filter((item) => wppAdminSagaStatus(item.schedule?.status) !== "CANCELED");
-    const canceledCount = rows.length - activeRows.length;
-    if (!activeRows.length) {
-      return [
-        `Não encontrei voos ativos na escala de ${wppAdminDisplayDate(date)}.`,
-        canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : null,
-      ].filter(Boolean).join("\n");
-    }
-    const blocks = activeRows.filter((item) => wppAdminScheduleIsBlock(item.schedule)).length;
-    const totalMinutes = activeRows.reduce((acc, item) => {
-      if (wppAdminScheduleIsBlock(item.schedule)) return acc;
-      return acc + item.duration;
-    }, 0);
-    const lines = activeRows.slice(0, 30).map((item) => {
-      const s = item.schedule;
-      return `- ${item.start.time} ${s.aircraft || "?"} | ${s.studentName || "sem aluno"} | ${s.instructorName || "sem instrutor"} | ${wppAdminDisplayDuration(item.duration)} | ${wppAdminSagaStatusLabel(s.status)}`;
-    });
+    const summary = await buildWppAdminDayScheduleSummary(payload.date);
     if (options.settings && options.incoming) {
-      await sendWppAdminScheduleImage(options.settings, options.incoming.from, date, activeRows).catch((err) => {
-        console.warn(`[wppAdmin] schedule image failed date=${date} error=${cleanString(err?.message).slice(0, 240)}`);
+      await sendWppAdminScheduleImage(options.settings, options.incoming.from, summary.date, summary.activeRows).catch((err) => {
+        console.warn(`[wppAdmin] schedule image failed date=${summary.date} error=${cleanString(err?.message).slice(0, 240)}`);
       });
     }
-    return [
-      `Escala de ${wppAdminDisplayDate(date)}: ${activeRows.length} evento(s) ativo(s), ${blocks} bloqueio(s), ${formatWppHours(totalMinutes / 60)} planejadas.`,
-      canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : null,
-      lines.join("\n"),
-    ].filter(Boolean).join("\n");
+    return summary.text;
   }
   if (action === "block_aircraft_schedule") {
     const result = await sagaUpsertScheduleDirect(null, {
@@ -25179,6 +25492,13 @@ async function handleWppIncomingWebhook(payload, log) {
       if (soloDecision?.handled) {
         replied += 1;
         actionResults.push({ action: "solo_flight_decision", status: soloDecision.status, requestId: soloDecision.requestId || null, matchedRuleId: null });
+        continue;
+      }
+
+      const adminScheduleImage = await handleWppAdminDailyScheduleImageRequest(settings, incoming);
+      if (adminScheduleImage?.handled) {
+        replied += 1;
+        actionResults.push({ action: "admin_daily_schedule_image", status: adminScheduleImage.status, matchedRuleId: null, targetDate: adminScheduleImage.targetDate || null });
         continue;
       }
 
@@ -25856,9 +26176,7 @@ function formatDurationHours(durationHours) {
 }
 
 function salePaymentMethodLabel(data = {}) {
-  const raw = cleanString(data.paymentMethod);
-  if (!raw || /^cakto$/i.test(raw)) return "LastLink";
-  return raw;
+  return "Sistema";
 }
 
 function formatFlightDateLabel(isoDate) {
@@ -26074,9 +26392,9 @@ function buildNotificationMessage(event, flight) {
     const productLabel = cleanString(data.productLabel);
     const orderId = cleanString(data.orderId);
     return {
-      eyebrow: "Vendas — LastLink",
+      eyebrow: "Vendas — Sistema",
       title: "Nova venda aprovada",
-      intro: "Uma nova venda foi aprovada na LastLink.",
+      intro: "Uma nova venda foi aprovada pelo Sistema.",
       body: `${name}${email ? ` (${email})` : ""} realizou uma compra${productLabel ? ` de ${productLabel}` : ""}${amountLabel ? ` no valor de ${amountLabel}` : ""}${paymentLabel ? ` via ${paymentLabel}` : ""}.`,
       details: [
         ["Cliente", name],
@@ -34671,6 +34989,10 @@ function aiswebAlertWantsChannel(source, channel) {
   return aiswebService.sanitizeAlertDeliveryChannels(source?.deliveryChannels).includes(channel);
 }
 
+function aiswebWeatherAlertDeliverySource(alert, watchlist) {
+  return Array.isArray(alert?.deliveryChannels) && alert.deliveryChannels.length ? alert : watchlist || alert;
+}
+
 async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
   if (!PLATFORM_SETTINGS_COLLECTION_ID) {
     return { ok: false, message: "Coleção de configurações não configurada.", scannedUsers: 0, notified: 0 };
@@ -34786,7 +35108,8 @@ async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
 
       let emailStatus = "skipped";
       let wppStatus = "skipped";
-      if (aiswebAlertWantsChannel(deliverySource || alert, "email")) {
+      const alertDeliverySource = aiswebWeatherAlertDeliverySource(alert, deliverySource);
+      if (aiswebAlertWantsChannel(alertDeliverySource, "email")) {
         try {
           const result = await sendAiswebWeatherAlertEmail(userId, userEmail, userName, alert, match, brand, emailSettings);
           emailStatus = result?.status || "sent";
@@ -34796,7 +35119,7 @@ async function runAiswebWeatherAlertScan(log = () => {}, options = {}) {
           log(`[aisweb-weather-alert] email failed ${userId}/${alert.id}: ${err?.message || err}`);
         }
       }
-      if (aiswebAlertWantsChannel(deliverySource || alert, "wpp")) {
+      if (aiswebAlertWantsChannel(alertDeliverySource, "wpp")) {
         try {
           const wppResult = await sendAiswebAlertWpp(userId, "METAR/TAF", {
             id: alert.id,
@@ -37816,6 +38139,8 @@ module.exports = async ({ req, res, log, error }) => {
       ]);
       const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
+      const wppAdminDailyScheduleSummary = await runWppAdminDailyScheduleSummaryScan()
+        .catch((err) => ({ ok: false, message: String(err?.message || err) }));
       // METAR watch roda em function/schedule próprio (aisweb-metar-watch) a cada ~15 min.
       const [aiswebNotamAlerts, aiswebSupplementAlerts, aiswebAdWarningAlerts] = await Promise.all([
         runAiswebNotamAlertScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
@@ -37838,6 +38163,7 @@ module.exports = async ({ req, res, log, error }) => {
         sagaAllUsersSync: allUsersSyncResult,
         automationScan,
         wppTomorrowFlightReminder,
+        wppAdminDailyScheduleSummary,
         aiswebNotamAlerts,
         aiswebSupplementAlerts,
         aiswebAdWarningAlerts,
@@ -39293,6 +39619,15 @@ module.exports = async ({ req, res, log, error }) => {
       return jsonResponse(res, 200, { result });
     }
 
+    if (action === "runWppAdminDailyScheduleSummary") {
+      await requireAdmin(actorUserId);
+      const result = await runWppAdminDailyScheduleSummaryScan({
+        force: payload.force === true,
+        targetDate: cleanString(payload.targetDate),
+      });
+      return jsonResponse(res, 200, { result });
+    }
+
     if (action === "testWppConnection") {
       await requireAdmin(actorUserId);
       const settings = await testWppConnection();
@@ -39343,6 +39678,12 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "ensureAiswebAlertWppTemplate") {
       await requireAdmin(actorUserId);
       const template = await ensureAiswebAlertWppTemplate();
+      return jsonResponse(res, 200, { ok: true, template });
+    }
+
+    if (action === "ensureWppAdminDailyScheduleTemplate") {
+      await requireAdmin(actorUserId);
+      const template = await ensureWppAdminDailyScheduleTemplates();
       return jsonResponse(res, 200, { ok: true, template });
     }
 

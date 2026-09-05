@@ -137,6 +137,9 @@ async function createAdjustments() {
   const attrs = [
     ["school_id", () => databases.createStringAttribute(databaseId, id, "school_id", 128, true)],
     ["student_user_id", () => databases.createStringAttribute(databaseId, id, "student_user_id", 64, true)],
+    ["student_name", () => databases.createStringAttribute(databaseId, id, "student_name", 255, false)],
+    ["instructor_user_id", () => databases.createStringAttribute(databaseId, id, "instructor_user_id", 64, false)],
+    ["instructor_name", () => databases.createStringAttribute(databaseId, id, "instructor_name", 255, false)],
     ["aircraft_model_id", () => databases.createStringAttribute(databaseId, id, "aircraft_model_id", 64, true)],
     ["aircraft_ident", () => databases.createStringAttribute(databaseId, id, "aircraft_ident", 32, false)],
     ["flight_id", () => databases.createStringAttribute(databaseId, id, "flight_id", 64, false)],
@@ -153,6 +156,8 @@ async function createAdjustments() {
   for (const [label, run] of attrs) await ensureAttribute(id, label, run);
   await waitForAttributes(id, attrs.map(([label]) => label));
   await safe("index adjustments student/model", () => databases.createIndex(databaseId, id, "adjustments_student_model_idx", "key", ["student_user_id", "aircraft_model_id"], ["ASC", "ASC"]));
+  await safe("index adjustments instructor/date", () => databases.createIndex(databaseId, id, "adjustments_instructor_date_idx", "key", ["instructor_user_id", "flight_date"], ["ASC", "ASC"]));
+  await safe("index adjustments type/date", () => databases.createIndex(databaseId, id, "adjustments_type_date_idx", "key", ["school_id", "adjustment_type", "flight_date"], ["ASC", "ASC", "ASC"]));
   await safe("index adjustments flight", () => databases.createIndex(databaseId, id, "adjustments_flight_idx", "unique", ["flight_id"], ["ASC"]));
   await safe("index adjustments occurred", () => databases.createIndex(databaseId, id, "adjustments_occurred_idx", "key", ["occurred_at"], ["DESC"]));
 }

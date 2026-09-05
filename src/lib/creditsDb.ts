@@ -811,6 +811,14 @@ export async function deleteStudentCredit(creditId: string): Promise<void> {
 
 type CreditAdjustmentRow = StudentCreditStatement["adjustments"][number];
 
+export type CancellationPenaltyAdjustmentRow = CreditAdjustmentRow & {
+  studentUserId: string;
+  studentName: string;
+  instructorUserId: string;
+  instructorName: string;
+  isNight: boolean;
+};
+
 function mapCreditAdjustment(doc: Record<string, unknown>): CreditAdjustmentRow {
   return {
     id: String(doc.$id ?? ""),
@@ -825,6 +833,51 @@ function mapCreditAdjustment(doc: Record<string, unknown>): CreditAdjustmentRow 
     flightDate: String(doc.flight_date ?? "").trim() || null,
     flightStartTime: String(doc.flight_start_time ?? "").trim() || null,
   };
+}
+
+function mapCancellationPenaltyAdjustment(doc: Record<string, unknown>): CancellationPenaltyAdjustmentRow {
+  return {
+    ...mapCreditAdjustment(doc),
+    studentUserId: String(doc.student_user_id ?? ""),
+    studentName: String(doc.student_name ?? ""),
+    instructorUserId: String(doc.instructor_user_id ?? ""),
+    instructorName: String(doc.instructor_name ?? ""),
+    isNight: Boolean(doc.is_night),
+  };
+}
+
+export async function listCancellationPenaltyAdjustmentsForInstructorReport(params: {
+  fromDate?: string;
+  toDate?: string;
+}): Promise<CancellationPenaltyAdjustmentRow[]> {
+  if (!databases || !DB_ID || !CREDIT_ADJUSTMENTS_COL_ID) return [];
+  const queries: string[] = [
+    Query.equal("school_id", [DEFAULT_SCHOOL_ID]),
+    Query.equal("adjustment_type", ["cancellation_penalty"]),
+    Query.limit(500),
+  ];
+  if (params.fromDate) queries.push(Query.greaterThanEqual("flight_date", params.fromDate));
+  if (params.toDate) queries.push(Query.lessThanEqual("flight_date", params.toDate));
+  try {
+    const rows: CancellationPenaltyAdjustmentRow[] = [];
+    let cursor: string | undefined;
+    let safety = 0;
+    do {
+      const res = await databases.listDocuments(DB_ID, CREDIT_ADJUSTMENTS_COL_ID, [
+        ...queries,
+        ...(cursor ? [Query.cursorAfter(cursor)] : []),
+      ]);
+      rows.push(...res.documents.map((doc) => mapCancellationPenaltyAdjustment(doc as Record<string, unknown>)));
+      cursor = res.documents[res.documents.length - 1]?.$id;
+      safety += 1;
+      if (res.documents.length < 500) break;
+    } while (cursor && safety < 20);
+    return rows
+      .filter((row) => row.instructorUserId || row.instructorName)
+      .sort((a, b) => `${a.flightDate || ""}${a.flightStartTime || ""}`.localeCompare(`${b.flightDate || ""}${b.flightStartTime || ""}`));
+  } catch {
+    return [];
+  }
 }
 
 async function enrichCreditAdjustments(adjustments: CreditAdjustmentRow[]): Promise<CreditAdjustmentRow[]> {

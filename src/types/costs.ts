@@ -15,6 +15,7 @@ export type InstructorCosts = {
   id: string;
   instructorUserId: string;
   monthlyFixedCost: number;
+  cancellationPenaltySharePct: number;
   modelCosts: InstructorModelCost[];
   updatedAt: string | null;
   updatedBy: string | null;

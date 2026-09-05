@@ -5,6 +5,7 @@ export type WppConnectionSettings = {
   apiKeyConfigured: boolean;
   flightReviewReadyTemplate: WppFlightReviewReadyTemplateSettings;
   tomorrowFlightReminderTemplate: WppTomorrowFlightReminderTemplateSettings;
+  adminDailyScheduleSummaryTemplate: WppTomorrowFlightReminderTemplateSettings;
   paymentReceivedTemplate: WppTransactionalTemplateSettings;
   bookingRequestedTemplate: WppTransactionalTemplateSettings;
   soloFlightApprovalTemplate: WppTransactionalTemplateSettings;
@@ -93,6 +94,7 @@ export type WppConnectionInput = {
   apiKey: string;
   flightReviewReadyTemplate?: WppFlightReviewReadyTemplateSettings;
   tomorrowFlightReminderTemplate?: WppTomorrowFlightReminderTemplateSettings;
+  adminDailyScheduleSummaryTemplate?: WppTomorrowFlightReminderTemplateSettings;
   paymentReceivedTemplate?: WppTransactionalTemplateSettings;
   bookingRequestedTemplate?: WppTransactionalTemplateSettings;
   soloFlightApprovalTemplate?: WppTransactionalTemplateSettings;

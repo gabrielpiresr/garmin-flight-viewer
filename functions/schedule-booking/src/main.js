@@ -75,6 +75,29 @@ function number(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function isUnknownAppwriteAttribute(error) {
+  const message = clean(error?.message).toLowerCase();
+  return Number(error?.code || error?.status || 0) === 400
+    && /unknown attribute|invalid document structure|attribute.*not/.test(message);
+}
+
+async function createCreditAdjustmentDocument(documentId, payload, permissions) {
+  try {
+    return await databases.createDocument(DATABASE_ID, ADJUSTMENTS_ID, documentId, payload, permissions);
+  } catch (error) {
+    if (error?.code === 409) return null;
+    if (!isUnknownAppwriteAttribute(error)) throw error;
+    const legacyPayload = { ...payload };
+    delete legacyPayload.student_name;
+    delete legacyPayload.instructor_user_id;
+    delete legacyPayload.instructor_name;
+    return databases.createDocument(DATABASE_ID, ADJUSTMENTS_ID, documentId, legacyPayload, permissions).catch((retryError) => {
+      if (retryError?.code === 409) return null;
+      throw retryError;
+    });
+  }
+}
+
 function integer(value, fallback, min = 0, max = 3650) {
   return Math.min(max, Math.max(min, Math.round(number(value, fallback))));
 }
@@ -2390,9 +2413,12 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
   // Multa e auditoria continuam registradas no sistema — apenas a escala vive no SAGA.
   const shouldDebit = rules.autoDebitCancellationPenalty && !waive && penaltyHours > 0 && Boolean(studentUserId);
   if (shouldDebit) {
-    await databases.createDocument(DATABASE_ID, ADJUSTMENTS_ID, `cancel-saga-${id}`.slice(0, 36), {
+    await createCreditAdjustmentDocument(`cancel-saga-${id}`.slice(0, 36), {
       school_id: SCHOOL_ID,
       student_user_id: studentUserId,
+      student_name: clean(event.studentName) || clean(profile.full_name || profile.email || "Aluno"),
+      instructor_user_id: clean(event.instructorUserId),
+      instructor_name: clean(event.instructorName),
       aircraft_model_id: aircraft?.model_id || "",
       aircraft_ident: clean(event.aircraft).toUpperCase(),
       flight_id: `saga-${id}`,
@@ -2409,9 +2435,7 @@ async function handleCancelSagaOnly(payload, actorId, actorRole, rules, profile)
       sdk.Permission.read(sdk.Role.user(studentUserId)),
       sdk.Permission.read(sdk.Role.label("admin")),
       sdk.Permission.read(sdk.Role.label("instrutor")),
-    ]).catch((error) => {
-      if (error?.code !== 409) throw error;
-    });
+    ]);
     // Espelha a multa como remoção de crédito no SAGA (best-effort, não bloqueia).
     const stamp = brCancelStamp();
     registerSagaCancellationPenalty({
@@ -2721,9 +2745,12 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
   const shouldDebit = rules.autoDebitCancellationPenalty && !waive && penaltyHours > 0;
   if (shouldDebit) {
     const adjustmentId = `cancel-${id}`;
-    await databases.createDocument(DATABASE_ID, ADJUSTMENTS_ID, adjustmentId, {
+    await createCreditAdjustmentDocument(adjustmentId, {
       school_id: SCHOOL_ID,
       student_user_id: doc.student_user_id,
+      student_name: clean(profile?.full_name || profile?.email || "Aluno"),
+      instructor_user_id: clean(doc.instructor_user_id),
+      instructor_name: clean(doc.instructor_name),
       aircraft_model_id: doc.aircraft_model_id || "",
       aircraft_ident: doc.aircraft_ident || "",
       flight_id: id,
@@ -2740,9 +2767,7 @@ async function handleCancel(payload, actorId, actorRole, rules, profile) {
       sdk.Permission.read(sdk.Role.user(doc.student_user_id)),
       sdk.Permission.read(sdk.Role.label("admin")),
       sdk.Permission.read(sdk.Role.label("instrutor")),
-    ]).catch((error) => {
-      if (error?.code !== 409) throw error;
-    });
+    ]);
     // Espelha a multa como remoção de crédito no SAGA (best-effort, não bloqueia).
     const stamp = brCancelStamp();
     registerSagaCancellationPenalty({

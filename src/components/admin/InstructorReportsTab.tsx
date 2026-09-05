@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAdminFlightReports } from "../../lib/adminUsersDb";
 import { DEFAULT_SCHOOL_ID } from "../../lib/appwrite";
 import { listGroundAircraftIdents } from "../../lib/aircraftDb";
+import { listCancellationPenaltyAdjustmentsForInstructorReport, type CancellationPenaltyAdjustmentRow } from "../../lib/creditsDb";
 import { listInstructorCosts } from "../../lib/instructorCostsDb";
 import { listInstructorPaymentSnapshotsByFlightIds, type InstructorPaymentSnapshotRow } from "../../lib/instructorPaymentsDb";
 import { getPdfBrand, getPdfBrandLogoSrc } from "../../lib/pdfBrand";
@@ -11,11 +12,19 @@ import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/ToastProvider";
 
 type PeriodPresetKey = "custom" | "thisMonth" | "lastMonth";
-type InstructorReportRow = AdminFlightReportRow & {
+type InstructorReportEntryType = "flight" | "cancellation_penalty";
+type InstructorReportRow = Partial<AdminFlightReportRow> & Pick<
+  AdminFlightReportRow,
+  "id" | "status" | "studentName" | "instructorName" | "instructorUserId" | "studentUserId" | "flightDate" | "startTime" | "aircraftIdent" | "aircraftNickname" | "modelId" | "modelName" | "durationSec" | "hours" | "landings"
+> & {
+  entryType: InstructorReportEntryType;
   isGroundSchool: boolean;
+  baseHourlyRate: number;
   repasse: number;
   repasseSource: "snapshot" | "tabela" | "sem-valor";
   paymentSnapshot: InstructorPaymentSnapshotRow | null;
+  cancellationPenaltyHours?: number;
+  cancellationPenaltySharePct?: number;
 };
 
 type InstructorGroup = {
@@ -120,6 +129,59 @@ function calculateRepasseFromCosts(row: AdminFlightReportRow, costs: InstructorC
   return Number(((Number(hourlyRate || 0) * hours) + Number(fixedRate || 0)).toFixed(2));
 }
 
+function baseHourlyRateFromCosts(row: Pick<AdminFlightReportRow, "modelId" | "isNight">, costs: InstructorCosts | undefined, isGroundSchool: boolean): number {
+  if (isGroundSchool) return 0;
+  const modelCost = costs?.modelCosts.find((item) => item.modelId === row.modelId);
+  if (!modelCost) return 0;
+  return Number(row.isNight ? modelCost.hourlyNightRate : modelCost.hourlyDayRate) || 0;
+}
+
+function cancellationPenaltySharePct(costs: InstructorCosts | undefined): number {
+  const value = Number(costs?.cancellationPenaltySharePct);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50;
+}
+
+function cancellationRepasse(adjustment: CancellationPenaltyAdjustmentRow, costs: InstructorCosts | undefined): { baseHourlyRate: number; sharePct: number; repasse: number } {
+  const modelCost = costs?.modelCosts.find((item) => item.modelId === adjustment.aircraftModelId);
+  const baseHourlyRate = Number(adjustment.isNight ? modelCost?.hourlyNightRate : modelCost?.hourlyDayRate) || 0;
+  const sharePct = cancellationPenaltySharePct(costs);
+  const hours = Math.abs(Math.min(0, Number(adjustment.hours) || 0));
+  return {
+    baseHourlyRate,
+    sharePct,
+    repasse: Number(((baseHourlyRate * hours * sharePct) / 100).toFixed(2)),
+  };
+}
+
+function makeCancellationReportRow(adjustment: CancellationPenaltyAdjustmentRow, costs: InstructorCosts | undefined): InstructorReportRow {
+  const values = cancellationRepasse(adjustment, costs);
+  return {
+    id: `penalty-${adjustment.id}`,
+    entryType: "cancellation_penalty",
+    status: "Realizado",
+    studentName: adjustment.studentName || adjustment.studentUserId || "Aluno",
+    instructorName: adjustment.instructorName || adjustment.instructorUserId || "Instrutor",
+    instructorUserId: adjustment.instructorUserId || null,
+    studentUserId: adjustment.studentUserId || null,
+    flightDate: adjustment.flightDate,
+    startTime: adjustment.flightStartTime,
+    aircraftIdent: adjustment.aircraftIdent || null,
+    aircraftNickname: null,
+    modelId: adjustment.aircraftModelId || null,
+    modelName: adjustment.aircraftModelId || "Modelo não identificado",
+    durationSec: null,
+    hours: Math.abs(Math.min(0, Number(adjustment.hours) || 0)),
+    landings: 0,
+    isGroundSchool: false,
+    baseHourlyRate: values.baseHourlyRate,
+    repasse: values.repasse,
+    repasseSource: values.repasse > 0 ? "tabela" : "sem-valor",
+    paymentSnapshot: null,
+    cancellationPenaltyHours: Math.abs(Math.min(0, Number(adjustment.hours) || 0)),
+    cancellationPenaltySharePct: values.sharePct,
+  };
+}
+
 function paymentTotal(payment: InstructorPaymentSnapshotRow | null, isGroundSchool: boolean): number | null {
   if (!payment) return null;
   if (payment.totalCalculated > 0) return payment.totalCalculated;
@@ -136,7 +198,8 @@ function groupRows(rows: InstructorReportRow[]): InstructorGroup[] {
 
   return Array.from(byInstructor.entries())
     .map(([instructorUserId, groupRowsValue]) => {
-      const flightRows = groupRowsValue.filter((row) => !row.isGroundSchool);
+      const operationalRows = groupRowsValue.filter((row) => row.entryType === "flight");
+      const flightRows = operationalRows.filter((row) => !row.isGroundSchool);
       const groundRows = groupRowsValue.filter((row) => row.isGroundSchool);
       const evaluationValues = groupRowsValue
         .map((row) => row.evalScoreAverage)
@@ -161,16 +224,6 @@ function groupRows(rows: InstructorReportRow[]): InstructorGroup[] {
     .sort((a, b) => b.totalRepasse - a.totalRepasse || a.instructorName.localeCompare(b.instructorName, "pt-BR"));
 }
 
-function topStudentLabel(rows: InstructorReportRow[]): string {
-  const counts = new Map<string, number>();
-  rows.forEach((row) => {
-    const name = row.studentName || "Sem aluno";
-    counts.set(name, (counts.get(name) || 0) + 1);
-  });
-  const [name, count] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
-  return name ? `${name} (${count})` : "Sem dados";
-}
-
 function openInstructorReportPdf(group: InstructorGroup, fromDate: string, toDate: string) {
   const brand = getPdfBrand();
   const logoSrc = getPdfBrandLogoSrc(brand);
@@ -183,14 +236,16 @@ function openInstructorReportPdf(group: InstructorGroup, fromDate: string, toDat
   const rowsHtml = group.rows
     .map((row) => {
       const typeLabel = row.isGroundSchool ? "Ground school" : row.isNight ? "Voo noturno" : "Voo diurno";
+      const isPenalty = row.entryType === "cancellation_penalty";
       return `<tr>
         <td>${escapeHtml(fmtDate(row.flightDate))}</td>
         <td>${escapeHtml(row.aircraftIdent || row.aircraftNickname || "-")}</td>
         <td>${escapeHtml(row.studentName || "-")}</td>
-        <td>${escapeHtml(row.isGroundSchool ? "-" : fmtInt(row.landings))}</td>
+        <td>${escapeHtml(row.isGroundSchool || isPenalty ? "-" : fmtInt(row.landings))}</td>
         <td>${escapeHtml(row.isGroundSchool ? "Ground school" : fmtHours(row.durationSec ? row.durationSec / 3600 : row.hours || 0))}</td>
-        <td>${escapeHtml(row.missionName || row.trainingTrackName || typeLabel)}</td>
+        <td>${escapeHtml(isPenalty ? `Multa de cancelamento (${fmtNumber(row.cancellationPenaltySharePct, 1)}%)` : row.missionName || row.trainingTrackName || typeLabel)}</td>
         <td>${escapeHtml(row.status)}</td>
+        <td class="money">${escapeHtml(fmtCurrency(row.baseHourlyRate))}</td>
         <td class="money">${escapeHtml(fmtCurrency(row.repasse))}</td>
       </tr>`;
     })
@@ -225,7 +280,6 @@ function openInstructorReportPdf(group: InstructorGroup, fromDate: string, toDat
           .card{border:1px solid #dbe3ee;border-radius:10px;background:#f8fafc;padding:11px}
           .card span{display:block;color:#64748b;font-size:9px;text-transform:uppercase;font-weight:800;letter-spacing:.07em}
           .card strong{display:block;margin-top:5px;color:#0f172a;font-size:17px}
-          .note{margin:8px 0 16px;border-left:4px solid ${escapeHtml(accent)};background:#f8fafc;padding:10px 12px;color:#475569;font-size:11px;line-height:1.45}
           table{width:100%;border-collapse:collapse;font-size:9px}
           th,td{border:1px solid #dbe3ee;padding:6px;text-align:left;vertical-align:top}
           th{background:#e2e8f0;color:#334155;font-size:8px;text-transform:uppercase;letter-spacing:.05em}
@@ -264,14 +318,6 @@ function openInstructorReportPdf(group: InstructorGroup, fromDate: string, toDat
             <div class="card"><span>Pousos</span><strong>${escapeHtml(fmtInt(group.totalLandings))}</strong></div>
             <div class="card"><span>Média por voo</span><strong>${escapeHtml(fmtHours(averageHours))}</strong></div>
           </div>
-          <div class="note">
-            O valor a receber considera apenas registros com status Realizado.
-            Repasses usam o snapshot salvo no voo ou, quando ele não existe, a tabela de valores atual do instrutor.
-            <br />
-            Aluno com mais registros: <strong>${escapeHtml(topStudentLabel(group.rows))}</strong>. 
-            Voos avaliados: <strong>${escapeHtml(fmtInt(group.evaluatedFlights))}</strong>. 
-            Registros com telemetria: <strong>${escapeHtml(fmtInt(group.telemetryCount))}</strong>.
-          </div>
           <h2>Extrato de voos</h2>
           <table>
             <thead>
@@ -283,10 +329,11 @@ function openInstructorReportPdf(group: InstructorGroup, fromDate: string, toDat
                 <th>Tempo de voo</th>
                 <th>Missão / tipo</th>
                 <th>Status</th>
+                <th>Valor base/hora</th>
                 <th>Repasse</th>
               </tr>
             </thead>
-            <tbody>${rowsHtml || `<tr><td colspan="8">Nenhum registro no período.</td></tr>`}</tbody>
+            <tbody>${rowsHtml || `<tr><td colspan="9">Nenhum registro no período.</td></tr>`}</tbody>
           </table>
           <div class="footer">${escapeHtml(schoolName)} - ${escapeHtml(group.instructorName)} - ${escapeHtml(period)}</div>
         </section>
@@ -355,11 +402,17 @@ export function InstructorReportsTab() {
     setLoading(true);
     setError(null);
     try {
-      const [reportRows, groundIdents] = await Promise.all([
+      const [reportRows, groundIdents, cancellationAdjustments] = await Promise.all([
         listAllInstructorReportRows({ fromDate, toDate, status }),
         listGroundAircraftIdents(DEFAULT_SCHOOL_ID),
+        status === "all" || status === "Realizado" || status === "Cancelado"
+          ? listCancellationPenaltyAdjustmentsForInstructorReport({ fromDate, toDate })
+          : Promise.resolve([]),
       ]);
-      const instructorIds = Array.from(new Set(reportRows.map((row) => row.instructorUserId).filter((id): id is string => Boolean(id))));
+      const instructorIds = Array.from(new Set([
+        ...reportRows.map((row) => row.instructorUserId).filter((id): id is string => Boolean(id)),
+        ...cancellationAdjustments.map((row) => row.instructorUserId).filter((id): id is string => Boolean(id)),
+      ]));
       const [payments, costs] = await Promise.all([
         listInstructorPaymentSnapshotsByFlightIds(reportRows.map((row) => row.id)),
         listInstructorCosts(instructorIds),
@@ -378,16 +431,22 @@ export function InstructorReportsTab() {
             isGroundSchool,
           );
           const payable = row.status === "Realizado";
+          const costs = row.instructorUserId ? costsByInstructorId.get(row.instructorUserId) : undefined;
           const repasse = payable ? snapshotTotal ?? tableTotal : 0;
           return {
             ...row,
+            entryType: "flight",
             isGroundSchool,
+            baseHourlyRate: paymentSnapshot?.hourlyRateApplied || baseHourlyRateFromCosts(row, costs, isGroundSchool),
             repasse,
             repasseSource: !payable ? "sem-valor" : snapshotTotal !== null ? "snapshot" : tableTotal > 0 ? "tabela" : "sem-valor",
             paymentSnapshot,
           } satisfies InstructorReportRow;
         });
-      setRows(enriched);
+      const cancellationRows = cancellationAdjustments.map((adjustment) => (
+        makeCancellationReportRow(adjustment, adjustment.instructorUserId ? costsByInstructorId.get(adjustment.instructorUserId) : undefined)
+      ));
+      setRows([...enriched, ...cancellationRows]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Não foi possível carregar os relatórios de instrutores.";
       setError(message);

@@ -3,6 +3,7 @@ import {
   createWppTemplate,
   deleteWppTemplate,
   ensureAiswebAlertWppTemplate,
+  ensureWppAdminDailyScheduleTemplate,
   getWppSettings,
   listWppDeliveryStatuses,
   listWppTemplates,
@@ -55,6 +56,14 @@ const DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE: WppTomorrowFlightReminderTempla
   language: "pt_BR",
   sendHour: 19,
   bodyParameters: ["student_name", "flight_date", "start_time", "aircraft", "mission", "instructor"],
+};
+
+const DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE: WppTomorrowFlightReminderTemplateSettings = {
+  enabled: false,
+  templateName: "resumo_escala_admin_amanha",
+  language: "pt_BR",
+  sendHour: 20,
+  bodyParameters: ["flight_date", "summary", "schedule_lines"],
 };
 
 const DEFAULT_PAYMENT_RECEIVED_TEMPLATE: WppTransactionalTemplateSettings = {
@@ -670,6 +679,7 @@ export function WppSettingsPanel() {
   const [form, setForm] = useState<WppConnectionInput>(EMPTY_CONNECTION);
   const [flightReviewTemplate, setFlightReviewTemplate] = useState<WppFlightReviewReadyTemplateSettings>(DEFAULT_FLIGHT_REVIEW_TEMPLATE);
   const [tomorrowFlightReminderTemplate, setTomorrowFlightReminderTemplate] = useState<WppTomorrowFlightReminderTemplateSettings>(DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+  const [adminDailyScheduleSummaryTemplate, setAdminDailyScheduleSummaryTemplate] = useState<WppTomorrowFlightReminderTemplateSettings>(DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE);
   const [paymentReceivedTemplate, setPaymentReceivedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
   const [bookingRequestedTemplate, setBookingRequestedTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_BOOKING_REQUESTED_TEMPLATE);
   const [soloFlightApprovalTemplate, setSoloFlightApprovalTemplate] = useState<WppTransactionalTemplateSettings>(DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
@@ -687,6 +697,7 @@ export function WppSettingsPanel() {
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [ensuringSoloTemplates, setEnsuringSoloTemplates] = useState(false);
   const [ensuringAiswebTemplate, setEnsuringAiswebTemplate] = useState(false);
+  const [ensuringAdminDailyScheduleTemplate, setEnsuringAdminDailyScheduleTemplate] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
   const [testing, setTesting] = useState(false);
   const [activeSection, setActiveSection] = useState<WppSettingsSection>("bot");
@@ -719,6 +730,7 @@ export function WppSettingsPanel() {
       setSettings(next); setForm(connectionForm(next));
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+      setAdminDailyScheduleSummaryTemplate(next.adminDailyScheduleSummaryTemplate ?? DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE);
       setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setSoloFlightApprovalTemplate(next.soloFlightApprovalTemplate ?? DEFAULT_SOLO_FLIGHT_APPROVAL_TEMPLATE);
@@ -750,6 +762,7 @@ export function WppSettingsPanel() {
         ...form,
         flightReviewReadyTemplate: flightReviewTemplate,
         tomorrowFlightReminderTemplate,
+        adminDailyScheduleSummaryTemplate,
         paymentReceivedTemplate,
         bookingRequestedTemplate,
         incomingAutoReply,
@@ -782,6 +795,7 @@ export function WppSettingsPanel() {
       });
       const tested = await testWppConnection();
       setSettings(tested); setForm(connectionForm(tested));
+      setAdminDailyScheduleSummaryTemplate(tested.adminDailyScheduleSummaryTemplate ?? DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE);
       setIncomingAutoReply(incomingAutoReplyForm(tested));
       showToast({ variant: "success", message: "Conta do WhatsApp conectada com sucesso." });
       await loadTemplates();
@@ -791,7 +805,7 @@ export function WppSettingsPanel() {
 
   async function testConnection() {
     setTesting(true);
-    try { const next = await testWppConnection(); setSettings(next); setIncomingAutoReply(incomingAutoReplyForm(next)); showToast({ variant: "success", message: "Conexão funcionando normalmente." }); }
+    try { const next = await testWppConnection(); setSettings(next); setAdminDailyScheduleSummaryTemplate(next.adminDailyScheduleSummaryTemplate ?? DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE); setIncomingAutoReply(incomingAutoReplyForm(next)); showToast({ variant: "success", message: "Conexão funcionando normalmente." }); }
     catch (error) { showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha no teste de conexão." }); }
     finally { setTesting(false); }
   }
@@ -867,6 +881,10 @@ export function WppSettingsPanel() {
       showToast({ variant: "warning", message: "Informe o template de solicitaÃ§Ã£o de agendamento." });
       return;
     }
+    if (adminDailyScheduleSummaryTemplate.enabled && !adminDailyScheduleSummaryTemplate.templateName.trim()) {
+      showToast({ variant: "warning", message: "Informe o template do resumo da escala do coordenador." });
+      return;
+    }
     setSavingTemplates(true);
     try {
       const next = await saveWppNotificationTemplates({
@@ -881,6 +899,13 @@ export function WppSettingsPanel() {
           language: tomorrowFlightReminderTemplate.language.trim() || "pt_BR",
           sendHour: Number(tomorrowFlightReminderTemplate.sendHour) || 19,
           bodyParameters: tomorrowFlightReminderTemplate.bodyParameters,
+        },
+        adminDailyScheduleSummaryTemplate: {
+          ...adminDailyScheduleSummaryTemplate,
+          templateName: adminDailyScheduleSummaryTemplate.templateName.trim().toLowerCase(),
+          language: adminDailyScheduleSummaryTemplate.language.trim() || "pt_BR",
+          sendHour: Number(adminDailyScheduleSummaryTemplate.sendHour) || 20,
+          bodyParameters: adminDailyScheduleSummaryTemplate.bodyParameters,
         },
         paymentReceivedTemplate: {
           ...paymentReceivedTemplate,
@@ -930,6 +955,7 @@ export function WppSettingsPanel() {
       setSettings(next);
       setFlightReviewTemplate(next.flightReviewReadyTemplate ?? DEFAULT_FLIGHT_REVIEW_TEMPLATE);
       setTomorrowFlightReminderTemplate(next.tomorrowFlightReminderTemplate ?? DEFAULT_TOMORROW_FLIGHT_REMINDER_TEMPLATE);
+      setAdminDailyScheduleSummaryTemplate(next.adminDailyScheduleSummaryTemplate ?? DEFAULT_ADMIN_DAILY_SCHEDULE_TEMPLATE);
       setPaymentReceivedTemplate(next.paymentReceivedTemplate ?? DEFAULT_PAYMENT_RECEIVED_TEMPLATE);
       setBookingRequestedTemplate(next.bookingRequestedTemplate ?? DEFAULT_BOOKING_REQUESTED_TEMPLATE);
       setAiswebAlertTemplate(next.aiswebAlertTemplate ?? DEFAULT_AISWEB_ALERT_TEMPLATE);
@@ -955,6 +981,19 @@ export function WppSettingsPanel() {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar o template AISWEB." });
     } finally {
       setEnsuringAiswebTemplate(false);
+    }
+  }
+
+  async function createAdminDailyScheduleTemplate() {
+    setEnsuringAdminDailyScheduleTemplate(true);
+    try {
+      await ensureWppAdminDailyScheduleTemplate();
+      showToast({ variant: "success", message: "Templates de resumo da escala criados/listados no Meta." });
+      await loadTemplates();
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao criar o template de escala do coordenador." });
+    } finally {
+      setEnsuringAdminDailyScheduleTemplate(false);
     }
   }
 
@@ -1234,6 +1273,39 @@ export function WppSettingsPanel() {
             <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
               <strong className="block text-slate-300">Variáveis</strong>
               student_name, flight_date, start_time, aircraft, mission, instructor, route, flight_id
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 p-5 sm:p-6">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-200">Resumo da escala para coordenador</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Envia ao WhatsApp do coordenador de curso o texto da escala do dia seguinte por template utility; o botão solicita a imagem.</p>
+            </div>
+            <button type="button" onClick={() => void createAdminDailyScheduleTemplate()} disabled={ensuringAdminDailyScheduleTemplate || !connected} className={secondaryButton}>
+              {ensuringAdminDailyScheduleTemplate ? "Criando..." : "Criar template Meta"}
+            </button>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem_8rem] sm:items-end">
+            <label className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm font-semibold text-slate-200 sm:col-span-3">
+              <input type="checkbox" checked={adminDailyScheduleSummaryTemplate.enabled} onChange={(e) => setAdminDailyScheduleSummaryTemplate((current) => ({ ...current, enabled: e.target.checked }))} className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500" />
+              Enviar resumo da escala do dia seguinte ao coordenador de curso às 20h
+            </label>
+            <label className="text-xs font-medium text-slate-400">Resumo da escala
+              <input value={adminDailyScheduleSummaryTemplate.templateName} onChange={(e) => setAdminDailyScheduleSummaryTemplate((current) => ({ ...current, templateName: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} placeholder="resumo_escala_admin_amanha" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Idioma
+              <input value={adminDailyScheduleSummaryTemplate.language} onChange={(e) => setAdminDailyScheduleSummaryTemplate((current) => ({ ...current, language: e.target.value }))} placeholder="pt_BR" className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400">Hora
+              <input type="number" min={0} max={23} value={adminDailyScheduleSummaryTemplate.sendHour} onChange={(e) => setAdminDailyScheduleSummaryTemplate((current) => ({ ...current, sendHour: Number(e.target.value) }))} className={inputClass} />
+            </label>
+            <label className="text-xs font-medium text-slate-400 sm:col-span-2">Parâmetros do corpo
+              <input value={adminDailyScheduleSummaryTemplate.bodyParameters.join(", ")} onChange={(e) => setAdminDailyScheduleSummaryTemplate((current) => ({ ...current, bodyParameters: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="flight_date, summary, schedule_lines" className={inputClass} />
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-xs leading-5 text-slate-500">
+              <strong className="block text-slate-300">Variáveis</strong>
+              flight_date, summary, schedule_lines, active_count, blocks_count, hours_total, canceled_count
             </div>
           </div>
         </div>

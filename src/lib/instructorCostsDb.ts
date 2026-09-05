@@ -35,6 +35,7 @@ function toDoc(doc: Record<string, unknown>): InstructorCosts {
     id: doc.$id as string,
     instructorUserId: (doc.instructor_user_id as string) ?? "",
     monthlyFixedCost: Number(doc.monthly_fixed_cost ?? 0),
+    cancellationPenaltySharePct: Number(doc.cancellation_penalty_share_pct ?? 50),
     modelCosts: parseModelCosts(doc.model_costs_json as string | null),
     updatedAt: (doc.updated_at as string | null) ?? null,
     updatedBy: (doc.updated_by as string | null) ?? null,
@@ -77,7 +78,7 @@ export async function listInstructorCosts(instructorUserIds: string[]): Promise<
 
 export async function saveInstructorCosts(
   instructorUserId: string,
-  data: { monthlyFixedCost: number; modelCosts: InstructorModelCost[] },
+  data: { monthlyFixedCost: number; cancellationPenaltySharePct?: number; modelCosts: InstructorModelCost[] },
   actorUserId: string,
 ): Promise<InstructorCosts> {
   if (!isReady() || !databases || !INSTRUCTOR_COSTS_COL_ID) throw new Error("Appwrite não configurado");
@@ -86,10 +87,18 @@ export async function saveInstructorCosts(
     instructor_user_id: instructorUserId,
     school_id: DEFAULT_SCHOOL_ID,
     monthly_fixed_cost: data.monthlyFixedCost,
+    cancellation_penalty_share_pct: Number.isFinite(Number(data.cancellationPenaltySharePct))
+      ? Math.max(0, Math.min(100, Number(data.cancellationPenaltySharePct)))
+      : 50,
     model_costs_json: JSON.stringify(data.modelCosts),
     updated_at: now,
     updated_by: actorUserId,
   };
+  const legacyPayload = {
+    ...payload,
+    cancellation_penalty_share_pct: undefined,
+  };
+  delete legacyPayload.cancellation_penalty_share_pct;
   const existing = await getInstructorCosts(instructorUserId);
   // Client sessions can only assign ACL targets allowed by the authenticated user context.
   // In admin UI, assigning Role.user(otherUserId) is rejected by Appwrite (401 user_unauthorized).
@@ -102,10 +111,24 @@ export async function saveInstructorCosts(
     Permission.delete(Role.label("admin")),
   ];
   let doc: Record<string, unknown>;
-  if (existing) {
-    doc = (await databases.updateDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, existing.id, payload, permissions)) as unknown as Record<string, unknown>;
-  } else {
-    doc = (await databases.createDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, ID.unique(), payload, permissions)) as unknown as Record<string, unknown>;
+  try {
+    if (existing) {
+      doc = (await databases.updateDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, existing.id, payload, permissions)) as unknown as Record<string, unknown>;
+    } else {
+      doc = (await databases.createDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, ID.unique(), payload, permissions)) as unknown as Record<string, unknown>;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/unknown attribute|invalid document structure|attribute.*not/i.test(message)) throw error;
+    if (existing) {
+      doc = (await databases.updateDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, existing.id, legacyPayload, permissions)) as unknown as Record<string, unknown>;
+    } else {
+      doc = (await databases.createDocument(DB_ID, INSTRUCTOR_COSTS_COL_ID, ID.unique(), legacyPayload, permissions)) as unknown as Record<string, unknown>;
+    }
   }
-  return toDoc({ ...doc, $id: (doc as { $id: string }).$id ?? existing?.id });
+  return toDoc({
+    ...doc,
+    cancellation_penalty_share_pct: (doc as Record<string, unknown>).cancellation_penalty_share_pct ?? payload.cancellation_penalty_share_pct,
+    $id: (doc as { $id: string }).$id ?? existing?.id,
+  });
 }

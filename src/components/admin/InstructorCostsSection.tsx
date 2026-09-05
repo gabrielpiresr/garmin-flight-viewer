@@ -21,6 +21,11 @@ function parseCurrency(value: string): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+function parsePercent(value: string): number {
+  const parsed = Number(value.trim().replace(",", "."));
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 50;
+}
+
 function CurrencyInput({
   label,
   value,
@@ -44,6 +49,35 @@ function CurrencyInput({
           placeholder="0"
           className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none"
         />
+      </div>
+    </label>
+  );
+}
+
+function PercentInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="block text-xs text-slate-400">
+      {label}
+      <div className="mt-1 flex rounded-lg border border-slate-700 bg-slate-800 focus-within:border-emerald-500">
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.1"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="50"
+          className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none"
+        />
+        <span className="flex items-center border-l border-slate-700 px-3 text-sm text-slate-400">%</span>
       </div>
     </label>
   );
@@ -85,6 +119,7 @@ export function InstructorCostsSection({
   const [saving, setSaving] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [monthlyFixedCost, setMonthlyFixedCost] = useState("0");
+  const [cancellationPenaltySharePct, setCancellationPenaltySharePct] = useState("50");
   const [models, setModels] = useState<AircraftModel[]>([]);
   const [groundModelIds, setGroundModelIds] = useState<Set<string>>(new Set());
   const [modelDrafts, setModelDrafts] = useState<ModelCostDraft[]>([]);
@@ -104,6 +139,7 @@ export function InstructorCostsSection({
       setGroundModelIds(new Set(aircrafts.filter((aircraft) => aircraft.type === "ground").map((aircraft) => aircraft.model_id).filter(Boolean)));
       setUpdatedAt(costs?.updatedAt ?? null);
       setMonthlyFixedCost(String(costs?.monthlyFixedCost ?? 0));
+      setCancellationPenaltySharePct(String(costs?.cancellationPenaltySharePct ?? 50));
 
       const drafts: ModelCostDraft[] = allModels.map((model) => {
         const existing = costs?.modelCosts.find((mc) => mc.modelId === model.id);
@@ -120,6 +156,7 @@ export function InstructorCostsSection({
       setModelDrafts(drafts);
       costsSnapshotRef.current = JSON.stringify({
         monthlyFixedCost: String(costs?.monthlyFixedCost ?? 0),
+        cancellationPenaltySharePct: String(costs?.cancellationPenaltySharePct ?? 50),
         modelDrafts: drafts,
       });
       costsHydratedRef.current = true;
@@ -141,7 +178,7 @@ export function InstructorCostsSection({
   const handleSave = useCallback(
     async (silent = false) => {
       if (!authUser) return;
-      const serialized = JSON.stringify({ monthlyFixedCost, modelDrafts });
+      const serialized = JSON.stringify({ monthlyFixedCost, cancellationPenaltySharePct, modelDrafts });
       if (serialized === costsSnapshotRef.current) return;
 
       setSaving(true);
@@ -150,6 +187,7 @@ export function InstructorCostsSection({
           instructorUserId,
           {
             monthlyFixedCost: parseCurrency(monthlyFixedCost),
+            cancellationPenaltySharePct: parsePercent(cancellationPenaltySharePct),
             modelCosts: modelDrafts.map(modelCostToInstructorModelCost),
           },
           authUser.id,
@@ -165,19 +203,19 @@ export function InstructorCostsSection({
         setSaving(false);
       }
     },
-    [authUser, instructorUserId, modelDrafts, monthlyFixedCost, showToast],
+    [authUser, cancellationPenaltySharePct, instructorUserId, modelDrafts, monthlyFixedCost, showToast],
   );
 
   useEffect(() => {
     if (!autoSave || loading || !costsHydratedRef.current) return;
-    const serialized = JSON.stringify({ monthlyFixedCost, modelDrafts });
+    const serialized = JSON.stringify({ monthlyFixedCost, cancellationPenaltySharePct, modelDrafts });
     if (serialized === costsSnapshotRef.current) return;
 
     const timer = window.setTimeout(() => {
       void handleSave(true);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [autoSave, handleSave, loading, modelDrafts, monthlyFixedCost]);
+  }, [autoSave, cancellationPenaltySharePct, handleSave, loading, modelDrafts, monthlyFixedCost]);
 
   if (loading) {
     return (
@@ -209,8 +247,9 @@ export function InstructorCostsSection({
         Alterações de custo impactam apenas voos futuros. Voos passados já assinados não serão alterados.
       </div>
 
-      <div className="mb-4 max-w-xs">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <CurrencyInput label="Custo fixo mensal" value={monthlyFixedCost} onChange={setMonthlyFixedCost} />
+        <PercentInput label="Repasse da multa de cancelamento" value={cancellationPenaltySharePct} onChange={setCancellationPenaltySharePct} />
       </div>
 
       {models.length > 0 && (
