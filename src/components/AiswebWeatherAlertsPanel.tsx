@@ -46,7 +46,7 @@ const UNIT_LABELS: Record<AiswebWeatherAlertCondition, string> = {
   wind_total: "kt",
   crosswind: "kt",
   gust: "kt",
-  visibility: "km",
+  visibility: "m",
   ceiling: "ft",
   phenomenon: "código",
 };
@@ -101,14 +101,34 @@ function criterionUnit(condition: AiswebWeatherAlertCondition): string {
   return UNIT_LABELS[condition] || "";
 }
 
+function criterionDisplayValue(condition: AiswebWeatherAlertCondition, value: number | string | null | undefined): string {
+  if (value == null || value === "") return "";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  if (condition === "visibility") {
+    const km = Math.abs(numeric) > 10 ? numeric / 1000 : numeric;
+    return String(Math.round(km * 1000));
+  }
+  return String(value);
+}
+
+function criterionValueFromInput(condition: AiswebWeatherAlertCondition, value: string): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  if (condition === "visibility") return numeric / 1000;
+  return numeric;
+}
+
 function criterionLabel(item: AiswebWeatherAlertCriterion): string {
   const source = item.source.toUpperCase();
   const condition = CONDITION_LABELS[item.condition];
   const unit = criterionUnit(item.condition);
   if (item.condition === "phenomenon") return `${source} · ${condition} contém ${String(item.value || "").toUpperCase()}`;
-  if (item.comparator === "between") return `${source} · ${condition} entre ${item.value} e ${item.valueMax ?? "—"} ${unit}`;
+  const value = criterionDisplayValue(item.condition, item.value) || "—";
+  const valueMax = criterionDisplayValue(item.condition, item.valueMax) || "—";
+  if (item.comparator === "between") return `${source} · ${condition} entre ${value} e ${valueMax} ${unit}`;
   const op = item.comparator === "gt" ? "maior que" : "menor que";
-  return `${source} · ${condition} ${op} ${item.value} ${unit}`;
+  return `${source} · ${condition} ${op} ${value} ${unit}`;
 }
 
 function channelLabel(status: string | null | undefined): string {
@@ -721,10 +741,10 @@ export function AiswebWeatherAlertsPanel({
                               <ValueWithUnit unit={unit}>
                                 <input
                                   className={inputClass}
-                                  value={String(criterion.value ?? "")}
+                                  value={criterionDisplayValue(criterion.condition, criterion.value)}
                                   type="number"
-                                  step={criterion.condition === "visibility" ? "0.1" : "1"}
-                                  onChange={(event) => updateCriterion(criterion.id, { value: Number(event.target.value) })}
+                                  step={criterion.condition === "visibility" ? "100" : "1"}
+                                  onChange={(event) => updateCriterion(criterion.id, { value: criterionValueFromInput(criterion.condition, event.target.value) })}
                                 />
                               </ValueWithUnit>
                             </label>
@@ -733,10 +753,10 @@ export function AiswebWeatherAlertsPanel({
                               <ValueWithUnit unit={unit}>
                                 <input
                                   className={inputClass}
-                                  value={String(criterion.valueMax ?? "")}
+                                  value={criterionDisplayValue(criterion.condition, criterion.valueMax)}
                                   type="number"
-                                  step={criterion.condition === "visibility" ? "0.1" : "1"}
-                                  onChange={(event) => updateCriterion(criterion.id, { valueMax: Number(event.target.value) })}
+                                  step={criterion.condition === "visibility" ? "100" : "1"}
+                                  onChange={(event) => updateCriterion(criterion.id, { valueMax: criterionValueFromInput(criterion.condition, event.target.value) })}
                                 />
                               </ValueWithUnit>
                             </label>
@@ -747,10 +767,10 @@ export function AiswebWeatherAlertsPanel({
                             <ValueWithUnit unit={unit}>
                               <input
                                 className={inputClass}
-                                value={String(criterion.value ?? "")}
+                                value={criterionDisplayValue(criterion.condition, criterion.value)}
                                 type="number"
-                                step={criterion.condition === "visibility" ? "0.1" : "1"}
-                                onChange={(event) => updateCriterion(criterion.id, { value: Number(event.target.value) })}
+                                step={criterion.condition === "visibility" ? "100" : "1"}
+                                onChange={(event) => updateCriterion(criterion.id, { value: criterionValueFromInput(criterion.condition, event.target.value) })}
                               />
                             </ValueWithUnit>
                           </label>

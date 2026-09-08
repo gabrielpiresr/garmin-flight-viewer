@@ -18353,7 +18353,7 @@ function buildWppTomorrowReminderContext(flight, studentProfile, instructorProfi
 }
 
 function resolveWppTemplateParameters(keys, context) {
-  return sanitizeWppTemplateParameterKeys(keys).map((key) => cleanString(context[key]) || "-");
+  return sanitizeWppTemplateParameterKeys(keys).map((key) => sanitizeWppTemplateBodyValue(context[key]));
 }
 
 async function runWppTomorrowFlightReminderScan(options = {}) {
@@ -24963,6 +24963,46 @@ async function withResolvedWppAdminCommandAircraft(command = {}) {
   };
 }
 
+function wppAdminDailyScheduleCompactValue(value, fallback, maxLength = 24) {
+  return (cleanString(value)
+    .replace(/[|•/\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, maxLength) || fallback);
+}
+
+function wppAdminDailyScheduleCompactLine(item) {
+  const schedule = item.schedule || {};
+  const isBlock = wppAdminScheduleIsBlock(schedule);
+  const aircraft = wppAdminDailyScheduleCompactValue(schedule.aircraft, "?", 10);
+  const student = isBlock
+    ? wppAdminDailyScheduleCompactValue(schedule.studentName || schedule.notes, "Bloqueio", 28)
+    : wppAdminDailyScheduleCompactValue(schedule.studentName, "sem aluno", 28);
+  const instructor = isBlock
+    ? "bloqueio"
+    : wppAdminDailyScheduleCompactValue(schedule.instructorName, "sem instr.", 22);
+  const status = isBlock ? "Bloqueio" : wppAdminSagaStatusLabel(schedule.status);
+  return `${item.start.time || "??:??"} ${aircraft}/${student}/${instructor}/${status}`;
+}
+
+function wppAdminDailyScheduleCompactLines(rows, fallback) {
+  const maxLength = 500;
+  const separator = " • ";
+  const chunks = [];
+  const source = rows.slice(0, 30).map(wppAdminDailyScheduleCompactLine);
+  for (const line of source) {
+    const next = chunks.length ? `${chunks.join(separator)}${separator}${line}` : line;
+    if (next.length > maxLength) break;
+    chunks.push(line);
+  }
+  const remaining = source.length - chunks.length;
+  const suffix = remaining > 0 ? `+${remaining} evento(s)` : "";
+  const base = chunks.join(separator) || cleanString(fallback) || "-";
+  if (!suffix) return base;
+  const withSuffix = `${base}${separator}${suffix}`;
+  return withSuffix.length <= maxLength ? withSuffix : base;
+}
+
 async function buildWppAdminDayScheduleSummary(dateInput) {
   const date = normalizeWppAdminDate(dateInput);
   const schedules = (await sagaListSchedulesDirect(null, { monthCount: 6 })).schedules || [];
@@ -24985,6 +25025,7 @@ async function buildWppAdminDayScheduleSummary(dateInput) {
     return `- ${item.start.time} ${s.aircraft || "?"} | ${s.studentName || "sem aluno"} | ${s.instructorName || "sem instrutor"} | ${wppAdminDisplayDuration(item.duration)} | ${wppAdminSagaStatusLabel(s.status)}`;
   });
   const ignoredLine = canceledCount ? `${canceledCount} evento(s) cancelado(s) foram ignorados.` : "";
+  const compactLines = wppAdminDailyScheduleCompactLines(activeRows, ignoredLine);
   const text = activeRows.length
     ? [
         `Escala de ${wppAdminDisplayDate(date)}: ${summary}`,
@@ -25007,7 +25048,7 @@ async function buildWppAdminDayScheduleSummary(dateInput) {
     context: {
       flight_date: wppAdminDisplayDate(date),
       summary,
-      schedule_lines: (lines.length ? lines.join("\n") : ignoredLine || "-").slice(0, 900),
+      schedule_lines: compactLines,
       active_count: String(activeRows.length),
       blocks_count: String(blocks),
       hours_total: formatWppHours(totalMinutes / 60),
@@ -26562,9 +26603,9 @@ async function alreadyDelivered(dedupeKey, channel, recipientUserId) {
     sdk.Query.equal("dedupe_key", [dedupeKey]),
     sdk.Query.equal("channel", [channel]),
     sdk.Query.equal("recipient_user_id", [recipientUserId]),
-    sdk.Query.limit(1),
+    sdk.Query.limit(25),
   ]);
-  return res.total > 0;
+  return res.documents.some((doc) => cleanString(doc.status) !== "failed");
 }
 
 async function logDelivery(eventType, dedupeKey, channel, recipientUserId, status, providerMessageId, error) {
@@ -34685,8 +34726,9 @@ function sanitizeAiswebWeatherAlertCriterion(input) {
     : new Set(["gt", "lt", "between"]).has(cleanString(raw.comparator))
       ? cleanString(raw.comparator)
       : "gt";
-  let value = condition === "phenomenon" ? cleanString(raw.value).toUpperCase().slice(0, 16) : Number(raw.value);
-  if (condition !== "phenomenon" && !Number.isFinite(value)) value = 0;
+  let value = condition === "phenomenon"
+    ? cleanString(raw.value).toUpperCase().slice(0, 16)
+    : normalizeAiswebWeatherCriterionValue(condition, raw.value);
   const valueMaxRaw = Number(raw.valueMax);
   return {
     id: cleanString(raw.id) || crypto.randomUUID(),
@@ -34694,8 +34736,20 @@ function sanitizeAiswebWeatherAlertCriterion(input) {
     condition,
     comparator,
     value,
-    valueMax: comparator === "between" && Number.isFinite(valueMaxRaw) ? valueMaxRaw : null,
+    valueMax: comparator === "between" && Number.isFinite(valueMaxRaw)
+      ? normalizeAiswebWeatherCriterionValue(condition, valueMaxRaw)
+      : null,
   };
+}
+
+function normalizeAiswebWeatherCriterionValue(condition, value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  // METAR/TAF visibility is operationally entered in meters (ex.: 6000),
+  // while parsed values are compared internally in km. Parsed visibility tops
+  // out at 10 km, so larger saved thresholds are legacy meter inputs.
+  if (condition === "visibility" && Math.abs(numeric) > 10) return numeric / 1000;
+  return numeric;
 }
 
 function sanitizeAiswebWeatherAlert(input, current = null) {
@@ -34840,11 +34894,18 @@ function splitAiswebTafSegments(raw) {
 }
 
 function mergeAiswebParsedForTaf(base, changeText) {
-  const cleaned = cleanString(changeText)
-    .replace(/^\s*(BECMG|TEMPO|PROB\d{2}(?:\s+TEMPO)?|FM\d{6})\b/i, "")
-    .replace(/\b\d{4}\/\d{4}\b/, "")
-    .trim();
-  const override = aiswebService.parseMetar(`XXXX 010000Z ${cleaned}`.replace(/\s+/g, " ").trim());
+  const cleaned = cleanAiswebTafSegmentText(changeText);
+  const hasWind = /\b(?:VRB|\d{3})\d{2,3}(?:G\d{2,3})?KT\b/i.test(cleaned);
+  const override = aiswebService.parseMetar(
+    `XXXX 010000Z ${hasWind ? "" : "00000KT "}${cleaned}`.replace(/\s+/g, " ").trim(),
+  );
+  if (override && !hasWind) {
+    override.windDirDeg = null;
+    override.windSpeedKt = null;
+    override.windGustKt = null;
+    override.windVarFromDeg = null;
+    override.windVarToDeg = null;
+  }
   if (!base && !override) return null;
   if (!base) return override;
   if (!override) return base;
@@ -34877,6 +34938,17 @@ function mergeAiswebParsedForTaf(base, changeText) {
     weather: override.weather?.length ? override.weather : base.weather,
     cavok: false,
   };
+}
+
+function cleanAiswebTafSegmentText(changeText) {
+  return cleanString(changeText)
+    .replace(/^\s*(BECMG|TEMPO|PROB\d{2}(?:\s+TEMPO)?|FM\d{6})\b/i, "")
+    .replace(/^\s*TAF(?:\s+(?:AMD|COR))?\s+/i, "")
+    .replace(/^\s*[A-Z0-9]{4}\s+/i, "")
+    .replace(/^\s*\d{6}Z\b/i, "")
+    .replace(/\b\d{4}\/\d{4}\b/, "")
+    .replace(/^\s*\d{4}\/\d{4}\b/i, "")
+    .trim();
 }
 
 function formatAiswebWeatherMetric(condition, value) {
