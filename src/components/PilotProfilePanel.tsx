@@ -27,6 +27,8 @@ type PilotProfilePanelProps = {
   action?: ProfileAction;
   message?: string;
   childrenBeforeAnac?: ReactNode;
+  primaryFieldEditors?: Partial<Record<"phone" | "weightKg" | "heightCm", ReactNode>>;
+  primaryFieldsFooter?: ReactNode;
   onProfileUpdated?: (profile: PilotProfile) => void;
 };
 
@@ -38,11 +40,11 @@ const DOCUMENT_TYPES: Array<{ type: ProfileDocumentType; label: string }> = [
   { type: "enrollmentForm", label: "Ficha de Matricula" },
 ];
 
-function field(label: string, value: string | number | null | undefined) {
+function field(label: string, value: string | number | null | undefined, editor?: ReactNode) {
   return (
     <div className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
       <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 break-words text-sm text-slate-200 [overflow-wrap:anywhere]">{value || "—"}</p>
+      {editor ?? <p className="mt-1 break-words text-sm text-slate-200 [overflow-wrap:anywhere]">{value || "—"}</p>}
     </div>
   );
 }
@@ -89,6 +91,12 @@ function isEmptyExamStatus(value: string | null | undefined) {
   return String(value || "").endsWith(":empty") || value === "empty";
 }
 
+function displaySexo(value: string) {
+  if (value === "M") return "Masculino";
+  if (value === "F") return "Feminino";
+  return value;
+}
+
 export function PilotProfilePanel({
   profile,
   photoUrl,
@@ -99,6 +107,8 @@ export function PilotProfilePanel({
   action,
   message,
   childrenBeforeAnac,
+  primaryFieldEditors,
+  primaryFieldsFooter,
   onProfileUpdated,
 }: PilotProfilePanelProps) {
   const { showToast } = useToast();
@@ -173,17 +183,68 @@ export function PilotProfilePanel({
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {field("Nome completo", profile.fullName)}
+          {field("Nickname", profile.nickname)}
           {field("E-mail", profile.email)}
           {field("CPF", profile.cpf)}
-          {field("Telefone", profile.phone)}
+          {field("Telefone", profile.phone, primaryFieldEditors?.phone)}
           {field("Nascimento", profile.birthDate)}
-          {field("Peso (kg)", profile.weightKg)}
-          {field("Altura (cm)", profile.heightCm)}
+          {field("Peso (kg)", profile.weightKg, primaryFieldEditors?.weightKg)}
+          {field("Altura (cm)", profile.heightCm, primaryFieldEditors?.heightCm)}
           {field("Código ANAC", profile.anacCode)}
         </div>
+
+        {primaryFieldsFooter ? <div className="flex flex-wrap justify-end gap-2">{primaryFieldsFooter}</div> : null}
       </section>
 
       {childrenBeforeAnac}
+
+      <section className="space-y-4 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Ficha de matrícula</p>
+          <h3 className="text-sm font-semibold text-slate-200">Dados cadastrais completos</h3>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Documento e endereço</p>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {field("RG", profile.rg)}
+              {field("Órgão expedidor", profile.rgOrgaoExpedidor)}
+              {field("Data de emissão do RG", profile.rgDataEmissao)}
+              {field("Nacionalidade", profile.nacionalidade)}
+              {field("Estado civil", profile.estadoCivil)}
+              {field("Endereço", profile.endereco)}
+              {field("CEP", profile.cep)}
+              {field("Cidade", profile.cidade)}
+              {field("UF", profile.uf)}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Dados pessoais</p>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {field("Sexo", displaySexo(profile.sexo))}
+              {field("Naturalidade", profile.naturalidade)}
+              {field("Filiação - pai", profile.filiacaoPai)}
+              {field("Filiação - mãe", profile.filiacaoMae)}
+              {field("Escolaridade", profile.escolaridade)}
+              {field("Série/período", profile.escolaridadePeriodo)}
+              {field("Curso", profile.escolaridadeCurso)}
+              {field("Alergias a medicamentos", profile.alergiasMedicamentos)}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Emergência</p>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {field("Nome", profile.emergenciaNome)}
+              {field("Parentesco", profile.emergenciaParentesco)}
+              {field("Endereço", profile.emergenciaEndereco)}
+              {field("Telefone(s)", profile.emergenciaTelefone)}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section className="rounded-2xl border border-slate-700/60 bg-slate-900/40 p-4 md:p-5">
         <div className="mb-4">

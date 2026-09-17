@@ -218,6 +218,7 @@ type ProfileDocumentDoc = {
 
 export type EnsureProfileUpdates = Partial<{
   full_name: string;
+  nickname: string;
   cpf: string;
   phone: string;
   birth_date: string;

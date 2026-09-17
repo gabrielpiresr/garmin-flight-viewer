@@ -1153,7 +1153,12 @@ export function PlanejamentoTab({
       const dest = waypoints[waypoints.length - 1];
       if (!origin || !dest) return;
       const input = keepIntermediates ? waypoints : [origin, dest];
-      const result = snapRouteToVisualCorridors(input, list);
+      const tmaKnown = hasTmaAirspaceData(airspaces, airspaceVolumes);
+      const result = snapRouteToVisualCorridors(input, list, {
+        tmaAirspaceKnown: tmaKnown,
+        originReaTmaId: tmaKnown ? originReaTma : undefined,
+        destReaTmaId: tmaKnown ? destReaTma : undefined,
+      });
       if (!result.ok) {
         showToast({ variant: "warning", title: "Corredores visuais", message: result.error });
         return;

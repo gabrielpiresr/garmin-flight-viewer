@@ -31,6 +31,7 @@ import {
 import { PortalShellHeader } from "./PortalShellHeader";
 import { UserEmailWithRoleSwitcher } from "./RoleSwitcher";
 import { SidebarBrand } from "./SidebarBrand";
+import { ProfileCompletionGate } from "./ProfileCompletionGate";
 import { StudentTabSkeleton } from "./student/StudentExperience";
 import { FlightEvaluationModal } from "./FlightEvaluationModal";
 import { FlightReviewClubGate } from "./FlightReviewClubGate";
@@ -1329,6 +1330,7 @@ export function MainLayout() {
         }}
       />
     ) : null}
+    <ProfileCompletionGate userId={user?.id} enabled={user?.role === "aluno"} onSignOut={signOut} />
     </FlightReviewClubProvider>
   );
 }

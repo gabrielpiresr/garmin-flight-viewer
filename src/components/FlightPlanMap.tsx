@@ -3462,6 +3462,24 @@ export function FlightPlanMap({
             );
           })}
         </MapContainer>
+
+        {isWindy && frontUrl ? (
+          <div className="pointer-events-none absolute inset-0 z-[520] overflow-hidden">
+            <iframe
+              key={`timeline:${frontUrl}`}
+              title="Controles de tempo do Windy"
+              src={frontUrl}
+              className="pointer-events-auto absolute inset-0 border-0"
+              style={{
+                width: "100%",
+                height: "100%",
+                clipPath: "inset(calc(100% - 112px) 0 0 0)",
+              }}
+              referrerPolicy="no-referrer-when-downgrade"
+              allow="fullscreen; geolocation"
+            />
+          </div>
+        ) : null}
       </div>
 
       {mapOverlay && mapOverlayPlacement === "below" ? (
@@ -3472,7 +3490,7 @@ export function FlightPlanMap({
 
       {isWindy ? (
         <p className="border-t border-slate-800 bg-slate-950/50 px-2.5 py-1.5 text-[10px] text-slate-500">
-          Fundo Windy acompanha o pan/zoom e só recarrega o embed ao soltar.{" "}
+          Arraste o mapa normalmente; a faixa inferior do Windy permite consultar a previsão na timeline.{" "}
           <a
             href="https://www.windy.com/"
             target="_blank"

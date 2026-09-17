@@ -499,6 +499,27 @@ export type AdminUserProfileUpdateInput = {
   sagaUserId?: string;
   weightKg?: number | null;
   heightCm?: number | null;
+  rg?: string;
+  rgOrgaoExpedidor?: string;
+  rgDataEmissao?: string;
+  endereco?: string;
+  cep?: string;
+  cidade?: string;
+  uf?: string;
+  nacionalidade?: string;
+  estadoCivil?: string;
+  sexo?: string;
+  naturalidade?: string;
+  filiacaoPai?: string;
+  filiacaoMae?: string;
+  escolaridade?: string;
+  escolaridadePeriodo?: string;
+  escolaridadeCurso?: string;
+  alergiasMedicamentos?: string;
+  emergenciaNome?: string;
+  emergenciaParentesco?: string;
+  emergenciaEndereco?: string;
+  emergenciaTelefone?: string;
   isActive?: boolean;
 };
 

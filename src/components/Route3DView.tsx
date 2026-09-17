@@ -307,15 +307,19 @@ function StableRouteSegment({
   to,
   color,
   radius,
+  lift,
 }: {
   from: THREE.Vector3 | [number, number, number];
   to: THREE.Vector3 | [number, number, number];
   color: string;
   radius: number;
+  lift: number;
 }) {
   const segment = useMemo(() => {
     const start = routePointVec(from);
     const end = routePointVec(to);
+    start.y += lift;
+    end.y += lift;
     const direction = end.clone().sub(start);
     const length = direction.length();
     if (!Number.isFinite(length) || length < 1) return null;
@@ -327,13 +331,19 @@ function StableRouteSegment({
         direction.normalize(),
       ),
     };
-  }, [from, to]);
+  }, [from, lift, to]);
 
   if (!segment) return null;
   return (
-    <mesh position={segment.midpoint} quaternion={segment.quaternion} frustumCulled={false} raycast={() => {}}>
+    <mesh position={segment.midpoint} quaternion={segment.quaternion} frustumCulled={false} raycast={() => {}} renderOrder={60}>
       <cylinderGeometry args={[radius, radius, segment.length, 8]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.28} roughness={0.42} />
+      <meshStandardMaterial
+        color={color}
+        depthTest={false}
+        emissive={color}
+        emissiveIntensity={0.38}
+        roughness={0.42}
+      />
     </mesh>
   );
 }
@@ -348,6 +358,7 @@ function StableRoutePath({
   spanM: number;
 }) {
   const radius = Math.min(52, Math.max(12, spanM * 0.00007));
+  const lift = Math.min(420, Math.max(radius * 5, spanM * 0.00045));
   return (
     <group>
       {path.slice(0, -1).map((point, index) => (
@@ -357,6 +368,7 @@ function StableRoutePath({
           to={path[index + 1]!}
           color={colors[index] || colors[index + 1] || "#22d3ee"}
           radius={radius}
+          lift={lift}
         />
       ))}
     </group>

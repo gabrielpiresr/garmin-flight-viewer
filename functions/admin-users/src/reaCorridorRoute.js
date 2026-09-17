@@ -336,9 +336,11 @@ function isObrigFeature(tipo) {
   return !/^recom/i.test(String(tipo || "").trim());
 }
 
-function fallbackName(name, lat, lng) {
+function fallbackName(name, lat, lng, corridorName) {
   const trimmed = String(name || "").trim();
   if (trimmed) return trimmed;
+  const corridor = corridorDisplayName(corridorName);
+  if (isPortaoName(corridor)) return corridor;
   return `REA ${lat.toFixed(3)}/${lng.toFixed(3)}`;
 }
 
@@ -458,8 +460,8 @@ function buildGraph(features) {
     const a = endpointA(props);
     const b = endpointB(props);
     if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
-    const aName = fallbackName(a.name, a.lat, a.lon);
-    const bName = fallbackName(b.name, b.lat, b.lon);
+    const aName = fallbackName(a.name, a.lat, a.lon, props.nome);
+    const bName = fallbackName(b.name, b.lat, b.lon, props.nome);
     const carta = String(props.carta_nome || "").trim().toUpperCase();
     const from = addNode(aName, a.lat, a.lon, carta);
     const to = addNode(bName, b.lat, b.lon, carta);
@@ -568,6 +570,19 @@ function nearestDistToSegs(point, segs) {
 
 function anchoredToLocalTma(point, segs) {
   return nearestDistToSegs(point, segs) <= LOCAL_TMA_NEAR_NM * NM_IN_M;
+}
+
+function componentTmaId(segs) {
+  const carta = String(segs?.[0]?.carta || "").trim().toUpperCase();
+  const match = carta.match(/^([A-Z]{2})/);
+  return match?.[1] ?? null;
+}
+
+function anchoredToEndpointTma(point, segs, endpoint, options) {
+  if (!options?.tmaAirspaceKnown) return anchoredToLocalTma(point, segs);
+  const expected = endpoint === "origin" ? options.originReaTmaId : options.destReaTmaId;
+  if (!expected) return false;
+  return componentTmaId(segs) === String(expected).toUpperCase();
 }
 
 function pathMetersFromWalk(nodes, walk) {
@@ -782,14 +797,22 @@ function bestRideForComponent(pos, dest, componentSegs, adj, nodes, options) {
   let best = null;
   const componentId = componentSegs[0]?.componentId || "";
   const skipProgress = Boolean(options && options.skipProgress);
+  const useTotalCost =
+    far &&
+    anchoredToEndpointTma(dest, componentSegs, "dest", options?.snap) &&
+    !anchoredToEndpointTma(pos, componentSegs, "origin", options?.snap);
   for (const candidate of candidates) {
     const ride = rideFromStart(candidate.adj, candidate.nodes, candidate.startId, dest, candidate.distM, componentId);
     if (!ride) continue;
     if (!skipProgress && destNow - ride.exitDistToDestM < PROGRESS_M) continue;
+    const primaryCost = useTotalCost ? rideTotalCost(ride) : rideScore(ride);
+    const bestPrimaryCost = best ? (useTotalCost ? rideTotalCost(best) : rideScore(best)) : Infinity;
+    const secondaryCost = useTotalCost ? rideScore(ride) : rideTotalCost(ride);
+    const bestSecondaryCost = best ? (useTotalCost ? rideScore(best) : rideTotalCost(best)) : Infinity;
     if (
       !best ||
-      rideScore(ride) < rideScore(best) - 50 ||
-      (Math.abs(rideScore(ride) - rideScore(best)) <= 50 && rideTotalCost(ride) < rideTotalCost(best))
+      primaryCost < bestPrimaryCost - 50 ||
+      (Math.abs(primaryCost - bestPrimaryCost) <= 50 && secondaryCost < bestSecondaryCost)
     ) {
       best = ride;
     }
@@ -825,7 +848,7 @@ function appendRidePoints(next, dest, points, stats, lastAlt) {
   }
 }
 
-function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent) {
+function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent, options) {
   const used = new Set();
   const next = [{ ...origin }];
   const stats = { oneWayLegs: 0, corridorNames: [] };
@@ -841,16 +864,21 @@ function snapCorridorPair(origin, dest, nodes, adj, segs, byComponent) {
     const mandatory = [];
     for (const [componentId, componentSegs] of byComponent) {
       if (used.has(componentId)) continue;
-      const destTma = anchoredToLocalTma(dest, componentSegs);
-      const originTma = anchoredToLocalTma(pos, componentSegs);
+      const destTma = anchoredToEndpointTma(dest, componentSegs, "dest", options);
+      const originTma = anchoredToEndpointTma(pos, componentSegs, "origin", options);
       const localTma = destTma || originTma;
       if (!localTma) continue;
       if (rides > 0 && originTma && !destTma) continue;
       const ride = bestRideForComponent(pos, dest, componentSegs, adj, nodes, {
         skipProgress: destTma && rides > 0,
+        snap: options,
       });
       if (!ride) continue;
-      if (rides > 0 && !localTma && rideTotalCost(ride) >= destNow - PROGRESS_M) continue;
+      if (
+        rides > 0 &&
+        (!localTma || (originTma && destTma)) &&
+        rideTotalCost(ride) >= destNow - PROGRESS_M
+      ) continue;
       ride.originTma = originTma;
       ride.destTma = destTma;
       ridesFound.push(ride);
@@ -930,7 +958,7 @@ function relabelSnappedRoute(waypoints) {
   });
 }
 
-function snapRouteToVisualCorridors(waypoints, features) {
+function snapRouteToVisualCorridors(waypoints, features, options) {
   if (waypoints.length < 2) {
     return { ok: false, error: "Coloque origem e destino antes de ajustar nos corredores." };
   }
@@ -958,7 +986,7 @@ function snapRouteToVisualCorridors(waypoints, features) {
   for (let i = 0; i < waypoints.length - 1; i++) {
     const from = waypoints[i];
     const to = waypoints[i + 1];
-    const piece = snapCorridorPair(from, to, nodes, adj, segs, byComponent);
+    const piece = snapCorridorPair(from, to, nodes, adj, segs, byComponent, options);
     if (piece.ok) {
       anyRide = true;
       stats.oneWayLegs += piece.oneWayLegs;

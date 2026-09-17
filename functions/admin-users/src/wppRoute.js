@@ -1053,7 +1053,24 @@ async function handleWppRouteCommand(deps, command) {
     typeof deps.listAerodromes === "function" ? deps.listAerodromes().catch(() => []) : Promise.resolve([]),
   ]);
   let waypoints = airportWps;
-  const snap = rea.snapRouteToVisualCorridors(waypoints, features);
+  let snapAirspaces = [];
+  try {
+    snapAirspaces = await deps.aisweb.queryAirspaceAlongRoute(airportWps);
+  } catch (err) {
+    console.warn(`[wppRoute] pre-snap airspace failed ${routeLabel} ${String(err?.message || err).slice(0, 180)}`);
+  }
+  const dctLegs = rea.buildFlightPlanLegs(airportWps, { cruiseSpeedKt: CRUISE_KT, fuelBurnPerHour: BURN_LPH });
+  const dctTotalNm = dctLegs[dctLegs.length - 1]?.cumulativeDistanceNm;
+  const snapTmaKnown = rea.hasTmaAirspaceData(snapAirspaces);
+  const snapOriginTma = snapTmaKnown ? rea.originReaTmaId(airportWps[0], snapAirspaces) : undefined;
+  const snapDestTma = snapTmaKnown
+    ? rea.destReaTmaId(airportWps[airportWps.length - 1], snapAirspaces, dctTotalNm)
+    : undefined;
+  const snap = rea.snapRouteToVisualCorridors(waypoints, features, {
+    tmaAirspaceKnown: snapTmaKnown,
+    originReaTmaId: snapOriginTma,
+    destReaTmaId: snapDestTma,
+  });
   if (snap.ok) waypoints = snap.waypoints;
   let corridors = rea.matchLegCorridors(waypoints, features);
   waypoints = rea.applyCorridorAltitudes(waypoints, corridors);

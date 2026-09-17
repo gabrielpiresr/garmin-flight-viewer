@@ -10,6 +10,9 @@ import { useToast } from "./ui/ToastProvider";
 
 type EditForm = { phone: string; weight_kg: string; height_cm: string };
 
+const inlineInputClass =
+  "mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-500";
+
 export function AlunoProfileDashboard() {
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -35,6 +38,11 @@ export function AlunoProfileDashboard() {
 
   useEffect(() => {
     void loadProfile();
+  }, [loadProfile]);
+
+  useEffect(() => {
+    window.addEventListener("profile-completion-updated", loadProfile);
+    return () => window.removeEventListener("profile-completion-updated", loadProfile);
   }, [loadProfile]);
 
   const photoUrl = useMemo(() => {
@@ -135,64 +143,6 @@ export function AlunoProfileDashboard() {
   return (
     <div className="space-y-4">
       <ProfileAppControls />
-      {editing && (
-        <div className="rounded-xl border border-sky-700/40 bg-sky-950/30 p-4">
-          <p className="mb-3 text-sm font-semibold text-sky-300">Editar dados pessoais</p>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className="block text-xs text-slate-400">
-              Telefone
-              <input
-                type="tel"
-                value={editForm.phone}
-                onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))}
-                placeholder="(11) 99999-9999"
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
-              />
-            </label>
-            <label className="block text-xs text-slate-400">
-              Peso (kg)
-              <input
-                type="number"
-                min={30}
-                max={200}
-                step={0.1}
-                value={editForm.weight_kg}
-                onChange={(e) => setEditForm((f) => ({ ...f, weight_kg: e.target.value }))}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
-              />
-            </label>
-            <label className="block text-xs text-slate-400">
-              Altura (cm)
-              <input
-                type="number"
-                min={100}
-                max={250}
-                step={1}
-                value={editForm.height_cm}
-                onChange={(e) => setEditForm((f) => ({ ...f, height_cm: e.target.value }))}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500"
-              />
-            </label>
-          </div>
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => void handleSaveEdit()}
-              disabled={saving}
-              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-            >
-              {saving ? "Salvando..." : "Salvar"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditing(false)}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800"
-            >
-              Cancelar
-            </button>
-          </div>
-        </div>
-      )}
       <PilotProfilePanel
         profile={profile}
         photoUrl={photoUrl}
@@ -201,9 +151,63 @@ export function AlunoProfileDashboard() {
         title="Dados do aluno"
         description="Dados cadastrais e informações importadas da ANAC."
         onProfileUpdated={setProfile}
-        childrenBeforeAnac={
-          !editing ? (
-            <div className="flex justify-end">
+        primaryFieldEditors={
+          editing
+            ? {
+                phone: (
+                  <input
+                    type="tel"
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))}
+                    placeholder="(11) 99999-9999"
+                    className={inlineInputClass}
+                  />
+                ),
+                weightKg: (
+                  <input
+                    type="number"
+                    min={30}
+                    max={200}
+                    step={0.1}
+                    value={editForm.weight_kg}
+                    onChange={(e) => setEditForm((f) => ({ ...f, weight_kg: e.target.value }))}
+                    className={inlineInputClass}
+                  />
+                ),
+                heightCm: (
+                  <input
+                    type="number"
+                    min={100}
+                    max={250}
+                    step={1}
+                    value={editForm.height_cm}
+                    onChange={(e) => setEditForm((f) => ({ ...f, height_cm: e.target.value }))}
+                    className={inlineInputClass}
+                  />
+                ),
+              }
+            : undefined
+        }
+        primaryFieldsFooter={
+          editing ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void handleSaveEdit()}
+                disabled={saving}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {saving ? "Salvando..." : "Salvar"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+            </>
+          ) : (
               <button
                 type="button"
                 onClick={openEdit}
@@ -211,8 +215,7 @@ export function AlunoProfileDashboard() {
               >
                 Editar dados pessoais
               </button>
-            </div>
-          ) : undefined
+          )
         }
         action={{
           label: "Atualizar da ANAC",

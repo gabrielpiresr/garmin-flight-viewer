@@ -954,11 +954,110 @@ function sagaUserDetailToJson(detail) {
   return result;
 }
 
+function pickSagaHtmlField(html, name) {
+  const safeName = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const inputMatch = html.match(new RegExp(`<input[^>]*name=["']${safeName}["'][^>]*value=["']([^"']*)["']`, "i"));
+  if (inputMatch?.[1]) return sagaTextFromHtml(inputMatch[1]);
+  const textAreaMatch = html.match(new RegExp(`<textarea[^>]*name=["']${safeName}["'][^>]*>([\\s\\S]*?)<\\/textarea>`, "i"));
+  if (textAreaMatch?.[1]) return sagaTextFromHtml(textAreaMatch[1]);
+  const selectMatch = html.match(new RegExp(`<select[^>]*name=["']${safeName}["'][^>]*>([\\s\\S]*?)<\\/select>`, "i"));
+  if (selectMatch?.[1]) {
+    const selectedOption = selectMatch[1].match(/<option\b([^>]*)\bselected\b([^>]*)>([\s\S]*?)<\/option>/i);
+    if (selectedOption) {
+      const attrs = `${selectedOption[1] || ""} ${selectedOption[2] || ""}`;
+      const valueMatch = attrs.match(/\bvalue=["']([^"']*)["']/i);
+      return sagaTextFromHtml(valueMatch?.[1] || selectedOption[3] || "");
+    }
+  }
+  return "";
+}
+
+function parseSagaUserDetailHtml(html, sagaUserId = "") {
+  return sagaUserDetailToJson({
+    id: cleanString(sagaUserId),
+    phone: pickSagaHtmlField(html, "phone"),
+    nationality: pickSagaHtmlField(html, "nationality"),
+    birthplace: pickSagaHtmlField(html, "birthplace"),
+    father_name: pickSagaHtmlField(html, "father_name"),
+    mother_name: pickSagaHtmlField(html, "mother_name"),
+    civil_state: pickSagaHtmlField(html, "civil_state"),
+    address_street: pickSagaHtmlField(html, "address_street"),
+    address_city: pickSagaHtmlField(html, "address_city"),
+    address_state: pickSagaHtmlField(html, "address_state"),
+    address_zipcode: pickSagaHtmlField(html, "address_zipcode"),
+    rg: {
+      number: pickSagaHtmlField(html, "rg[number]"),
+      issuing_body: pickSagaHtmlField(html, "rg[issuing_body]"),
+      issuing_date: pickSagaHtmlField(html, "rg[issuing_date]"),
+    },
+    study: {
+      level: pickSagaHtmlField(html, "study[level]"),
+      time: pickSagaHtmlField(html, "study[time]"),
+      course: pickSagaHtmlField(html, "study[course]"),
+    },
+    emergency_contact: {
+      allergy: pickSagaHtmlField(html, "emergency_contact[allergy]"),
+      name: pickSagaHtmlField(html, "emergency_contact[name]"),
+      relation: pickSagaHtmlField(html, "emergency_contact[relation]"),
+      phone: pickSagaHtmlField(html, "emergency_contact[phone]"),
+      address: pickSagaHtmlField(html, "emergency_contact[address]"),
+    },
+  });
+}
+
+function sagaDetailProfileValueCount(detail) {
+  if (!detail || typeof detail !== "object") return 0;
+  const rg = detail.rg && typeof detail.rg === "object" ? detail.rg : {};
+  const study = detail.study && typeof detail.study === "object" ? detail.study : {};
+  const emergency = detail.emergency_contact && typeof detail.emergency_contact === "object" ? detail.emergency_contact : {};
+  return [
+    detail.phone,
+    rg.number || detail.rg_number,
+    rg.issuing_body || detail.rg_issuing_body,
+    rg.issuing_date || detail.rg_issuing_date,
+    detail.nationality,
+    detail.birthplace,
+    detail.father_name,
+    detail.mother_name,
+    detail.civil_state,
+    detail.address_street,
+    detail.address_city,
+    detail.address_state,
+    detail.address_zipcode,
+    study.level || detail.study_level,
+    study.time || detail.study_time,
+    study.course || detail.study_course,
+    emergency.allergy,
+    emergency.name,
+    emergency.relation,
+    emergency.phone,
+    emergency.address,
+  ].filter((value) => cleanString(value)).length;
+}
+
+function mergeSagaUserDetails(primary, fallback) {
+  if (!primary || typeof primary !== "object") return fallback || {};
+  if (!fallback || typeof fallback !== "object") return primary;
+  const merged = { ...primary };
+  for (const [key, value] of Object.entries(fallback)) {
+    const current = merged[key];
+    if (Array.isArray(value)) {
+      if (!Array.isArray(current) || current.length === 0) merged[key] = value;
+    } else if (value && typeof value === "object") {
+      merged[key] = mergeSagaUserDetails(current && typeof current === "object" ? current : {}, value);
+    } else if (!cleanString(current) && cleanString(value)) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 async function fetchSagaUserDetail(cookieJar, sagaUserId, options = {}) {
   const safeId = cleanString(sagaUserId);
   if (!safeId) return null;
   const bearerToken = cleanString(options.apiV2Token);
   let result = null;
+  let apiDetail = null;
   if (bearerToken) {
     const bearerResponse = await fetch(`${SAGA_BASE_URL}/api/v2/users/${encodeURIComponent(safeId)}`, {
       method: "GET",
@@ -1019,10 +1118,11 @@ async function fetchSagaUserDetail(cookieJar, sagaUserId, options = {}) {
   try {
     const parsed = JSON.parse(result.html);
     const detail = sagaUserDetailToJson(parsed?.user || parsed?.data || parsed);
-    if (detail && Object.keys(detail).length > 0) return detail;
+    if (detail && Object.keys(detail).length > 0) apiDetail = detail;
   } catch {
     // fallback below
   }
+  if (apiDetail && sagaDetailProfileValueCount(apiDetail) > 0) return apiDetail;
   const htmlFallback = await sagaFetchHtmlFollow(
     `/users/${encodeURIComponent(safeId)}/edit`,
     {
@@ -1033,30 +1133,11 @@ async function fetchSagaUserDetail(cookieJar, sagaUserId, options = {}) {
     },
     cookieJar,
   ).catch(() => null);
-  if (!htmlFallback || isSagaLoginResponse(htmlFallback)) return null;
+  if (!htmlFallback || isSagaLoginResponse(htmlFallback)) return apiDetail;
   const html = String(htmlFallback.html || "");
-  const pick = (name) => {
-    const safeName = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const inputMatch = html.match(new RegExp(`<input[^>]*name=["']${safeName}["'][^>]*value=["']([^"']*)["']`, "i"));
-    if (inputMatch?.[1]) return sagaTextFromHtml(inputMatch[1]);
-    const textAreaMatch = html.match(new RegExp(`<textarea[^>]*name=["']${safeName}["'][^>]*>([\\s\\S]*?)<\\/textarea>`, "i"));
-    if (textAreaMatch?.[1]) return sagaTextFromHtml(textAreaMatch[1]);
-    return "";
-  };
-  const fallback = {
-    id: safeId,
-    phone: pick("phone"),
-    nationality: pick("nationality"),
-    birthplace: pick("birthplace"),
-    father_name: pick("father_name"),
-    mother_name: pick("mother_name"),
-    civil_state: pick("civil_state"),
-    address_street: pick("address_street"),
-    address_city: pick("address_city"),
-    address_state: pick("address_state"),
-    address_zipcode: pick("address_zipcode"),
-  };
-  return Object.values(fallback).some((value) => cleanString(value)) ? fallback : null;
+  const fallback = parseSagaUserDetailHtml(html, safeId);
+  const merged = mergeSagaUserDetails(apiDetail || {}, fallback);
+  return sagaDetailProfileValueCount(merged) > 0 || Object.keys(merged).length > 0 ? merged : null;
 }
 
 function sagaHtmlTables(html) {
@@ -9971,6 +10052,7 @@ function buildSagaStudentForm(profile, lead, token, sagaAnac, { useStudentEmail 
   const form = new URLSearchParams();
   const anacDigits = sagaOnlyDigits(data.anacCode || lead?.anac_code);
   const fullName = cleanString(data.fullName);
+  const set = (name, value) => form.set(name, cleanString(value));
   form.set("_token", token);
   form.set("anac", anacDigits || cleanString(data.anacCode || lead?.anac_code));
   form.set("birthdate", toSagaBirthdate(data.birthDate || lead?.birth_date));
@@ -9983,6 +10065,27 @@ function buildSagaStudentForm(profile, lead, token, sagaAnac, { useStudentEmail 
   form.set("is_coordinator", "0");
   form.set("gender", mapSagaGender(profile?.sexo));
   form.set("email", useStudentEmail ? (cleanString(data.email) || cleanString(lead?.email) || "").toLowerCase() : (anacDigits ? `aluno+${anacDigits}@epeac.com.br` : ""));
+  set("phone", data.phone);
+  set("rg[number]", data.rg);
+  set("rg[issuing_body]", data.rgOrgaoExpedidor);
+  set("rg[issuing_date]", data.rgIssueDate);
+  set("birthplace", data.birthplace);
+  set("nationality", data.nacionalidade);
+  set("father_name", data.fatherName);
+  set("mother_name", data.motherName);
+  set("civil_state", data.estadoCivil);
+  set("address_zipcode", data.cep);
+  set("address_street", data.endereco);
+  set("address_city", data.city);
+  set("address_state", data.state);
+  set("study[level]", data.educationLevel);
+  set("study[time]", data.educationPeriod);
+  set("study[course]", data.educationCourse);
+  set("emergency_contact[allergy]", data.allergies);
+  set("emergency_contact[name]", data.emergencyName);
+  set("emergency_contact[relation]", data.emergencyRelation);
+  set("emergency_contact[phone]", data.emergencyPhone);
+  set("emergency_contact[address]", data.emergencyAddress);
   appendSagaAnacFieldsToForm(form, sagaAnac);
   return form;
 }
@@ -13704,6 +13807,12 @@ function profileStringEqual(next, current) {
   return cleanString(next) === cleanString(current);
 }
 
+function assignStringProfileUpdate(updates, profile, payload, payloadKey, dbKey, maxLength = 255) {
+  if (payload[payloadKey] === undefined) return;
+  const next = cleanString(payload[payloadKey]).slice(0, maxLength) || null;
+  if (!profileStringEqual(next, profile[dbKey])) updates[dbKey] = next;
+}
+
 async function updateAdminUserProfile(actorUserId, targetUserId, payload = {}) {
   await requireAdmin(actorUserId);
   const safeUserId = cleanString(targetUserId);
@@ -13775,6 +13884,29 @@ async function updateAdminUserProfile(actorUserId, targetUserId, payload = {}) {
     const currentHeight = typeof profile.height_cm === "number" ? profile.height_cm : null;
     if (nextHeight !== currentHeight) updates.height_cm = nextHeight;
   }
+
+  assignStringProfileUpdate(updates, profile, payload, "rg", "rg", 64);
+  assignStringProfileUpdate(updates, profile, payload, "rgOrgaoExpedidor", "rg_orgao_expedidor", 64);
+  assignStringProfileUpdate(updates, profile, payload, "rgDataEmissao", "rg_data_emissao", 16);
+  assignStringProfileUpdate(updates, profile, payload, "endereco", "endereco", 255);
+  assignStringProfileUpdate(updates, profile, payload, "cep", "cep", 16);
+  assignStringProfileUpdate(updates, profile, payload, "cidade", "cidade", 128);
+  assignStringProfileUpdate(updates, profile, payload, "uf", "uf", 2);
+  assignStringProfileUpdate(updates, profile, payload, "nacionalidade", "nacionalidade", 128);
+  assignStringProfileUpdate(updates, profile, payload, "estadoCivil", "estado_civil", 64);
+  assignStringProfileUpdate(updates, profile, payload, "sexo", "sexo", 16);
+  assignStringProfileUpdate(updates, profile, payload, "naturalidade", "naturalidade", 128);
+  assignStringProfileUpdate(updates, profile, payload, "filiacaoPai", "filiacao_pai", 255);
+  assignStringProfileUpdate(updates, profile, payload, "filiacaoMae", "filiacao_mae", 255);
+  assignStringProfileUpdate(updates, profile, payload, "escolaridade", "escolaridade", 128);
+  assignStringProfileUpdate(updates, profile, payload, "escolaridadePeriodo", "escolaridade_periodo", 128);
+  assignStringProfileUpdate(updates, profile, payload, "escolaridadeCurso", "escolaridade_curso", 128);
+  assignStringProfileUpdate(updates, profile, payload, "alergiasMedicamentos", "alergias_medicamentos", 255);
+  assignStringProfileUpdate(updates, profile, payload, "emergenciaNome", "emergencia_nome", 255);
+  assignStringProfileUpdate(updates, profile, payload, "emergenciaParentesco", "emergencia_parentesco", 255);
+  assignStringProfileUpdate(updates, profile, payload, "emergenciaEndereco", "emergencia_endereco", 255);
+  assignStringProfileUpdate(updates, profile, payload, "emergenciaTelefone", "emergencia_telefone", 32);
+
   if (payload.isActive !== undefined) {
     const nextActive = payload.isActive !== false;
     if (nextActive !== (profile.is_active !== false)) updates.is_active = nextActive;
