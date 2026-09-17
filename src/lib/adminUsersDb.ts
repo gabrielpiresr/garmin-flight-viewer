@@ -3,6 +3,7 @@ import type { SagaAnacPerson } from "./sagaAnacSync";
 import type { UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
+import type { Contract } from "../types/contracts";
 import type { AdminDashboardData, AdminDashboardParams } from "../types/adminDashboard";
 import type { AdminFlightReportPage, AdminFlightReportParams, AdminFlightReportRow } from "../types/adminFlightReports";
 import type { AdminStudentsProgressData, AdminStudentsProgressParams } from "../types/adminStudents";
@@ -53,6 +54,8 @@ type AdminUsersResponse = {
   existingContracts?: number;
   nextStatus?: string;
   executionId?: string;
+  fileId?: string;
+  contract?: Contract;
   saga?: EnrollmentSagaResult;
   access?: EnrollmentAccessResult;
   creditSaga?: CreditSagaResult;
@@ -534,6 +537,20 @@ export async function updateAdminUserProfile(
   });
   if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
   return response.user;
+}
+
+export async function generateAdminUserEnrollmentForm(userId: string): Promise<{
+  user: AdminUserDetail;
+  fileId: string;
+  contract?: Contract;
+}> {
+  const response = await executeAdminUsers({
+    action: "generateEnrollmentFormForUser",
+    userId,
+  });
+  if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
+  if (!response.fileId) throw new Error(response.message || "Ficha de matrícula não retornada.");
+  return { user: response.user, fileId: response.fileId, contract: response.contract };
 }
 
 export async function forceAdminUserAnacSync(userId: string): Promise<{

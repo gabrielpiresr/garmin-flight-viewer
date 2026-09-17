@@ -4,6 +4,7 @@ import {
   createAdminUser,
   deleteAdminUserCascade,
   forceAdminUserAnacSync,
+  generateAdminUserEnrollmentForm,
   getAdminUserDetail,
   listAdminUserSummaries,
   removeAdminUserTrainingTrack,
@@ -19,7 +20,15 @@ import { formatAnacExamDate, formatAnacExamFinalResult } from "../../lib/anacExa
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { listTrainingTracks, setFlightReviewClubMembership } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
-import { approveStudentAccess, getApprovalStatus, getProfileDocumentUrl, type ApprovalStatus, type ProfileDocumentType, type UserRole } from "../../lib/rbac";
+import {
+  approveStudentAccess,
+  getApprovalStatus,
+  getProfileDocumentUrl,
+  uploadProfileDocumentAttachment,
+  type ApprovalStatus,
+  type ProfileDocumentType,
+  type UserRole,
+} from "../../lib/rbac";
 import type { AvailabilityType } from "../../types/planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../../types/schedule";
 import type { AdminUserDetail, AdminUserFlight, AdminUserSummary, AdminUserPlannedFlight } from "../../types/adminUsers";
@@ -91,6 +100,7 @@ const PROFILE_DOCUMENT_LABELS: Array<{ type: ProfileDocumentType; label: string 
   { type: "voterTitle", label: "Titulo de Eleitor" },
   { type: "proofOfResidence", label: "Comp. de Residencia" },
   { type: "militaryCertificate", label: "Cert. Militar" },
+  { type: "schoolCertificate", label: "Comprovante de escolaridade" },
   { type: "enrollmentForm", label: "Ficha de Matricula" },
 ];
 
@@ -315,34 +325,122 @@ function EnrollmentProfileDetailsCollapsible({ profile }: { profile: AdminUserDe
   );
 }
 
-function ProfileDocumentsCard({ documents }: { documents: AdminUserDetail["profile"]["documents"] }) {
-  const docs = documents ?? {};
+function ProfileDocumentsCard({
+  detail,
+  canManage,
+  onUpdated,
+}: {
+  detail: AdminUserDetail;
+  canManage: boolean;
+  onUpdated: (detail: AdminUserDetail) => void;
+}) {
+  const docs = detail.profile.documents ?? {};
+  const { showToast } = useToast();
+  const fileInputs = useRef<Partial<Record<ProfileDocumentType, HTMLInputElement | null>>>({});
+  const [busyDocument, setBusyDocument] = useState<ProfileDocumentType | null>(null);
+  const [generatingEnrollment, setGeneratingEnrollment] = useState(false);
+
+  async function handleUpload(type: ProfileDocumentType, file: File | undefined) {
+    if (!file || !detail.profile.docId) return;
+    setBusyDocument(type);
+    const result = await uploadProfileDocumentAttachment(
+      {
+        docId: detail.profile.docId,
+        userId: detail.userId,
+        documents: detail.profile.documents ?? {},
+      },
+      type,
+      file,
+    );
+    setBusyDocument(null);
+    const input = fileInputs.current[type];
+    if (input) input.value = "";
+    if (result.error || !result.data) {
+      showToast({ variant: "error", message: result.error?.message ?? "Nao foi possivel anexar o documento." });
+      return;
+    }
+    onUpdated({ ...detail, profile: { ...detail.profile, documents: result.data } });
+    showToast({ variant: "success", message: "Documento atualizado." });
+  }
+
+  async function handleGenerateEnrollmentForm() {
+    setGeneratingEnrollment(true);
+    try {
+      const result = await generateAdminUserEnrollmentForm(detail.userId);
+      onUpdated(result.user);
+      showToast({ variant: "success", message: "Ficha gerada, anexada ao perfil e enviada para assinatura do aluno." });
+    } catch (error) {
+      showToast({ variant: "error", message: (error as Error).message });
+    } finally {
+      setGeneratingEnrollment(false);
+    }
+  }
 
   return (
     <section className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-      <div className="mb-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Documentos</p>
-        <h3 className="text-sm font-semibold text-slate-200">Anexos do perfil</h3>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Documentos</p>
+          <h3 className="text-sm font-semibold text-slate-200">Anexos do perfil</h3>
+        </div>
+        {canManage ? (
+          <button
+            type="button"
+            onClick={() => void handleGenerateEnrollmentForm()}
+            disabled={generatingEnrollment}
+            className="rounded-lg border border-cyan-700/60 bg-cyan-600/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-600/20 disabled:opacity-60"
+          >
+            {generatingEnrollment ? "Gerando..." : "Gerar ficha de matrícula"}
+          </button>
+        ) : null}
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         {PROFILE_DOCUMENT_LABELS.map((item) => {
           const attachment = docs[item.type];
+          const isBusy = busyDocument === item.type;
           const url = attachment ? getProfileDocumentUrl(attachment.fileId, "view") : "";
           return (
             <div key={item.type} className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3">
-              <p className="text-sm font-medium text-slate-200">{item.label}</p>
-              <p className="mt-1 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
-                {attachment ? attachment.fileName : "Nenhum arquivo anexado"}
-              </p>
-              {url ? (
-                <a
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500 hover:text-cyan-200"
-                >
-                  Abrir documento
-                </a>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-200">{item.label}</p>
+                  <p className="mt-1 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
+                    {attachment ? attachment.fileName : "Nenhum arquivo anexado"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {url ? (
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500 hover:text-cyan-200"
+                    >
+                      Abrir
+                    </a>
+                  ) : null}
+                  {canManage ? (
+                    <button
+                      type="button"
+                      onClick={() => fileInputs.current[item.type]?.click()}
+                      disabled={isBusy}
+                      className="rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500 disabled:opacity-60"
+                    >
+                      {isBusy ? "Enviando..." : attachment ? "Trocar" : "Anexar"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {canManage ? (
+                <input
+                  ref={(node) => {
+                    fileInputs.current[item.type] = node;
+                  }}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                  onChange={(event) => void handleUpload(item.type, event.currentTarget.files?.[0])}
+                />
               ) : null}
             </div>
           );
@@ -1484,7 +1582,14 @@ export function AdminUsersTab() {
                 </section>
 
                 <div className={`transition-opacity duration-200 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
-                  <ProfileDocumentsCard documents={selectedDetail.profile.documents} />
+                  <ProfileDocumentsCard
+                    detail={selectedDetail}
+                    canManage={canAction("users.manage")}
+                    onUpdated={(updated) => {
+                      setSelectedDetail(updated);
+                      replaceSummary(updated);
+                    }}
+                  />
                 </div>
 
                 <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 lg:grid-cols-4 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>

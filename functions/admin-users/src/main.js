@@ -11322,6 +11322,48 @@ async function ensureEnrollmentFormPreviewForActor(actorUserId, payload = {}) {
   return { fileId };
 }
 
+async function generateEnrollmentFormForUser(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  if (!CONTRACTS_COLLECTION_ID) throw Object.assign(new Error("Coleção de contratos não configurada."), { status: 500 });
+  const targetUserId = cleanString(payload.userId);
+  if (!targetUserId) throw Object.assign(new Error("Aluno não informado."), { status: 400 });
+  const profile = await getProfileByUserId(targetUserId);
+  if (!profile?.$id) throw Object.assign(new Error("Perfil do aluno não encontrado."), { status: 404 });
+  const requestedTrainingTrackId = cleanString(payload.trainingTrackId);
+  const trainingTrackId = requestedTrainingTrackId || cleanString(await resolveDefaultTrainingTrackId().catch(() => ""));
+  const trainingTrackName = trainingTrackId ? await getTrainingTrackName(trainingTrackId) : "";
+  const profileData = contractProfileData(profile, {
+    name: profile.full_name,
+    email: profile.email,
+    phone: profile.phone,
+  });
+  const now = new Date().toISOString();
+  const enrollmentTrackMeta = { trainingTrackId, trainingTrackName };
+  const enrollmentForm = await createContractDocument({
+    school_id: SCHOOL_ID,
+    template_id: "enrollment_form",
+    template_name: "Ficha de matrícula",
+    lead_id: null,
+    standard_type: "matricula",
+    contract_kind: "enrollment_form",
+    recipient_user_id: targetUserId,
+    recipient_name: profileData.fullName,
+    content_resolved_json: richTextDoc("Ficha de matrícula gerada a partir do PDF padrão da escola."),
+    custom_var_values_json: JSON.stringify(enrollmentTrackMeta),
+    status: "pending",
+    created_by: actorUserId,
+    created_at: now,
+  }, targetUserId);
+  const fileId = await ensureEnrollmentFormPreview(enrollmentForm);
+  await sendContractNotificationEmail(enrollmentForm, {
+    userId: targetUserId,
+    email: profileData.email,
+    name: profileData.fullName,
+  });
+  const user = await getUserDetail(targetUserId);
+  return { fileId, contract: enrollmentForm, user };
+}
+
 function toFlight(doc) {
   const meta = decodeFlightMeta(doc.csv_text);
   const legs = Array.isArray(meta?.legs) ? meta.legs : [];
@@ -38893,6 +38935,11 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "ensureEnrollmentFormPreview") {
       const result = await ensureEnrollmentFormPreviewForActor(actorUserId, payload);
+      return jsonResponse(res, 200, { ok: true, ...result });
+    }
+
+    if (action === "generateEnrollmentFormForUser") {
+      const result = await generateEnrollmentFormForUser(actorUserId, payload);
       return jsonResponse(res, 200, { ok: true, ...result });
     }
 
