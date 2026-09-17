@@ -1427,7 +1427,7 @@ export function CadastroPage() {
       }
 
       // 6. ANAC sync (best-effort)
-      void executeAnacSync({ cpf: cpfDigits, anacCode: anacDigits, birthDate: s1.birthDate });
+      void executeAnacSync({ cpf: cpfDigits, anacCode: anacDigits, birthDate: s1.birthDate, autoEnableExamSync: true });
 
       // 7. Vincular userId ao lead/candidato
       if (invite.source === "crm" && crmLead) {

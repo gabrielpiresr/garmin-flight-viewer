@@ -25,6 +25,7 @@
     "pwa:assets": "node scripts/generate-pwa-assets.mjs",
     "appwrite:deploy-admin-function": "node scripts/deploy-admin-function.mjs",
     "appwrite:deploy-admin-users": "node scripts/deploy-admin-users-function.mjs",
+    "appwrite:deploy-sync-anac": "node scripts/deploy-sync-anac-profile.mjs",
     "appwrite:deploy-aisweb-metar-watch": "node scripts/deploy-aisweb-metar-watch.mjs",
     "appwrite:deploy-birthday-digest": "node scripts/deploy-birthday-digest.mjs",
     "appwrite:deploy-instructor-patch-function": "node scripts/deploy-instructor-patch-function.mjs",
@@ -107,6 +108,7 @@
     "appwrite:migrate:instructor-schedule-role-perms": "node scripts/migrate-instructor-schedule-role-permissions.mjs",
     "appwrite:migrate:flight-instrutor-read-perms": "node scripts/migrate-flight-instrutor-read-permissions.mjs",
     "appwrite:setup-saga-import": "node scripts/setup-saga-import-fields.mjs",
+    "appwrite:setup-anac-exams": "node scripts/setup-anac-exam-results.mjs",
     "videos:reconcile": "node scripts/reconcile-processing-videos.mjs",
     "videos:reconcile:watch": "node scripts/reconcile-processing-videos.mjs --watch",
     "videos:migrate-upload-jobs": "node scripts/migrate-video-upload-jobs.mjs"

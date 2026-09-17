@@ -335,6 +335,8 @@ const PROFILE_SELECT = [
   "anac_sync_status",
   "anac_sync_error",
   "anac_last_sync_at",
+  "anac_exam_results_json",
+  "anac_exam_sync_status",
   "custom_role_slug",
   "roles",
   "active_role",
@@ -4301,8 +4303,8 @@ async function refreshZeroStudentPaymentSnapshots(userId, actorUserId, logs = nu
 async function syncSagaUserAnac(userId, sagaUser) {
   const anacCode = cleanString(sagaUser.codigoAnac);
   const cpf = cleanString(sagaUser.cpf).replace(/\D/g, "");
-  if (!SYNC_ANAC_FUNCTION_ID || !userId || !anacCode || cpf.length !== 11) {
-    return { skipped: true, reason: "missing_anac_or_cpf" };
+  if (!SYNC_ANAC_FUNCTION_ID || !userId || cpf.length !== 11) {
+    return { skipped: true, reason: "missing_cpf" };
   }
   try {
     const execution = await functions.createExecution({
@@ -4311,7 +4313,7 @@ async function syncSagaUserAnac(userId, sagaUser) {
         userId,
         anacCode,
         cpf,
-        birthDate: dateBrToIso(sagaUser.nascimento) || "",
+        birthDate: dateBrToIso(sagaUser.nascimento) || cleanString(sagaUser.nascimento) || "",
       }),
       async: false,
     });
@@ -4319,7 +4321,12 @@ async function syncSagaUserAnac(userId, sagaUser) {
     if (execution.status === "failed" || execution.responseStatusCode >= 400) {
       return { error: true, message: body.message || `ANAC status ${execution.responseStatusCode}` };
     }
-    return { pending: body.pending !== false, message: body.message || "ANAC consultada." };
+    return {
+      pending: body.pending !== false,
+      message: body.message || "ANAC consultada.",
+      examResults: Number(body.examResults) || 0,
+      examPending: body.examPending === true,
+    };
   } catch (err) {
     return { error: true, message: String(err?.message || err) };
   }
@@ -4339,8 +4346,8 @@ async function forceAnacSyncForUser(actorUserId, targetUserId) {
   const anacCode = cleanString(profile.anac_code);
   const cpf = cleanString(profile.cpf).replace(/\D/g, "");
   const birthDate = cleanString(profile.birth_date || "");
-  if (!anacCode || cpf.length !== 11) {
-    throw Object.assign(new Error("CPF e codigo ANAC sao obrigatorios para atualizar dados da ANAC."), { status: 400 });
+  if (cpf.length !== 11) {
+    throw Object.assign(new Error("CPF e obrigatorio para atualizar dados da ANAC."), { status: 400 });
   }
 
   const execution = await functions.createExecution({
@@ -4372,6 +4379,8 @@ async function forceAnacSyncForUser(actorUserId, targetUserId) {
       licenses: Number(body.licenses) || 0,
       hasMedical: Boolean(body.hasMedical),
       hasPhoto: Boolean(body.hasPhoto),
+      examResults: Number(body.examResults) || 0,
+      examPending: body.examPending === true,
     },
   };
 }
@@ -11332,6 +11341,11 @@ function toProfile(profile, preference, documents = {}) {
     anacSyncStatus: profile?.anac_sync_status || "",
     anacSyncError: profile?.anac_sync_error || "",
     anacLastSyncAt: profile?.anac_last_sync_at || "",
+    anacExamResults: parseJsonList(profile?.anac_exam_results_json),
+    anacExamSyncStatus: profile?.anac_exam_sync_status || "",
+    anacExamSyncError: "",
+    anacExamLastSyncAt: "",
+    anacExamAutoEnabled: false,
     rg: profile?.rg || "",
     rgOrgaoExpedidor: profile?.rg_orgao_expedidor || "",
     rgDataEmissao: profile?.rg_data_emissao || "",
@@ -13613,6 +13627,13 @@ async function createAdminUser(actorUserId, payload = {}) {
       is_active: payload.isActive !== false,
     };
     await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profileId, profileUpdates);
+    if (role === "aluno" && cleanString(payload.cpf).replace(/\D/g, "").length === 11) {
+      await syncSagaUserAnac(authUser.$id, {
+        codigoAnac: payload.anacCode,
+        cpf: payload.cpf,
+        nascimento: payload.birthDate,
+      }).catch(() => undefined);
+    }
   } catch (error) {
     await users.delete({ userId: authUser.$id }).catch(() => undefined);
     throw error;
@@ -34457,6 +34478,110 @@ async function recordSagaAllUsersSyncFailure(input = {}, err) {
   }).catch(() => null);
 }
 
+function hasStoredAnacExamResults(profile) {
+  return parseJsonList(profile?.anac_exam_results_json).length > 0;
+}
+
+function anacExamSyncedToday(profile, todayIso) {
+  return cleanString(profile?.anac_exam_sync_status).slice(0, 10) === todayIso;
+}
+
+function anacExamAutoCutoffIso() {
+  return cleanString(process.env.ANAC_EXAM_AUTO_CUTOFF_ISO) || "2026-09-17";
+}
+
+async function studentHasCompletedFlight(userId) {
+  if (!FLIGHTS_COLLECTION_ID || !userId) return false;
+  const baseQueries = [
+    sdk.Query.equal("flight_status", ["Realizado"]),
+    sdk.Query.limit(1),
+    ...selectQuery(["$id"]),
+  ];
+  const byStudent = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("student_user_id", [userId]),
+    ...baseQueries,
+  ]).catch(() => ({ total: 0, documents: [] }));
+  if (byStudent.total > 0 || byStudent.documents?.length > 0) return true;
+  const byLegacyUser = await databases.listDocuments(DATABASE_ID, FLIGHTS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [userId]),
+    ...baseQueries,
+  ]).catch(() => ({ total: 0, documents: [] }));
+  return byLegacyUser.total > 0 || byLegacyUser.documents?.length > 0;
+}
+
+async function runAnacExamDailyScan(log = () => undefined) {
+  if (!SYNC_ANAC_FUNCTION_ID || !PROFILES_COLLECTION_ID) {
+    return { ok: false, skipped: true, reason: "not_configured", scanned: 0, synced: 0, failed: 0 };
+  }
+  const todayIso = birthdayDigest.schoolTodayIso();
+  const cutoffIso = anacExamAutoCutoffIso();
+  const limit = Math.min(50, Math.max(1, Number(process.env.ANAC_EXAM_DAILY_SCAN_LIMIT || 20)));
+  const profiles = await safeListAllDocuments(PROFILES_COLLECTION_ID, [
+    sdk.Query.equal("school_id", [SCHOOL_ID]),
+    sdk.Query.greaterThanEqual("$createdAt", cutoffIso),
+    sdk.Query.limit(200),
+    ...selectQuery([
+      "$id",
+      "$createdAt",
+      "user_id",
+      "cpf",
+      "anac_code",
+      "birth_date",
+      "anac_exam_results_json",
+      "anac_exam_sync_status",
+    ]),
+  ]).catch((err) => {
+    log(`[anac-exams] scan skipped: ${err?.message || err}`);
+    return [];
+  });
+
+  const candidates = [];
+  for (const profile of profiles) {
+    const userId = cleanString(profile.user_id);
+    const cpf = cleanString(profile.cpf).replace(/\D/g, "");
+    if (!userId || cpf.length !== 11) continue;
+    if (hasStoredAnacExamResults(profile)) continue;
+    if (anacExamSyncedToday(profile, todayIso)) continue;
+    candidates.push(profile);
+    if (candidates.length >= limit) break;
+  }
+
+  let eligible = 0;
+  let synced = 0;
+  let pending = 0;
+  let failed = 0;
+  let noFlight = 0;
+
+  for (const profile of candidates) {
+    const userId = cleanString(profile.user_id);
+    if (!(await studentHasCompletedFlight(userId))) {
+      noFlight += 1;
+      continue;
+    }
+    eligible += 1;
+    const result = await syncSagaUserAnac(userId, {
+      codigoAnac: profile.anac_code,
+      cpf: profile.cpf,
+      nascimento: profile.birth_date,
+    });
+    if (result.error) failed += 1;
+    else if (result.examPending) pending += 1;
+    else synced += 1;
+  }
+
+  log(`[anac-exams] scanned=${profiles.length} candidates=${candidates.length} eligible=${eligible} synced=${synced} pending=${pending} failed=${failed} noFlight=${noFlight}`);
+  return {
+    ok: true,
+    scanned: profiles.length,
+    candidates: candidates.length,
+    eligible,
+    synced,
+    pending,
+    failed,
+    noFlight,
+  };
+}
+
 function flightStartDate(flight) {
   const date = cleanString(flight.flight_date);
   const start = cleanString(flight.start_time).slice(0, 5) || "23:59";
@@ -38204,10 +38329,11 @@ module.exports = async ({ req, res, log, error }) => {
     }
 
     if (!actorUserId && action === "listSummaries") {
-      const [reminderResult, scheduleResult, automationScan] = await Promise.all([
+      const [reminderResult, scheduleResult, automationScan, anacExamScan] = await Promise.all([
         runFlightReminderScan("system"),
         syncSagaScheduleFromImportSettings("system").catch((err) => ({ ok: false, message: String(err?.message || err) })),
         studentAutomationService().periodicScan().catch((err) => ({ ok: false, message: String(err?.message || err) })),
+        runAnacExamDailyScan(log).catch((err) => ({ ok: false, message: String(err?.message || err) })),
       ]);
       const wppTomorrowFlightReminder = await runWppTomorrowFlightReminderScan()
         .catch((err) => ({ ok: false, message: String(err?.message || err) }));
@@ -38234,6 +38360,7 @@ module.exports = async ({ req, res, log, error }) => {
         sagaScheduleSync: scheduleResult,
         sagaAllUsersSync: allUsersSyncResult,
         automationScan,
+        anacExamScan,
         wppTomorrowFlightReminder,
         wppAdminDailyScheduleSummary,
         aiswebNotamAlerts,

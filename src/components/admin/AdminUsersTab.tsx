@@ -15,6 +15,7 @@ import {
   type AdminUserProfileUpdateInput,
 } from "../../lib/adminUsersDb";
 import { AdminUserProfileEditSection } from "./AdminUserProfileEditSection";
+import { formatAnacExamDate, formatAnacExamFinalResult } from "../../lib/anacExamDisplay";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { listTrainingTracks, setFlightReviewClubMembership } from "../../lib/trainingTracksDb";
 import { listTenantRoles } from "../../lib/tenantRolesDb";
@@ -119,6 +120,29 @@ function formatDuration(seconds: number | null): string {
 
 function displayName(user: AdminUserSummary | AdminUserDetail): string {
   return user.profile.fullName || user.name || user.email || user.userId;
+}
+
+function anacExamCct(item: AdminUserDetail["profile"]["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.cct || item.columns?.cct || cells[1] || item.exame || item.columns?.exame || cells[0] || "-";
+}
+
+function anacExamDate(item: AdminUserDetail["profile"]["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.dtExame || item.columns?.dt_exame || cells[cells.length - 2] || item.data || "-";
+}
+
+function anacExamFinalResult(item: AdminUserDetail["profile"]["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.resultadoFinal || item.columns?.resultado_final || cells[cells.length - 1] || item.resultado || "-";
+}
+
+function isDisplayableAnacExamResult(item: AdminUserDetail["profile"]["anacExamResults"][number]) {
+  return anacExamCct(item) !== "-" && /^\d{4}$/.test(anacExamDate(item)) && /^[A-Z0-9]{2,6}$/.test(anacExamFinalResult(item));
+}
+
+function isEmptyAnacExamStatus(value: string | null | undefined) {
+  return String(value || "").endsWith(":empty") || value === "empty";
 }
 
 function userHasFlightReviewClub(user: AdminUserSummary | AdminUserDetail): boolean {
@@ -1364,12 +1388,12 @@ export function AdminUsersTab() {
                       <button
                         type="button"
                         onClick={() => void handleForceAnacSync()}
-                        disabled={syncingAnac || !selectedDetail.profile.cpf || !selectedDetail.profile.anacCode}
+                        disabled={syncingAnac || !selectedDetail.profile.cpf}
                         className="rounded-lg border border-cyan-700/60 bg-cyan-950/30 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-950/60 disabled:cursor-not-allowed disabled:opacity-50"
                         title={
-                          !selectedDetail.profile.cpf || !selectedDetail.profile.anacCode
-                            ? "Preencha CPF e Código ANAC antes de atualizar."
-                            : "Consulta novamente a ANAC e atualiza licenças, habilitações, CMA e foto."
+                          !selectedDetail.profile.cpf
+                            ? "Preencha CPF antes de atualizar."
+                            : "Consulta novamente a ANAC e atualiza licenças, habilitações, CMA, foto e resultados teóricos."
                         }
                       >
                         {syncingAnac ? "Atualizando ANAC..." : "Atualizar ANAC"}
@@ -1463,7 +1487,7 @@ export function AdminUsersTab() {
                   <ProfileDocumentsCard documents={selectedDetail.profile.documents} />
                 </div>
 
-                <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 lg:grid-cols-3 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
+                <section className={`grid grid-cols-1 gap-4 transition-opacity duration-200 lg:grid-cols-4 ${activeSubTab === "profile" ? "opacity-100" : "hidden opacity-0"}`}>
                   <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
                     <h3 className="text-sm font-semibold text-slate-200">Habilitações</h3>
                     {selectedDetail.profile.anacRatings.length === 0 ? (
@@ -1513,6 +1537,40 @@ export function AdminUsersTab() {
                       <p><span className="text-slate-400">Orgao:</span> {selectedDetail.profile.anacMedical.orgao_expedidor || "-"}</p>
                       <p><span className="text-slate-400">Obs:</span> {selectedDetail.profile.anacMedical.observacoes || "-"}</p>
                     </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+                    <h3 className="text-sm font-semibold text-slate-200">Resultados teóricos ANAC</h3>
+                    {selectedDetail.profile.anacExamResults.filter(isDisplayableAnacExamResult).length === 0 ? (
+                      <p className="mt-2 text-xs text-slate-500">
+                        {isEmptyAnacExamStatus(selectedDetail.profile.anacExamSyncStatus) ? "Nenhum resultado encontrado na ANAC." : "Nenhum resultado importado."}
+                      </p>
+                    ) : (
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="w-full min-w-[260px] border-collapse text-xs">
+                          <thead>
+                            <tr className="text-left uppercase tracking-wide text-slate-500">
+                              <th className="border-b border-slate-700 px-1.5 py-1">CCT</th>
+                              <th className="border-b border-slate-700 px-1.5 py-1">Dt Exame</th>
+                              <th className="border-b border-slate-700 px-1.5 py-1">Resultado final</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedDetail.profile.anacExamResults.filter(isDisplayableAnacExamResult).map((item, idx) => (
+                              <tr key={`${anacExamCct(item)}-${idx}`} className="border-b border-slate-800/70 last:border-0">
+                                <td className="px-1.5 py-2 align-top font-medium text-slate-200">{anacExamCct(item)}</td>
+                                <td className="px-1.5 py-2 align-top text-slate-400">{formatAnacExamDate(anacExamDate(item))}</td>
+                                <td className="px-1.5 py-2 align-top text-slate-400">{formatAnacExamFinalResult(anacExamFinalResult(item))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {selectedDetail.profile.anacExamLastSyncAt ? (
+                      <p className="mt-2 text-[11px] text-slate-600">
+                        Atualizado em {formatDate(selectedDetail.profile.anacExamLastSyncAt)}
+                      </p>
+                    ) : null}
                   </div>
                 </section>
 

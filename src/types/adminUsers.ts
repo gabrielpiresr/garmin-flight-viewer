@@ -1,4 +1,4 @@
-import type { PilotLicense, PilotMedical, PilotRating, ProfileDocumentAttachments, UserRole } from "../lib/rbac";
+import type { AnacExamResult, PilotLicense, PilotMedical, PilotRating, ProfileDocumentAttachments, UserRole } from "../lib/rbac";
 import type { AvailabilityType } from "./planning";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "./schedule";
 import type { WeeklyFlightPlanStatus } from "./planning";
@@ -87,6 +87,11 @@ export type AdminUserProfileDetail = AdminUserProfileSummary & {
   anacMedical: PilotMedical;
   anacPhotoFileId: string;
   anacSyncError: string;
+  anacExamResults: AnacExamResult[];
+  anacExamSyncStatus: string;
+  anacExamSyncError: string;
+  anacExamLastSyncAt: string;
+  anacExamAutoEnabled: boolean;
   documents?: ProfileDocumentAttachments;
   rg?: string;
   rgOrgaoExpedidor?: string;

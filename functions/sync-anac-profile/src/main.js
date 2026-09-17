@@ -2,6 +2,7 @@ const sdk = require("node-appwrite");
 const cheerio = require("cheerio");
 
 const ANAC_URL = "https://consultadelicencas.anac.gov.br/consultadelicencas/";
+const ANAC_EXAM_RESULTS_URL = "https://resultadodosexames.anac.gov.br/resultadodosexames/";
 const REQUEST_TIMEOUT_MS = Number(process.env.ANAC_REQUEST_TIMEOUT_MS || 15000);
 
 const client = new sdk.Client()
@@ -120,6 +121,36 @@ async function postAnac({ anacCode, cpf, birthDate }) {
   }
 }
 
+async function postAnacExamResults({ cpf }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const body = new URLSearchParams({
+    consulta: "c",
+    txcpf1: normalizeDigits(cpf).slice(0, 11),
+    enviar: " ok ",
+  });
+
+  try {
+    const response = await fetch(ANAC_EXAM_RESULTS_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        referer: `${ANAC_EXAM_RESULTS_URL}#`,
+        origin: "https://resultadodosexames.anac.gov.br",
+      },
+      body: body.toString(),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`ANAC exam request failed with status ${response.status}`);
+    }
+    return response.text();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function tableRows($, tableEl) {
   const rows = [];
   $(tableEl)
@@ -132,6 +163,21 @@ function tableRows($, tableEl) {
         .filter(Boolean);
       if (cells.length) rows.push(cells);
     });
+  return rows;
+}
+
+function directTableRows($, tableEl) {
+  const rows = [];
+  const directRows = $(tableEl).children("tr").toArray();
+  const groupedRows = $(tableEl).children("thead,tbody,tfoot").children("tr").toArray();
+  [...directRows, ...groupedRows].forEach((tr) => {
+    const cells = $(tr)
+      .children("th,td")
+      .toArray()
+      .map((cell) => $(cell).text().replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    if (cells.length) rows.push(cells);
+  });
   return rows;
 }
 
@@ -178,6 +224,109 @@ function findSectionRows($, titleTokens, requiredHeaders) {
 
 function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function compactStatus(prefix) {
+  return `${new Date().toISOString().slice(0, 10)}:${prefix}`.slice(0, 32);
+}
+
+function normalizeHeaderKey(value) {
+  const text = normalizeLoose(value);
+  if (!text) return "";
+  if (text.includes("data")) return "data";
+  if (text.includes("exame") || text.includes("prova")) return "exame";
+  if (text.includes("resultado") || text.includes("situacao") || text.includes("status")) return "resultado";
+  if (text.includes("nota") || text.includes("media")) return "nota";
+  if (text.includes("local") || text.includes("cidade")) return "local";
+  if (text.includes("banca") || text.includes("instituicao")) return "banca";
+  if (text.includes("observ")) return "observacoes";
+  return text.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+}
+
+function uniqueKey(base, used) {
+  const fallback = base || "campo";
+  let key = fallback;
+  let index = 2;
+  while (used.has(key)) {
+    key = `${fallback}_${index}`;
+    index += 1;
+  }
+  used.add(key);
+  return key;
+}
+
+function parseAnacExamResultsHtml(html) {
+  const $ = cheerio.load(html || "");
+  const results = [];
+  $("table").each((_, table) => {
+    const rows = directTableRows($, table);
+    if (rows.length < 2) return;
+    const headerIndex = rows.findIndex((row) => {
+      const text = normalizeLoose(row.join(" "));
+      return text.includes("inscricao") && text.includes("cct") && text.includes("resultado final");
+    });
+    if (headerIndex < 0) return;
+
+    rows.slice(headerIndex + 1).forEach((row) => {
+      const cells = row.map(cleanText).filter(Boolean);
+      if (cells.length < 5) return;
+      const inscricao = normalizeDigits(cells[0]);
+      const cct = cleanText(cells[1]).toUpperCase();
+      const dtExame = cleanText(cells[cells.length - 2]);
+      const resultadoFinal = cleanText(cells[cells.length - 1]).toUpperCase();
+      if (!/^\d{1,10}$/.test(inscricao)) return;
+      if (!/^[A-Z0-9/-]{2,20}$/.test(cct)) return;
+      if (!/^\d{4}$/.test(dtExame)) return;
+      if (!/^[A-Z0-9]{2,6}$/.test(resultadoFinal)) return;
+
+      results.push({
+        inscricao,
+        cct,
+        dtExame,
+        resultadoFinal,
+        cells,
+      });
+    });
+  });
+
+  const seen = new Set();
+  return results.filter((item) => {
+    const key = `${item.inscricao}|${item.cct}|${item.dtExame}|${item.resultadoFinal}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function syncExamResultsForProfile(profile, cpf, log) {
+  let examResults = [];
+  let examPending = true;
+  let examMessage = "";
+  try {
+    const examHtml = await postAnacExamResults({ cpf });
+    examResults = parseAnacExamResultsHtml(examHtml);
+    await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, {
+      anac_exam_results_json: JSON.stringify(examResults),
+      anac_exam_sync_status: compactStatus(examResults.length > 0 ? "success" : "empty"),
+    });
+    examPending = false;
+    examMessage = examResults.length > 0 ? "Resultados teóricos ANAC atualizados." : "Nenhum resultado teórico ANAC encontrado.";
+  } catch (examError) {
+    examMessage = String(examError?.message || examError || "ANAC exam sync failed");
+    try {
+      await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, {
+        anac_exam_sync_status: compactStatus("error"),
+      });
+    } catch (updateError) {
+      log(`ANAC exam status update warning: ${updateError?.message || updateError}`);
+    }
+  }
+
+  return {
+    examResults,
+    examPending,
+    examMessage,
+  };
 }
 
 function isValidRatingType(value) {
@@ -402,13 +551,16 @@ module.exports = async ({ req, res, error, log }) => {
       return jsonResponse(res, 401, { message: "Unauthorized request." });
     }
 
+    const examOnly = payload.examOnly === true || payload.examOnly === "true";
     const anacCode = normalizeDigits(payload.anacCode).slice(0, 32);
     const cpf = normalizeDigits(payload.cpf).slice(0, 11);
     const birthDate = String(payload.birthDate || "").trim();
 
-    if (!anacCode || cpf.length !== 11) {
-      await markPending(userId, "Missing ANAC code or CPF");
-      return jsonResponse(res, 200, { pending: true, message: "ANAC sync pending: missing required fields." });
+    if (cpf.length !== 11) {
+      if (!examOnly) {
+        await markPending(userId, "Missing CPF");
+      }
+      return jsonResponse(res, 200, { pending: true, message: "ANAC sync pending: missing CPF." });
     }
 
     const profile = await getProfileByUserId(userId);
@@ -416,36 +568,72 @@ module.exports = async ({ req, res, error, log }) => {
       return jsonResponse(res, 404, { message: "Profile not found for current user." });
     }
 
-    const { html, cookieHeader } = await postAnac({ anacCode, cpf, birthDate });
-    const parsed = parseAnacHtml(html);
-
-    if (!parsed.ratings.length && !parsed.licenses.length && !parsed.medical.classe && !parsed.photoUrl) {
-      throw new Error(extractAnacFailureMessage(html) || "Nenhum dado de piloto foi encontrado na resposta da ANAC.");
+    if (examOnly) {
+      const exam = await syncExamResultsForProfile(profile, cpf, log);
+      return jsonResponse(res, 200, {
+        pending: exam.examPending,
+        message: exam.examMessage,
+        examResults: exam.examResults.length,
+        examPending: exam.examPending,
+      });
     }
 
+    let parsed = {
+      ratings: [],
+      licenses: [],
+      medical: { classe: "", validade: "", orgao_expedidor: "", observacoes: "" },
+      photoUrl: "",
+    };
     let photoFileId = "";
-    try {
-      photoFileId = (await uploadPhoto(parsed.photoUrl, userId, cookieHeader)) || "";
-    } catch (photoError) {
-      log(`ANAC photo upload warning: ${photoError?.message || photoError}`);
+    let licensePending = true;
+    let licenseMessage = "";
+
+    if (anacCode) {
+      try {
+        const { html, cookieHeader } = await postAnac({ anacCode, cpf, birthDate });
+        parsed = parseAnacHtml(html);
+
+        if (!parsed.ratings.length && !parsed.licenses.length && !parsed.medical.classe && !parsed.photoUrl) {
+          throw new Error(extractAnacFailureMessage(html) || "Nenhum dado de piloto foi encontrado na resposta da ANAC.");
+        }
+
+        try {
+          photoFileId = (await uploadPhoto(parsed.photoUrl, userId, cookieHeader)) || "";
+        } catch (photoError) {
+          log(`ANAC photo upload warning: ${photoError?.message || photoError}`);
+        }
+
+        await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, {
+          anac_ratings_json: JSON.stringify(parsed.ratings),
+          anac_licenses_json: JSON.stringify(parsed.licenses),
+          anac_medical_json: JSON.stringify(parsed.medical),
+          anac_photo_file_id: photoFileId || profile.anac_photo_file_id || "",
+          anac_sync_status: "success",
+          anac_sync_error: "",
+          anac_last_sync_at: new Date().toISOString(),
+        });
+        licensePending = false;
+        licenseMessage = "Dados ANAC atualizados.";
+      } catch (licenseError) {
+        licenseMessage = String(licenseError?.message || licenseError || "ANAC sync failed");
+        await markPending(userId, licenseMessage);
+      }
+    } else {
+      licenseMessage = "Consulta de licenças/CMA pendente: código ANAC ausente.";
+      await markPending(userId, "Missing ANAC code");
     }
 
-    await databases.updateDocument(DATABASE_ID, PROFILES_COLLECTION_ID, profile.$id, {
-      anac_ratings_json: JSON.stringify(parsed.ratings),
-      anac_licenses_json: JSON.stringify(parsed.licenses),
-      anac_medical_json: JSON.stringify(parsed.medical),
-      anac_photo_file_id: photoFileId || profile.anac_photo_file_id || "",
-      anac_sync_status: "success",
-      anac_sync_error: "",
-      anac_last_sync_at: new Date().toISOString(),
-    });
+    const exam = await syncExamResultsForProfile(profile, cpf, log);
 
     return jsonResponse(res, 200, {
-      pending: false,
+      pending: licensePending || exam.examPending,
+      message: [licenseMessage, exam.examMessage].filter(Boolean).join(" "),
       ratings: parsed.ratings.length,
       licenses: parsed.licenses.length,
       hasMedical: Boolean(parsed.medical.classe || parsed.medical.validade),
       hasPhoto: Boolean(photoFileId),
+      examResults: exam.examResults.length,
+      examPending: exam.examPending,
     });
   } catch (err) {
     const message = String(err?.message || err || "ANAC sync failed");

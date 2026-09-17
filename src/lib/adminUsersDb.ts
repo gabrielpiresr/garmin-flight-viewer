@@ -93,6 +93,8 @@ export type AdminUserAnacSyncResult = {
   licenses?: number;
   hasMedical?: boolean;
   hasPhoto?: boolean;
+  examResults?: number;
+  examPending?: boolean;
 };
 
 export type AdminUserDeletionSummary = {

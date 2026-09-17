@@ -199,6 +199,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         cpf: profile.cpf,
         anacCode: profile.anacCode,
         birthDate: profile.birthDate,
+        autoEnableExamSync: true,
       });
       const anacSyncPending = syncResult.pending;
 

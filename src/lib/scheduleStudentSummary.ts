@@ -1,7 +1,7 @@
 // Loader do "Resumo do aluno" exibido na coluna/subaba do modal de detalhes da escala.
 // Todas as consultas são somente leitura e rodam de forma independente do carregamento
 // rápido do modal (o painel tem skeleton próprio). Nada aqui pode atrasar/derrubar a escala.
-import { getProfile, listProfileNicknamesByUserIds, type PilotMedical, type UserRole } from "./rbac";
+import { getProfile, listProfileNicknamesByUserIds, type AnacExamResult, type PilotMedical, type UserRole } from "./rbac";
 import { listStudentTrainingTracks } from "./trainingTracksDb";
 import {
   getFlightRecordMetaBatch,
@@ -55,6 +55,10 @@ export type ScheduleStudentSummary = {
     anacCode: string;
     phone: string;
     medical: PilotMedical;
+    examResults: AnacExamResult[];
+    examSyncStatus: string;
+    examLastSyncAt: string;
+    examSyncError: string;
   } | null;
   /** Trilha ativa (primária) que o aluno está cursando. */
   trackName: string | null;
@@ -192,6 +196,10 @@ export async function loadStudentProfileCard(
     anacCode: profile.anacCode || "",
     phone: profile.phone || "",
     medical: profile.anacMedical,
+    examResults: profile.anacExamResults,
+    examSyncStatus: profile.anacExamSyncStatus,
+    examLastSyncAt: profile.anacExamLastSyncAt,
+    examSyncError: profile.anacExamSyncError,
   };
 }
 

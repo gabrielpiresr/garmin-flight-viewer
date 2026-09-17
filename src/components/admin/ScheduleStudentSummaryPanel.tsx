@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { formatAnacExamDate, formatAnacExamFinalResult } from "../../lib/anacExamDisplay";
 import type { UserRole } from "../../lib/rbac";
+import { forceAdminUserAnacSync } from "../../lib/adminUsersDb";
 import {
   loadNextMissions,
   loadStudentFlightSummary,
@@ -8,6 +10,7 @@ import {
   type ScheduleStudentNextMission,
   type ScheduleStudentSummary,
 } from "../../lib/scheduleStudentSummary";
+import { useToast } from "../ui/ToastProvider";
 
 function parseBrDate(value: string): Date | null {
   const match = String(value || "").match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -49,6 +52,33 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+function examMainLabel(item: NonNullable<ScheduleStudentSummary["profile"]>["examResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.cct || item.columns?.cct || cells[1] || item.exame || item.columns?.exame || cells[0] || "-";
+}
+
+function examDate(item: NonNullable<ScheduleStudentSummary["profile"]>["examResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.dtExame || item.columns?.dt_exame || cells[cells.length - 2] || item.data || "-";
+}
+
+function examFinalResult(item: NonNullable<ScheduleStudentSummary["profile"]>["examResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.resultadoFinal || item.columns?.resultado_final || cells[cells.length - 1] || item.resultado || "-";
+}
+
+function examDetail(item: NonNullable<ScheduleStudentSummary["profile"]>["examResults"][number]) {
+  return `${formatAnacExamDate(examDate(item))} · ${formatAnacExamFinalResult(examFinalResult(item))}`;
+}
+
+function isDisplayableExamResult(item: NonNullable<ScheduleStudentSummary["profile"]>["examResults"][number]) {
+  return examMainLabel(item) !== "-" && /^\d{4}$/.test(examDate(item)) && /^[A-Z0-9]{2,6}$/.test(examFinalResult(item));
+}
+
+function isEmptyExamStatus(value: string | null | undefined) {
+  return String(value || "").endsWith(":empty") || value === "empty";
+}
+
 function SummarySkeleton() {
   return (
     <div className="animate-pulse space-y-3">
@@ -86,6 +116,7 @@ export function ScheduleStudentSummaryPanel({
   viewer: { userId: string; role: UserRole };
   creditsSlot?: ReactNode;
 }) {
+  const { showToast } = useToast();
   // Três blocos independentes: cada um carrega e é exibido assim que fica pronto
   // (o perfil é uma leitura só e aparece quase instantâneo; voos e próxima missão
   // não bloqueiam mais um ao outro nem à identificação).
@@ -96,6 +127,13 @@ export function ScheduleStudentSummaryPanel({
   const [missions, setMissions] = useState<ScheduleStudentNextMission[] | null>(null);
   const [trackName, setTrackName] = useState<string | null>(null);
   const [missionsLoading, setMissionsLoading] = useState(false);
+  const [syncingAnac, setSyncingAnac] = useState(false);
+
+  async function reloadProfileCard(userId: string) {
+    const data = await loadStudentProfileCard(userId);
+    setProfile(data);
+    return data;
+  }
 
   useEffect(() => {
     if (!studentUserId) {
@@ -158,6 +196,23 @@ export function ScheduleStudentSummaryPanel({
     // viewer é estável (id/role do usuário logado); recarrega ao trocar o aluno.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentUserId]);
+
+  async function handleRefreshAnac() {
+    if (!studentUserId || viewer.role !== "admin") return;
+    setSyncingAnac(true);
+    try {
+      const result = await forceAdminUserAnacSync(studentUserId);
+      showToast({
+        variant: result.anacSync.pending ? "warning" : "success",
+        message: result.anacSync.message || "Consulta ANAC atualizada.",
+      });
+      await reloadProfileCard(studentUserId);
+    } catch (error) {
+      showToast({ variant: "error", message: (error as Error).message });
+    } finally {
+      setSyncingAnac(false);
+    }
+  }
 
   if (!studentUserId) {
     return (
@@ -225,6 +280,42 @@ export function ScheduleStudentSummaryPanel({
                   </p>
                 ) : null}
               </div>
+            </div>
+            <div className="mt-3 border-t border-slate-700/60 pt-2">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Resultados teóricos ANAC
+                </p>
+                {viewer.role === "admin" ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshAnac()}
+                    disabled={syncingAnac}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700 text-sm text-slate-300 hover:border-cyan-600 hover:text-cyan-200 disabled:opacity-50"
+                    title="Atualizar ANAC"
+                    aria-label="Atualizar ANAC"
+                  >
+                    {syncingAnac ? "..." : "↻"}
+                  </button>
+                ) : null}
+              </div>
+              {profile?.examResults.filter(isDisplayableExamResult).length ? (
+                <div className="space-y-1 text-xs">
+                  {profile.examResults.filter(isDisplayableExamResult).slice(0, 4).map((item, index) => (
+                    <div key={`${examMainLabel(item)}-${index}`} className="rounded-md border border-slate-800 bg-slate-950/30 px-2 py-1.5">
+                      <p className="font-medium text-slate-200">{examMainLabel(item)}</p>
+                      <p className="text-[11px] text-slate-500">{examDetail(item) || "—"}</p>
+                    </div>
+                  ))}
+                  {profile.examResults.filter(isDisplayableExamResult).length > 4 ? (
+                    <p className="text-[11px] text-slate-500">+{profile.examResults.filter(isDisplayableExamResult).length - 4} resultado(s)</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  {isEmptyExamStatus(profile?.examSyncStatus) ? "Nenhum resultado encontrado." : "Sem resultados importados."}
+                </p>
+              )}
             </div>
           </>
         )}

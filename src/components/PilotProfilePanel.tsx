@@ -6,6 +6,7 @@ import {
   type PilotProfile,
   type ProfileDocumentType,
 } from "../lib/rbac";
+import { formatAnacExamDate, formatAnacExamFinalResult } from "../lib/anacExamDisplay";
 import { useToast } from "./ui/ToastProvider";
 
 type ProfileAction = {
@@ -63,6 +64,29 @@ function isExpiredDate(value: string): boolean {
 
 function ExpiredBadge() {
   return <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-medium text-red-300">Vencida</span>;
+}
+
+function examMainLabel(item: PilotProfile["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.cct || item.columns?.cct || cells[1] || item.exame || item.columns?.exame || cells[0] || "—";
+}
+
+function examDate(item: PilotProfile["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.dtExame || item.columns?.dt_exame || cells[cells.length - 2] || item.data || "—";
+}
+
+function examFinalResult(item: PilotProfile["anacExamResults"][number]) {
+  const cells = item.cells ?? [];
+  return item.resultadoFinal || item.columns?.resultado_final || cells[cells.length - 1] || item.resultado || "—";
+}
+
+function isDisplayableExamResult(item: PilotProfile["anacExamResults"][number]) {
+  return examMainLabel(item) !== "—" && /^\d{4}$/.test(examDate(item)) && /^[A-Z0-9]{2,6}$/.test(examFinalResult(item));
+}
+
+function isEmptyExamStatus(value: string | null | undefined) {
+  return String(value || "").endsWith(":empty") || value === "empty";
 }
 
 export function PilotProfilePanel({
@@ -227,7 +251,7 @@ export function PilotProfilePanel({
         </div>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3">
+      <section className="grid gap-4 lg:grid-cols-4">
         <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
           <h3 className="text-sm font-semibold text-slate-200">Habilitações</h3>
           {profile.anacRatings.length === 0 ? (
@@ -286,6 +310,41 @@ export function PilotProfilePanel({
               <span className="text-slate-400">Observações:</span> {profile.anacMedical.observacoes || "—"}
             </p>
           </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+          <h3 className="text-sm font-semibold text-slate-200">Resultados Teóricos ANAC</h3>
+          {profile.anacExamResults.filter(isDisplayableExamResult).length === 0 ? (
+            <p className="mt-2 text-xs text-slate-500">
+              {isEmptyExamStatus(profile.anacExamSyncStatus) ? "Nenhum resultado encontrado na ANAC." : "Nenhum resultado importado."}
+            </p>
+          ) : (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full min-w-[260px] border-collapse text-xs">
+                <thead>
+                  <tr className="text-left uppercase tracking-wide text-slate-500">
+                    <th className="border-b border-slate-700 px-1.5 py-1">CCT</th>
+                    <th className="border-b border-slate-700 px-1.5 py-1">Dt Exame</th>
+                    <th className="border-b border-slate-700 px-1.5 py-1">Resultado final</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {profile.anacExamResults.filter(isDisplayableExamResult).map((item, idx) => (
+                    <tr key={`${examMainLabel(item)}-${idx}`} className="border-b border-slate-800/70 last:border-0">
+                      <td className="px-1.5 py-2 align-top font-medium text-slate-200">{examMainLabel(item)}</td>
+                      <td className="px-1.5 py-2 align-top text-slate-400">{formatAnacExamDate(examDate(item))}</td>
+                      <td className="px-1.5 py-2 align-top text-slate-400">{formatAnacExamFinalResult(examFinalResult(item))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {profile.anacExamLastSyncAt ? (
+            <p className="mt-2 text-[11px] text-slate-600">
+              Atualizado em {new Date(profile.anacExamLastSyncAt).toLocaleString("pt-BR")}
+            </p>
+          ) : null}
         </div>
       </section>
     </div>

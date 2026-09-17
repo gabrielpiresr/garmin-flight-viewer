@@ -42,6 +42,21 @@ export type PilotMedical = {
   orgao_expedidor: string;
   observacoes: string;
 };
+export type AnacExamResult = {
+  inscricao?: string;
+  cct?: string;
+  dtExame?: string;
+  resultadoFinal?: string;
+  exame?: string;
+  data?: string;
+  resultado?: string;
+  nota?: string;
+  local?: string;
+  banca?: string;
+  observacoes?: string;
+  columns?: Record<string, string>;
+  cells?: string[];
+};
 export type ProfileDocumentType =
   | "identification"
   | "voterTitle"
@@ -101,6 +116,11 @@ export type PilotProfile = {
   anacSyncStatus: AnacSyncStatus;
   anacSyncError: string;
   anacLastSyncAt: string;
+  anacExamResults: AnacExamResult[];
+  anacExamSyncStatus: string;
+  anacExamSyncError: string;
+  anacExamLastSyncAt: string;
+  anacExamAutoEnabled: boolean;
   documents: ProfileDocumentAttachments;
   instructorAvailability: InstructorIdentity["defaultAvailability"];
   approvalStatus: ApprovalStatus;
@@ -170,6 +190,11 @@ type ProfileDoc = {
   anac_sync_status?: string;
   anac_sync_error?: string;
   anac_last_sync_at?: string;
+  anac_exam_results_json?: string;
+  anac_exam_sync_status?: string;
+  anac_exam_sync_error?: string;
+  anac_exam_last_sync_at?: string;
+  anac_exam_auto_enabled?: boolean;
   documents_json?: string;
   approval_status?: string;
 };
@@ -206,6 +231,11 @@ export type EnsureProfileUpdates = Partial<{
   anac_sync_status: AnacSyncStatus;
   anac_sync_error: string;
   anac_last_sync_at: string;
+  anac_exam_results_json: string;
+  anac_exam_sync_status: string;
+  anac_exam_sync_error: string;
+  anac_exam_last_sync_at: string;
+  anac_exam_auto_enabled: boolean;
   instructor_availability_json: string;
   instructor_preference_level: InstructorPreferenceLevel;
   // Dados pessoais adicionais
@@ -661,6 +691,11 @@ export async function getProfile(userId: string): Promise<{ data: PilotProfile |
           doc.anac_sync_status === "success" || doc.anac_sync_status === "error" ? doc.anac_sync_status : "pending",
         anacSyncError: doc.anac_sync_error ?? "",
         anacLastSyncAt: doc.anac_last_sync_at ?? "",
+        anacExamResults: parseJsonList<AnacExamResult>(doc.anac_exam_results_json),
+        anacExamSyncStatus: doc.anac_exam_sync_status ?? "",
+        anacExamSyncError: doc.anac_exam_sync_error ?? "",
+        anacExamLastSyncAt: doc.anac_exam_last_sync_at ?? "",
+        anacExamAutoEnabled: doc.anac_exam_auto_enabled === true,
         documents: documentDocs.length > 0 ? toProfileDocuments(documentDocs) : parseProfileDocuments(doc.documents_json),
         approvalStatus: doc.approval_status === "approved" ? "approved" : "pending",
         instructorAvailability: parseInstructorAvailability(instructorPreference?.availability_json),

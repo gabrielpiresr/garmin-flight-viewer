@@ -4,12 +4,15 @@ export type AnacSyncPayload = {
   cpf: string;
   anacCode: string;
   birthDate: string;
+  autoEnableExamSync?: boolean;
 };
 
 type AnacExecutionResponse = {
   pending?: boolean;
   error?: string;
   message?: string;
+  examResults?: number;
+  examPending?: boolean;
 };
 
 function parseExecutionResponse(responseBody: string | undefined): AnacExecutionResponse {
