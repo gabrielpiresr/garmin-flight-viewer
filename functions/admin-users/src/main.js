@@ -376,6 +376,15 @@ const PROFILE_DOCUMENT_SELECT = [
   "file_size",
   "uploaded_at",
 ];
+const PROFILE_DOCUMENT_TYPES = new Set([
+  "identification",
+  "voterTitle",
+  "proofOfResidence",
+  "militaryCertificate",
+  "enrollmentForm",
+  "schoolCertificate",
+  "transferDocument",
+]);
 const PLAN_SELECT = ["$id", "$updatedAt", "student_id", "week_start", "status", "requested_flights_count", "updated_at", "items_json"];
 const AIRCRAFT_SELECT = ["$id", "model_id", "registration", "nickname", "active", "type"];
 const AIRCRAFT_MODEL_SELECT = [
@@ -11013,6 +11022,60 @@ async function syncEnrollmentFormProfileDocument(contract, { fileId, fileName, f
     );
   }
   return safeFileId;
+}
+
+async function attachProfileDocumentForUser(actorUserId, payload = {}) {
+  await requireAdmin(actorUserId);
+  if (!PROFILE_DOCUMENTS_COLLECTION_ID || !FLIGHTS_CSV_BUCKET_ID) {
+    throw Object.assign(new Error("Storage ou coleção de documentos do perfil não configurados."), { status: 500 });
+  }
+
+  const userId = cleanString(payload.userId);
+  const documentType = cleanString(payload.documentType);
+  const fileId = cleanString(payload.fileId);
+  if (!userId) throw Object.assign(new Error("Usuario nao informado."), { status: 400 });
+  if (!PROFILE_DOCUMENT_TYPES.has(documentType)) throw Object.assign(new Error("Tipo de documento invalido."), { status: 400 });
+  if (!fileId) throw Object.assign(new Error("Arquivo nao informado."), { status: 400 });
+
+  await users.get({ userId });
+  const fileName = cleanString(payload.fileName).slice(0, 255) || "Documento";
+  const mimeType = cleanString(payload.mimeType).slice(0, 128) || "application/octet-stream";
+  const fileSize = Math.max(0, Math.round(Number(payload.fileSize) || 0));
+  const existing = await databases.listDocuments(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, [
+    sdk.Query.equal("user_id", [userId]),
+    sdk.Query.equal("document_type", [documentType]),
+    sdk.Query.limit(1),
+  ]);
+  const previousFileId = cleanString(existing.documents?.[0]?.file_id);
+  const now = new Date().toISOString();
+  const data = {
+    school_id: SCHOOL_ID,
+    user_id: userId,
+    document_type: documentType,
+    file_id: fileId,
+    file_name: fileName,
+    mime_type: mimeType,
+    file_size: fileSize,
+    uploaded_at: now,
+  };
+
+  if (existing.documents?.[0]) {
+    await databases.updateDocument(DATABASE_ID, PROFILE_DOCUMENTS_COLLECTION_ID, existing.documents[0].$id, data);
+  } else {
+    await databases.createDocument(
+      DATABASE_ID,
+      PROFILE_DOCUMENTS_COLLECTION_ID,
+      sdk.ID.unique(),
+      data,
+      profileDocumentPermissions(userId),
+    );
+  }
+
+  if (previousFileId && previousFileId !== fileId) {
+    await storage.deleteFile(FLIGHTS_CSV_BUCKET_ID, previousFileId).catch(() => undefined);
+  }
+
+  return getUserDetail(userId);
 }
 
 async function attachEnrollmentFormToProfile(contract) {
@@ -40138,6 +40201,11 @@ module.exports = async ({ req, res, log, error }) => {
 
     if (action === "updateProfile") {
       const user = await updateAdminUserProfile(actorUserId, String(payload.userId || ""), payload.profile || payload);
+      return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "attachProfileDocument") {
+      const user = await attachProfileDocumentForUser(actorUserId, payload);
       return jsonResponse(res, 200, { user });
     }
 

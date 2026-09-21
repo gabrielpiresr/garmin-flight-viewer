@@ -13,6 +13,7 @@ import {
   updateAdminUserInstructorPreferences,
   updateAdminUserProfile,
   updateAdminUserRole,
+  uploadAdminUserProfileDocument,
   type AdminUserProfileUpdateInput,
 } from "../../lib/adminUsersDb";
 import { AdminUserProfileEditSection } from "./AdminUserProfileEditSection";
@@ -24,7 +25,6 @@ import {
   approveStudentAccess,
   getApprovalStatus,
   getProfileDocumentUrl,
-  uploadProfileDocumentAttachment,
   type ApprovalStatus,
   type ProfileDocumentType,
   type UserRole,
@@ -343,24 +343,17 @@ function ProfileDocumentsCard({
   async function handleUpload(type: ProfileDocumentType, file: File | undefined) {
     if (!file || !detail.profile.docId) return;
     setBusyDocument(type);
-    const result = await uploadProfileDocumentAttachment(
-      {
-        docId: detail.profile.docId,
-        userId: detail.userId,
-        documents: detail.profile.documents ?? {},
-      },
-      type,
-      file,
-    );
-    setBusyDocument(null);
-    const input = fileInputs.current[type];
-    if (input) input.value = "";
-    if (result.error || !result.data) {
-      showToast({ variant: "error", message: result.error?.message ?? "Nao foi possivel anexar o documento." });
-      return;
+    try {
+      const user = await uploadAdminUserProfileDocument({ userId: detail.userId, type, file });
+      onUpdated(user);
+      showToast({ variant: "success", message: "Documento atualizado." });
+    } catch (error) {
+      showToast({ variant: "error", message: (error as Error).message || "Nao foi possivel anexar o documento." });
+    } finally {
+      setBusyDocument(null);
+      const input = fileInputs.current[type];
+      if (input) input.value = "";
     }
-    onUpdated({ ...detail, profile: { ...detail.profile, documents: result.data } });
-    showToast({ variant: "success", message: "Documento atualizado." });
   }
 
   async function handleGenerateEnrollmentForm() {

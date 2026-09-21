@@ -1,6 +1,6 @@
-import { functions, ADMIN_USERS_FUNCTION_ID } from "./appwrite";
+import { BUCKET_ID, functions, ADMIN_USERS_FUNCTION_ID, ID, Permission, Role, storage } from "./appwrite";
 import type { SagaAnacPerson } from "./sagaAnacSync";
-import type { UserRole } from "./rbac";
+import type { ProfileDocumentType, UserRole } from "./rbac";
 import type { InstructorPreferenceLevel, SchedulePeriod } from "../types/schedule";
 import type { AvailabilityType } from "../types/planning";
 import type { Contract } from "../types/contracts";
@@ -350,6 +350,42 @@ export async function getAdminUserDetail(userId: string): Promise<AdminUserDetai
   const response = await executeAdminUsers({ action: "getDetail", userId });
   if (!response.user) throw new Error(response.message || "Usuário não retornado pela função.");
   return response.user;
+}
+
+function adminManagedProfileDocumentPermissions(): string[] {
+  return [
+    Permission.read(Role.users()),
+    Permission.read(Role.label("admin")),
+    Permission.update(Role.label("admin")),
+    Permission.delete(Role.label("admin")),
+  ];
+}
+
+export async function uploadAdminUserProfileDocument(input: {
+  userId: string;
+  type: ProfileDocumentType;
+  file: File;
+}): Promise<AdminUserDetail> {
+  if (!storage || !BUCKET_ID) {
+    throw new Error("Appwrite Storage nao configurado.");
+  }
+  const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), input.file, adminManagedProfileDocumentPermissions());
+  try {
+    const response = await executeAdminUsers({
+      action: "attachProfileDocument",
+      userId: input.userId,
+      documentType: input.type,
+      fileId: uploaded.$id,
+      fileName: input.file.name,
+      mimeType: input.file.type || "application/octet-stream",
+      fileSize: input.file.size,
+    });
+    if (!response.user) throw new Error(response.message || "Usuario nao retornado pela funcao.");
+    return response.user;
+  } catch (error) {
+    await storage.deleteFile(BUCKET_ID, uploaded.$id).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function createAdminUser(input: {
