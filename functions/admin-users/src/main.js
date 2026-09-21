@@ -9511,18 +9511,12 @@ async function getInstructorPrefsByUserIds(userIds) {
 }
 
 function toProfileDocuments(docs) {
-  const allowed = new Set([
-    "identification",
-    "voterTitle",
-    "proofOfResidence",
-    "militaryCertificate",
-    "enrollmentForm",
-  ]);
   const documents = {};
   for (const doc of docs || []) {
     const type = doc.document_type || "";
-    if (!allowed.has(type) || !doc.file_id) continue;
+    if (!PROFILE_DOCUMENT_TYPES.has(type) || !doc.file_id) continue;
     documents[type] = {
+      docId: doc.$id,
       fileId: doc.file_id,
       fileName: doc.file_name || "Documento",
       mimeType: doc.mime_type || "application/octet-stream",
