@@ -844,6 +844,118 @@ function CadastroLinkModal({
   );
 }
 
+function RawCadastroLinkModal({
+  onClose,
+  showToast,
+}: {
+  onClose: () => void;
+  showToast: (message: string, variant?: "success" | "error" | "warning") => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [options, setOptions] = useState<RegistrationLinkOptions>(() => ({
+    ...CRM_REGISTRATION_LINK_DEFAULT_OPTIONS,
+    chargeTransfer: false,
+  }));
+
+  function buildCadastroUrl() {
+    const url = new URL(`${window.location.origin}/cadastro`);
+    if (options.chargeGround) url.searchParams.set("chargeGround", "true");
+    if (options.chargeEnrollment) url.searchParams.set("chargeEnrollment", "true");
+    if (options.allowFirstFlightBooking) url.searchParams.set("allowFirstFlightBooking", "true");
+    return url.toString();
+  }
+
+  function patchOptions(patch: Partial<RegistrationLinkOptions>) {
+    setOptions((current) => {
+      const next = { ...current, ...patch, chargeTransfer: false };
+      next.allowCheckout = next.chargeGround || next.chargeEnrollment;
+      return next;
+    });
+  }
+
+  function copyLink() {
+    const url = buildCadastroUrl();
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      showToast("Link cru de registro copiado!");
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  const cadastroUrl = buildCadastroUrl();
+  const inputCls = "flex-1 rounded-lg border border-slate-700 bg-[var(--bg)] px-3 py-2 text-xs text-slate-300 focus:outline-none";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-xl border border-slate-700/60 bg-[var(--panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <h2 className="text-sm font-semibold text-slate-100">Link cru de registro</h2>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+        <div className="space-y-4 p-5">
+          <p className="text-xs leading-relaxed text-slate-400">
+            Link público sem lead prévio. Quando o aluno concluir o formulário, o CRM cria ou reaproveita o lead pelo e-mail e move para Registro Preenchido.
+          </p>
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Opções do link</p>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeGround}
+                onChange={(event) => patchOptions({ chargeGround: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento do Ground School</span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.chargeEnrollment}
+                onChange={(event) => patchOptions({ chargeEnrollment: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir pagamento da matrícula</span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg px-1 py-1.5 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={options.allowFirstFlightBooking}
+                onChange={(event) => patchOptions({ allowFirstFlightBooking: event.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-slate-600 accent-sky-500"
+              />
+              <span>Permitir agendamento do Ground + primeiro voo</span>
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <input readOnly value={cadastroUrl} className={inputCls} />
+            <button
+              type="button"
+              onClick={copyLink}
+              className={`rounded-lg border px-3 py-2 text-xs transition ${
+                copied
+                  ? "border-emerald-600 bg-emerald-600/20 text-emerald-300"
+                  : "border-slate-700 text-slate-400 hover:bg-slate-800"
+              }`}
+            >
+              {copied ? "Copiado!" : "Copiar"}
+            </button>
+          </div>
+        </div>
+        <div className="flex justify-end border-t border-slate-800 px-5 py-3">
+          <button type="button" onClick={onClose}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 transition hover:bg-slate-800">
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Modal Detalhes do Lead ───────────────────────────────────────────────────
 
 function LeadDetailModal({
@@ -2967,6 +3079,7 @@ export function CrmTab() {
   const [lostReasonModal, setLostReasonModal] = useState<{ lead: CrmLead } | null>(null);
   const [proposalAcceptModal, setProposalAcceptModal] = useState<{ lead: CrmLead; proposals: CrmProposal[] } | null>(null);
   const [cardSettingsOpen, setCardSettingsOpen] = useState(false);
+  const [rawCadastroLinkOpen, setRawCadastroLinkOpen] = useState(false);
   const [statusSettings, setStatusSettings] = useState<CrmStatusSetting[]>([]);
   const [statusSettingsModal, setStatusSettingsModal] = useState<CrmStatus | null>(null);
   const [statusSettingsSaving, setStatusSettingsSaving] = useState(false);
@@ -3438,6 +3551,18 @@ export function CrmTab() {
             </button>
             <button
               type="button"
+              title="Copiar link cru de registro"
+              onClick={() => setRawCadastroLinkOpen(true)}
+              className="flex items-center gap-1 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4">
+                <path fillRule="evenodd" d="M4 2.75A1.75 1.75 0 015.75 1h5.5A1.75 1.75 0 0113 2.75v7.5A1.75 1.75 0 0111.25 12h-5.5A1.75 1.75 0 014 10.25v-7.5zM5.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h5.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-5.5z" clipRule="evenodd" />
+                <path d="M2.5 5.75A.75.75 0 013.25 5h.25v5.25A2.25 2.25 0 005.75 12.5H10v.25A1.75 1.75 0 018.25 14.5h-3.5A2.25 2.25 0 012.5 12.25v-6.5z" />
+              </svg>
+              <span className="hidden sm:inline">Registro</span>
+            </button>
+            <button
+              type="button"
               onClick={() => void reloadLeads()}
               disabled={refreshing}
               title="Atualizar"
@@ -3640,6 +3765,12 @@ export function CrmTab() {
           visibleFields={visibleFields}
           onToggle={toggleField}
           onClose={() => setCardSettingsOpen(false)}
+        />
+      )}
+      {rawCadastroLinkOpen && (
+        <RawCadastroLinkModal
+          onClose={() => setRawCadastroLinkOpen(false)}
+          showToast={showToast}
         />
       )}
 

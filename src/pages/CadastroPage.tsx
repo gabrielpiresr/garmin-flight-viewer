@@ -10,7 +10,7 @@ import {
   type ProfileDocumentAttachment,
 } from "../lib/rbac";
 import { executeAnacSync } from "../lib/anacSync";
-import { createLead, getLeadByEmail, getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
+import { createLead, generateCadastroToken, getLeadByEmail, getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
 import { runRegistrationEnrollmentAutomation } from "../lib/adminUsersDb";
 import { listContractsForUser, signContractViaAdminFunction } from "../lib/contractsDb";
 import {
@@ -976,6 +976,7 @@ export function CadastroPage() {
   const [alreadyDone, setAlreadyDone] = useState(false);
   const [done, setDone] = useState(false);
   const [registeredUserId, setRegisteredUserId] = useState<string | null>(null);
+  const [runtimeRegistrationToken, setRuntimeRegistrationToken] = useState("");
   const [registrationOptions, setRegistrationOptions] = useState<RegistrationLinkOptions>(DEFAULT_REGISTRATION_LINK_OPTIONS);
   const [onboardingView, setOnboardingView] = useState<OnboardingView>(() => onboardingViewFromPath(window.location.pathname));
   const [booked, setBooked] = useState<RegistrationBookingSummary | null>(() => loadOnboardingPersist(token).booked ?? null);
@@ -1024,7 +1025,8 @@ export function CadastroPage() {
   const groundMoveDone = useRef(false);
 
   const isRawCrmInvite = invite?.source === "crm" && !token;
-  const onboardingEnabled = !isRawCrmInvite && (hasRegistrationOnboarding(registrationOptions) || invite?.source === "crm");
+  const registrationToken = token || runtimeRegistrationToken;
+  const onboardingEnabled = hasRegistrationOnboarding(registrationOptions) || (!isRawCrmInvite && invite?.source === "crm");
   const needsPay = needsRegistrationPayment(registrationOptions);
   const needsBook = needsRegistrationBooking(registrationOptions);
   const isTransferRegistration = !isRawCrmInvite && invite?.source === "crm" && Boolean(crmLead?.transferSchool || crmLead?.crmStatus === "aguardando_transferencia");
@@ -1035,7 +1037,7 @@ export function CadastroPage() {
   const contractsDone = !needsContracts || (activeRegistrationContracts.length > 0 && activeRegistrationContracts.every((contract) => !contractNeedsStudentSignature(contract)));
   const { paid, markPaid } = useRegistrationPaymentStatus({
     enabled: done && needsPay,
-    token,
+    token: registrationToken,
     userId: registeredUserId,
     chargeGround: registrationOptions.chargeGround,
     chargeEnrollment: registrationOptions.chargeEnrollment,
@@ -1173,7 +1175,7 @@ export function CadastroPage() {
         anacCode: null,
       });
       setCrmLead(null);
-      setRegistrationOptions(DEFAULT_REGISTRATION_LINK_OPTIONS);
+      setRegistrationOptions(registrationLinkOptionsFromParams(params));
       setNotFound(false);
       setLoading(false);
       return;
@@ -1532,10 +1534,19 @@ export function CadastroPage() {
           },
         });
         if (registerLeadError) throw registerLeadError;
-        setCrmLead(registeredLead ?? { ...targetLead, userId, crmStatus: "registro_preenchido" as const });
+        let leadAfterRegistration = registeredLead ?? { ...targetLead, userId, crmStatus: "registro_preenchido" as const };
+        let nextRegistrationToken = leadAfterRegistration.qualToken ?? "";
+        if (hasRegistrationOnboarding(registrationOptions) && !nextRegistrationToken) {
+          const { token: generatedToken, error: tokenError } = await generateCadastroToken(leadAfterRegistration.id);
+          if (tokenError || !generatedToken) throw tokenError ?? new Error("Não foi possível preparar o link de continuidade do cadastro.");
+          nextRegistrationToken = generatedToken;
+          leadAfterRegistration = { ...leadAfterRegistration, qualToken: generatedToken };
+        }
+        if (nextRegistrationToken) setRuntimeRegistrationToken(nextRegistrationToken);
+        setCrmLead(leadAfterRegistration);
         setInvite((current) => current ? {
           ...current,
-          id: (registeredLead ?? targetLead).id,
+          id: leadAfterRegistration.id,
           email: registrationEmail,
           name: s1.fullName.trim(),
           phone: phoneDigits,
@@ -1573,7 +1584,7 @@ export function CadastroPage() {
 
   function handleBooked(summary: RegistrationBookingSummary) {
     setBooked(summary);
-    saveOnboardingPersist(token, { booked: summary });
+    saveOnboardingPersist(registrationToken, { booked: summary });
     goToOnboardingView("checklist", "replace");
   }
 
@@ -1710,7 +1721,7 @@ export function CadastroPage() {
               />
             ) : onboardingView === "payment" ? (
               <RegistrationPaymentView
-                token={token}
+                token={registrationToken}
                 userId={registeredUserId}
                 options={registrationOptions}
                 isTestMode={isTestMode}
