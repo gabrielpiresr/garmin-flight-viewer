@@ -10,7 +10,7 @@ import {
   type ProfileDocumentAttachment,
 } from "../lib/rbac";
 import { executeAnacSync } from "../lib/anacSync";
-import { getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
+import { createLead, getLeadByEmail, getLeadByToken, moveLeadToCrmStatus } from "../lib/crmDb";
 import { runRegistrationEnrollmentAutomation } from "../lib/adminUsersDb";
 import { listContractsForUser, signContractViaAdminFunction } from "../lib/contractsDb";
 import {
@@ -460,6 +460,10 @@ function makeTestDocuments(): DocFiles {
 function queryFlag(params: URLSearchParams, key: string): boolean {
   const value = params.get(key)?.trim().toLowerCase();
   return value === "true" || value === "1" || value === "sim" || value === "yes";
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 function registrationLinkOptionsFromParams(params: URLSearchParams): RegistrationLinkOptions {
@@ -975,6 +979,7 @@ export function CadastroPage() {
   const [registrationOptions, setRegistrationOptions] = useState<RegistrationLinkOptions>(DEFAULT_REGISTRATION_LINK_OPTIONS);
   const [onboardingView, setOnboardingView] = useState<OnboardingView>(() => onboardingViewFromPath(window.location.pathname));
   const [booked, setBooked] = useState<RegistrationBookingSummary | null>(() => loadOnboardingPersist(token).booked ?? null);
+  const [rawEmail, setRawEmail] = useState(() => params.get("email")?.trim().toLowerCase() ?? "");
   const [busy, setBusy] = useState(false);
   const [busyMsg, setBusyMsg] = useState("Aguarde...");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -1018,11 +1023,12 @@ export function CadastroPage() {
   const [enrollmentAutomationRunning, setEnrollmentAutomationRunning] = useState(false);
   const groundMoveDone = useRef(false);
 
-  const onboardingEnabled = hasRegistrationOnboarding(registrationOptions) || invite?.source === "crm";
+  const isRawCrmInvite = invite?.source === "crm" && !token;
+  const onboardingEnabled = !isRawCrmInvite && (hasRegistrationOnboarding(registrationOptions) || invite?.source === "crm");
   const needsPay = needsRegistrationPayment(registrationOptions);
   const needsBook = needsRegistrationBooking(registrationOptions);
-  const isTransferRegistration = invite?.source === "crm" && Boolean(crmLead?.transferSchool || crmLead?.crmStatus === "aguardando_transferencia");
-  const needsContracts = invite?.source === "crm";
+  const isTransferRegistration = !isRawCrmInvite && invite?.source === "crm" && Boolean(crmLead?.transferSchool || crmLead?.crmStatus === "aguardando_transferencia");
+  const needsContracts = !isRawCrmInvite && invite?.source === "crm";
   const transferDocumentDone = transferDocuments.length > 0 || Boolean(transferProfile?.documents.transferDocument);
   const transferRemainingSlots = Math.max(0, TRANSFER_DOCUMENT_LIMIT - transferDocuments.length);
   const activeRegistrationContracts = registrationContracts.filter((contract) => contract.status !== "cancelled");
@@ -1151,7 +1157,27 @@ export function CadastroPage() {
   }, [alreadyDone, done, invite, isTestMode]);
 
   useEffect(() => {
-    if (!token) { setNotFound(true); setLoading(false); return; }
+    if (!token) {
+      setInvite({
+        source: "crm",
+        id: "",
+        email: "",
+        name: "",
+        phone: null,
+        userId: null,
+        referrerUserId: null,
+        cpf: null,
+        birthDate: null,
+        weightKg: null,
+        heightCm: null,
+        anacCode: null,
+      });
+      setCrmLead(null);
+      setRegistrationOptions(DEFAULT_REGISTRATION_LINK_OPTIONS);
+      setNotFound(false);
+      setLoading(false);
+      return;
+    }
     void (async () => {
       const { data: lead } = await getLeadByToken(token);
       if (lead) {
@@ -1254,6 +1280,10 @@ export function CadastroPage() {
   }, [token]);
 
   function handleStep1Next() {
+    if (isRawCrmInvite && !isValidEmail(rawEmail)) {
+      setErrorMsg("Informe um e-mail válido antes de continuar.");
+      return;
+    }
     const cpfDigits = onlyDigits(s1.cpf);
     const phoneDigits = onlyDigits(s1.phone);
     const weight = Number(s1.weightKg.replace(",", "."));
@@ -1321,6 +1351,11 @@ export function CadastroPage() {
 
   async function handleSubmit() {
     if (!invite || !account) return;
+    const registrationEmail = (isRawCrmInvite ? rawEmail : invite.email).trim().toLowerCase();
+    if (!isValidEmail(registrationEmail)) {
+      setErrorMsg("Informe um e-mail válido antes de criar a conta.");
+      return;
+    }
 
     // Validar docs obrigatórios (certificado militar obrigatório para homens)
     if (invite.source !== "crm") {
@@ -1349,16 +1384,16 @@ export function CadastroPage() {
       // 1. Criar conta Appwrite
       setBusyMsg("Criando sua conta...");
       const currentAccount = await account.get().catch(() => null);
-      if (currentAccount?.email === invite.email) {
+      if (currentAccount?.email === registrationEmail) {
         userId = currentAccount.$id;
       } else try {
-        const created = await account.create(ID.unique(), invite.email, s2.password, s1.fullName.trim());
+        const created = await account.create(ID.unique(), registrationEmail, s2.password, s1.fullName.trim());
         userId = created.$id;
       } catch (e) {
         const appErr = e as { code?: number };
         if (appErr.code === 409) {
           try {
-            await account.createEmailPasswordSession(invite.email, s2.password);
+            await account.createEmailPasswordSession(registrationEmail, s2.password);
             const u = await account.get();
             userId = u.$id;
           } catch {
@@ -1372,12 +1407,12 @@ export function CadastroPage() {
       }
 
       // 2. Criar sessão
-      try { await account.createEmailPasswordSession(invite.email, s2.password); } catch { /* já existe */ }
+      try { await account.createEmailPasswordSession(registrationEmail, s2.password); } catch { /* já existe */ }
 
       // 3. Criar perfil
       setBusyMsg("Salvando seus dados...");
       const profileRole = invite.source === "instructor" ? "instrutor" : "aluno";
-      await ensureProfile(userId, invite.email, profileRole, {
+      await ensureProfile(userId, registrationEmail, profileRole, {
         full_name: s1.fullName.trim(),
         ...(invite.referrerUserId ? { referrer_user_id: invite.referrerUserId } : {}),
         cpf: cpfDigits,
@@ -1436,7 +1471,11 @@ export function CadastroPage() {
           extraUpdates: {
             userId,
             name: s1.fullName.trim(),
+            email: registrationEmail,
             phone: phoneDigits,
+            cpf: cpfDigits,
+            birthDate: s1.birthDate,
+            anacCode: anacDigits,
             weightKg: weight,
             heightCm: height,
             qualFilledAt: new Date().toISOString(),
@@ -1458,6 +1497,55 @@ export function CadastroPage() {
         } finally {
           setEnrollmentAutomationRunning(false);
         }
+      } else if (invite.source === "crm" && isRawCrmInvite) {
+        setBusyMsg("Atualizando o CRM...");
+        const { data: existingLead, error: existingLeadError } = await getLeadByEmail(registrationEmail);
+        if (existingLeadError) throw existingLeadError;
+
+        let targetLead = existingLead;
+        if (!targetLead) {
+          const { data: createdLead, error: createLeadError } = await createLead({
+            userId,
+            name: s1.fullName.trim(),
+            email: registrationEmail,
+            phone: phoneDigits,
+            anacCode: anacDigits,
+            crmStatus: "registro_preenchido",
+          });
+          if (createLeadError || !createdLead) throw createLeadError ?? new Error("Não foi possível criar o lead no CRM.");
+          targetLead = createdLead;
+        }
+
+        const { data: registeredLead, error: registerLeadError } = await moveLeadToCrmStatus(targetLead.id, "registro_preenchido", {
+          currentLead: targetLead,
+          extraUpdates: {
+            userId,
+            name: s1.fullName.trim(),
+            email: registrationEmail,
+            phone: phoneDigits,
+            cpf: cpfDigits,
+            birthDate: s1.birthDate,
+            anacCode: anacDigits,
+            weightKg: weight,
+            heightCm: height,
+            qualFilledAt: new Date().toISOString(),
+          },
+        });
+        if (registerLeadError) throw registerLeadError;
+        setCrmLead(registeredLead ?? { ...targetLead, userId, crmStatus: "registro_preenchido" as const });
+        setInvite((current) => current ? {
+          ...current,
+          id: (registeredLead ?? targetLead).id,
+          email: registrationEmail,
+          name: s1.fullName.trim(),
+          phone: phoneDigits,
+          userId,
+          cpf: cpfDigits,
+          birthDate: s1.birthDate,
+          weightKg: weight,
+          heightCm: height,
+          anacCode: anacDigits,
+        } : current);
       } else if (invite.source === "instructor") {
         await updateInstructorAdmissionCandidate(invite.id, {
           userId,
@@ -1836,7 +1924,18 @@ export function CadastroPage() {
             {/* E-mail sempre visível */}
             <label className="block text-xs text-slate-500">
               E-mail
-              <div className={`${inputCls} text-slate-400 cursor-default`}>{invite.email}</div>
+              {isRawCrmInvite ? (
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={rawEmail}
+                  onChange={(e) => setRawEmail(e.target.value.trim().toLowerCase())}
+                  className={inputCls}
+                  placeholder="seu@email.com"
+                />
+              ) : (
+                <div className={`${inputCls} text-slate-400 cursor-default`}>{invite.email}</div>
+              )}
             </label>
 
             {/* ── Conteúdo do step com animação ── */}
