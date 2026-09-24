@@ -138,6 +138,12 @@ test("WhatsApp parse: Ver na plataforma / wpp_open_route", () => {
   assert.equal(wppRoute.parseWppRouteCommand("Ver na plataforma")?.kind, "open");
   assert.equal(wppRoute.parseWppRouteCommand("Rota SBJD SBBH")?.kind, "route");
   assert.equal(wppRoute.parseWppRouteCommand("Rota SBJD SBBH")?.origin, "SBJD");
+  const lowercase = wppRoute.parseWppRouteCommand("Rota snpa snto");
+  assert.equal(lowercase?.kind, "route");
+  assert.deepEqual(lowercase?.icaos, ["SNPA", "SNTO"]);
+  const typoAlias = wppRoute.parseWppRouteCommand("rots sbbh sbjd");
+  assert.equal(typoAlias?.kind, "route");
+  assert.deepEqual(typoAlias?.icaos, ["SBBH", "SBJD"]);
   const multi = wppRoute.parseWppRouteCommand("Rota SBJD SDCO SDPW SBJD");
   assert.equal(multi?.kind, "route");
   assert.deepEqual(multi?.icaos, ["SBJD", "SDCO", "SDPW", "SBJD"]);

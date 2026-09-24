@@ -8,6 +8,7 @@ const ESRI_EXPORT = "https://services.arcgisonline.com/ArcGIS/rest/services/Worl
 const CRUISE_KT = routePerf.DEFAULT_FLIGHT_PERFORMANCE.cruiseSpeedKt;
 const BURN_LPH = routePerf.DEFAULT_FLIGHT_PERFORMANCE.cruiseBurnPerHour;
 const ICAO_RE = /^[A-Z0-9]{4}$/;
+const ROUTE_COMMAND_RE = /^(?:rota|rots)\b/i;
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1248;
 const MAP_SCALE = MAP_WIDTH / 1200;
@@ -46,11 +47,12 @@ function parseWppRouteCommand(text, responseId = "") {
     if (help === "wpp_open_route" || help === "ver na plataforma" || help === "abrir rota") {
       return { kind: "open" };
     }
-    if (!/^rota\b/i.test(normalized)) continue;
-    const rest = normalized.replace(/^rota\s+/i, "").trim();
+    if (!ROUTE_COMMAND_RE.test(normalized)) continue;
+    const rest = normalized.replace(ROUTE_COMMAND_RE, "").trim();
     if (!rest) continue;
     const tokens = rest
-      .split(/\s*(?:para|to|-|\/|->|→|>)\s*|\s+/i)
+      .split(/\s*(?:->|→|>|-|\/)\s*|\s+/i)
+      .filter((token) => !/^(?:para|to)$/i.test(token))
       .map((token) => normalizeIcao(token))
       .filter((token) => ICAO_RE.test(token));
     if (tokens.length < 2) continue;
