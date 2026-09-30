@@ -44,3 +44,29 @@ test("normalizes a LastLink confirmed purchase payload", () => {
   assert.equal(normalized.checkoutCode, "ABC123");
   assert.equal(normalized.provider, "lastlink");
 });
+
+test("does not misclassify the current Cakto envelope as LastLink", () => {
+  assert.equal(isLastLinkPayload({
+    event: "purchase_approved",
+    data: {
+      id: "2CfWLW3",
+      refId: "2CfWLW3",
+      status: "paid",
+      amount: 5982,
+      customer: { name: "Maria Silva", email: "maria@example.com" },
+      product: { id: "product-1", name: "Créditos de Hora de Voo" },
+      offer: { id: "offer-1", price: 5982, currency: "BRL" },
+    },
+  }), false);
+});
+
+test("keeps accepting a camelCase legacy LastLink envelope", () => {
+  assert.equal(isLastLinkPayload({
+    event: "Purchase_Order_Confirmed",
+    data: {
+      Buyer: { Name: "Maria Silva" },
+      Purchase: { Price: { Value: 550 } },
+      Products: [],
+    },
+  }), true);
+});

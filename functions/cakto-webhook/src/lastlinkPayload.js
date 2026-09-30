@@ -27,9 +27,27 @@ const LASTLINK_EVENT_MAP = {
 
 function isLastLinkPayload(payload) {
   const body = asObject(payload);
-  const eventName = clean(body.Event || body.event);
-  const data = body.Data || body.data;
-  return Boolean(eventName) && data && typeof data === "object";
+  const data = body.Data ?? body.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+
+  // LastLink's legacy envelope uses PascalCase fields. Keep accepting that
+  // shape even when its Data object is empty, as the rest of the normalizer
+  // already handles the optional nested fields defensively.
+  if (clean(body.Event)) return Boolean(clean(body.Event));
+
+  // Some legacy deliveries may use camelCase. The current Cakto envelope
+  // also uses `event`/`data`, so require a LastLink-specific nested shape
+  // before routing it to lastlinkNormalize. Otherwise Cakto's
+  // `purchase_approved` payload would be incorrectly ignored with HTTP 200.
+  if (!clean(body.event)) return false;
+  return Boolean(
+    data.Buyer ||
+    data.buyer ||
+    data.Purchase ||
+    data.purchase ||
+    data.Products ||
+    data.products,
+  );
 }
 
 function mapLastLinkEvent(eventName) {
