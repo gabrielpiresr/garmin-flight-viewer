@@ -61,6 +61,7 @@ type AdminUsersResponse = {
   creditSaga?: CreditSagaResult;
   data?: SagaAnacPerson;
   anacSync?: AdminUserAnacSyncResult;
+  auditRecorded?: boolean;
   ok?: boolean;
 };
 
@@ -402,6 +403,12 @@ export async function createAdminUser(input: {
   const response = await executeAdminUsers({ action: "createUser", user: input });
   if (!response.user) throw new Error(response.message || "Usuario nao retornado pela funcao.");
   return response.user;
+}
+
+export async function updateAdminUserPassword(userId: string, password: string): Promise<{ auditRecorded: boolean }> {
+  const response = await executeAdminUsers({ action: "updateUserPassword", userId, password });
+  if (response.ok !== true) throw new Error(response.message || "Não foi possível definir a nova senha.");
+  return { auditRecorded: response.auditRecorded === true };
 }
 
 export async function listAdminFlightReports(params: AdminFlightReportParams = {}): Promise<AdminFlightReportPage> {

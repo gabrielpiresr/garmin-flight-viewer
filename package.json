@@ -11,6 +11,7 @@
     "test:flight-radar-watch": "node --test functions/admin-users/src/flightRadarWatch.test.cjs",
     "test:lastlink": "node --test functions/admin-users/src/lastlink.test.cjs functions/cakto-webhook/src/lastlinkPayload.test.cjs",
     "test:security": "node --test functions/admin-users/src/security.test.cjs functions/admin-users/src/rootAccessPolicy.test.cjs functions/admin-users/src/memberkit.test.cjs scripts/security-frontend.test.cjs",
+    "test:passwords": "node --test functions/admin-users/src/passwordManagement.test.cjs",
     "test:multi-role": "node --test scripts/test-multi-role-rbac.mjs",
     "preview": "vite preview",
     "charts:extents": "node scripts/build-chart-tiles/fetch-extents.mjs",

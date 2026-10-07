@@ -37,6 +37,7 @@ test("guest can access required public flows in strict mode", () => {
 test("strict mode blocks non-public guest actions", () => {
   for (const action of [
     "createUser",
+    "updateUserPassword",
     "saveEmailSettings",
     "updateRole",
     "createCredit",

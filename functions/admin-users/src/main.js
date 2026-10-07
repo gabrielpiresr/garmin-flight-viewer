@@ -4104,13 +4104,8 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
       // Name updates are best effort during imports.
     }
   }
-  if (!created && shouldUseCpfPassword) {
-    try {
-      await users.updatePassword({ userId: authUser.$id, password: cpfPassword });
-    } catch {
-      // Password updates are best effort during imports.
-    }
-  }
+  // Existing credentials belong to the user, including after recovery or an
+  // admin password change. The CPF is only used when creating a new account.
 
   const labels = Array.from(
     new Set([...(authUser.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), role]),
@@ -8369,6 +8364,13 @@ async function tenantRoleAllowsTab(slug, tabKey) {
   if (!role) return false;
   const permissions = parseRolePermissionsJson(role.permissions_json);
   return permissions.tabs?.[tabKey] === true;
+}
+
+async function tenantRoleAllowsAction(slug, actionKey) {
+  if (cleanString(slug) === "admin") return true;
+  const role = await getTenantRoleDocBySlug(slug);
+  if (!role) return false;
+  return parseRolePermissionsJson(role.permissions_json).actions?.[actionKey] === true;
 }
 
 async function resolvePortalTypeForSlug(slug) {
@@ -13841,6 +13843,54 @@ async function createAdminUser(actorUserId, payload = {}) {
     throw error;
   }
   return getUserDetail(authUser.$id);
+}
+
+async function updateAdminUserPassword(actorUserId, targetUserId, password, req = null) {
+  await requireAdmin(actorUserId);
+  const actorProfile = await getProfileByUserId(actorUserId);
+  const activeSlug = parseActiveRoleSlug(actorProfile, parseAssignedRoleSlugs(actorProfile));
+  if ((actorProfile?.school_id && actorProfile.school_id !== SCHOOL_ID)
+    || !(await tenantRoleAllowsAction(activeSlug, "users.manage"))) {
+    throw Object.assign(new Error("Sem permissão para gerenciar senhas de usuários."), { status: 403 });
+  }
+
+  const userId = cleanString(targetUserId);
+  if (!userId) throw Object.assign(new Error("Usuário não informado."), { status: 400 });
+  if (typeof password !== "string" || password.length < 8 || !password.trim()) {
+    throw Object.assign(new Error("A nova senha deve ter pelo menos 8 caracteres."), { status: 400 });
+  }
+  const profile = await getProfileByUserId(userId);
+  if (!profile || profile.school_id !== SCHOOL_ID) {
+    throw Object.assign(new Error("Usuário não encontrado nesta escola."), { status: 404 });
+  }
+  const previous = await users.get({ userId });
+  let updated;
+  try {
+    // Preserve the exact password; never trim it or include it in the response/audit.
+    updated = await users.updatePassword({ userId, password });
+  } catch (err) {
+    const messages = {
+      password_recently_used: "Escolha uma senha diferente das utilizadas recentemente.",
+      password_personal_data: "Escolha uma senha que não contenha dados pessoais do usuário.",
+      password_pwned: "Esta senha foi encontrada em vazamentos. Escolha outra senha.",
+    };
+    const status = Number(err?.code);
+    throw Object.assign(new Error(messages[err?.type] || "Não foi possível definir a nova senha. Confira as regras de senha e tente novamente."), {
+      status: status >= 400 && status < 500 ? status : 500,
+    });
+  }
+  const auditEvent = await createAuditEvent(actorUserId, {
+    eventType: "admin_user_password_updated",
+    entityType: "user",
+    entityId: userId,
+    reason: "Nova senha definida pelo administrador no painel de usuários.",
+    beforeSnapshot: { passwordUpdatedAt: previous.passwordUpdate || null },
+    afterSnapshot: { passwordUpdatedAt: updated.passwordUpdate || null },
+    ip: req?.headers?.["x-forwarded-for"] || req?.headers?.["x-real-ip"] || "",
+    userAgent: req?.headers?.["user-agent"] || "",
+  }).catch(() => null);
+  // A failed audit must not report the password change as failed or prompt a retry.
+  return { ok: true, passwordUpdatedAt: updated.passwordUpdate || null, auditRecorded: Boolean(auditEvent) };
 }
 
 async function updateRole(actorUserId, targetUserId, roleOrRoles, customRoleSlug = null, roleCustomSlugs = null) {
@@ -39823,6 +39873,11 @@ module.exports = async ({ req, res, log, error }) => {
     if (action === "createUser") {
       const user = await createAdminUser(actorUserId, payload.user || payload);
       return jsonResponse(res, 200, { user });
+    }
+
+    if (action === "updateUserPassword") {
+      const result = await updateAdminUserPassword(actorUserId, payload.userId, payload.password, req);
+      return jsonResponse(res, 200, result);
     }
 
     if (action === "lookupSagaAnacPersonAdmin") {

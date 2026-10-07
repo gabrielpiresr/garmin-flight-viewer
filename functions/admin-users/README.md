@@ -19,3 +19,11 @@ No frontend, configure:
 VITE_APPWRITE_ADMIN_USERS_FUNCTION_ID=...
 VITE_APPWRITE_INSTRUCTOR_PREFS_COL_ID=...
 ```
+
+## Senhas
+
+A importação SAGA define a senha inicial somente ao criar uma conta. Contas existentes preservam sua senha, inclusive após recuperação ou alteração por um administrador.
+
+A ação `updateUserPassword` recebe `userId` e `password` (mínimo de 8 caracteres). Exige administrador com permissão `users.manage` e perfil do usuário na escola da função. Retorna `ok` e `auditRecorded`, sem retornar senha ou hash. Registra o evento `admin_user_password_updated` com o administrador, usuário e horários da alteração; se a auditoria falhar, a senha continua alterada e `auditRecorded` será `false`.
+
+Validação: `npm run test:passwords` na raiz do projeto. Para disponibilizar a ação do painel, publique a função `admin-users` e o frontend atualizado.

@@ -17,6 +17,7 @@ import {
   type AdminUserProfileUpdateInput,
 } from "../../lib/adminUsersDb";
 import { AdminUserProfileEditSection } from "./AdminUserProfileEditSection";
+import { AdminUserPasswordModal } from "./AdminUserPasswordModal";
 import { formatAnacExamDate, formatAnacExamFinalResult } from "../../lib/anacExamDisplay";
 import { BUCKET_ID, storage } from "../../lib/appwrite";
 import { listTrainingTracks, setFlightReviewClubMembership } from "../../lib/trainingTracksDb";
@@ -551,6 +552,7 @@ export function AdminUsersTab() {
 
   const [success, setSuccess] = useState<string | null>(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<{ userId: string; name: string; email: string } | null>(null);
   const [showPaymentLink, setShowPaymentLink] = useState(false);
   const [paymentLinkInitialCharge, setPaymentLinkInitialCharge] = useState<PaymentLinkInitialCharge | null>(null);
   const [calculatingStudentCharge, setCalculatingStudentCharge] = useState(false);
@@ -1507,6 +1509,14 @@ export function AdminUsersTab() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setPasswordTarget({ userId: selectedDetail.userId, name: displayName(selectedDetail), email: selectedDetail.email })}
+                        disabled={deletingUser}
+                        className="rounded-lg border border-sky-700/60 bg-sky-950/30 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Definir nova senha
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void handleDeleteSelectedUser()}
                         disabled={deletingUser || authUser?.id === selectedDetail.userId}
                         className="rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-2 text-sm font-semibold text-red-200 transition hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2080,6 +2090,13 @@ export function AdminUsersTab() {
             </button>
           </form>
         </div>
+      ) : null}
+      {passwordTarget ? (
+        <AdminUserPasswordModal
+          key={passwordTarget.userId}
+          target={passwordTarget}
+          onClose={() => setPasswordTarget(null)}
+        />
       ) : null}
       {showPaymentLink && selectedDetail ? (
         <PaymentLinkModal
