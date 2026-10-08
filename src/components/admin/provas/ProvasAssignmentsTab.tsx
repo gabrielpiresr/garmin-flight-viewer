@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { searchFlightPickerUsers } from "../../../lib/adminUsersDb";
+import { getAdminUserDetail, searchFlightPickerUsers } from "../../../lib/adminUsersDb";
+import { getPdfBrand } from "../../../lib/pdfBrand";
 import { listProvas } from "../../../lib/provasDb";
 import {
   createProvaJourneyRequirement,
@@ -101,6 +102,7 @@ export function ProvasAssignmentsTab() {
   const [selected, setSelected] = useState<StudentIdentity[]>([]);
   const [releasing, setReleasing] = useState(false);
   const [review, setReview] = useState<{ attempt: ProvaAttempt; passingPercent: number } | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   const [pickerKey, setPickerKey] = useState(0);
   const [pickerQuery, setPickerQuery] = useState("");
   const [pickerLoading, setPickerLoading] = useState(false);
@@ -198,6 +200,40 @@ export function ProvasAssignmentsTab() {
 
   function removeStudent(userId: string) {
     setSelected((prev) => prev.filter((row) => row.userId !== userId));
+  }
+
+  async function handleDownloadPdf(row: ProvaAssignment) {
+    if (!row.attemptId || exportingId) return;
+    setExportingId(row.id);
+    try {
+      const [attempt, student, { downloadProvaAttemptPdf }] = await Promise.all([
+        getAdminProvaAttempt(row.attemptId),
+        getAdminUserDetail(row.studentUserId),
+        import("../../../lib/provaAttemptPdf"),
+      ]);
+      const missingImages = await downloadProvaAttemptPdf({
+        assignment: row,
+        attempt,
+        student: {
+          userId: student.userId,
+          name: student.profile?.fullName || student.name || row.studentName || row.studentUserId,
+          email: student.email,
+          cpf: student.profile?.cpf,
+          anacCode: student.profile?.anacCode,
+        },
+        brand: getPdfBrand(),
+      });
+      showToast({
+        variant: missingImages ? "warning" : "success",
+        message: missingImages
+          ? "PDF baixado. Algumas imagens não puderam ser carregadas e estão sinalizadas no documento."
+          : "PDF da prova baixado.",
+      });
+    } catch (error) {
+      showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao baixar o PDF da prova." });
+    } finally {
+      setExportingId(null);
+    }
   }
 
   async function handleRelease() {
@@ -543,20 +579,35 @@ export function ProvasAssignmentsTab() {
                   </td>
                   <td className="px-3 py-2 text-right">
                     {row.attemptId && (row.status === "submitted" || row.status === "expired") ? (
-                      <button
-                        type="button"
-                        className="text-xs font-semibold text-sky-300"
-                        onClick={async () => {
-                          try {
-                            const attempt = await getAdminProvaAttempt(row.attemptId!);
-                            setReview({ attempt, passingPercent: row.passingPercent });
-                          } catch (error) {
-                            showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao abrir." });
-                          }
-                        }}
-                      >
-                        Ver correção
-                      </button>
+                      <div className="flex items-center justify-end gap-3 whitespace-nowrap">
+                        <button
+                          type="button"
+                          className="text-xs font-semibold text-sky-300"
+                          onClick={async () => {
+                            try {
+                              const attempt = await getAdminProvaAttempt(row.attemptId!);
+                              setReview({ attempt, passingPercent: row.passingPercent });
+                            } catch (error) {
+                              showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao abrir." });
+                            }
+                          }}
+                        >
+                          Ver correção
+                        </button>
+                        <button
+                          type="button"
+                          disabled={exportingId !== null}
+                          aria-label={`Baixar PDF da prova ${row.provaTitle} de ${row.studentName || row.studentUserId}`}
+                          aria-busy={exportingId === row.id}
+                          onClick={() => void handleDownloadPdf(row)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-sky-300 hover:border-sky-500 hover:bg-sky-500/10 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="h-3.5 w-3.5" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" />
+                          </svg>
+                          {exportingId === row.id ? "Gerando PDF..." : "Baixar PDF"}
+                        </button>
+                      </div>
                     ) : null}
                   </td>
                 </tr>
