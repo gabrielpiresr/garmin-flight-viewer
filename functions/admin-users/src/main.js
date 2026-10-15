@@ -4107,11 +4107,15 @@ async function importSagaUser(sagaUser, role, { testMode = false, useEmailAlias 
   // Existing credentials belong to the user, including after recovery or an
   // admin password change. The CPF is only used when creating a new account.
 
+  await updateSagaProfileFields(authUser.$id, { ...sagaUser, email }, role, { enableAccess: created });
+  // The SAGA category may differ from the portal role assigned by an admin.
+  // Keep Appwrite's document access aligned with the persisted active profile.
+  const profile = await getProfileByUserId(authUser.$id);
+  const activeRole = await resolveProfilePortal(profile) || role;
   const labels = Array.from(
-    new Set([...(authUser.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), role]),
+    new Set([...(authUser.labels || []).filter((label) => !VALID_ROLES.has(String(label).toLowerCase())), activeRole]),
   );
   await users.updateLabels({ userId: authUser.$id, labels });
-  await updateSagaProfileFields(authUser.$id, { ...sagaUser, email }, role, { enableAccess: created });
   return { created, updated: !created, userId: authUser.$id };
 }
 

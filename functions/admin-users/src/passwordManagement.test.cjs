@@ -18,10 +18,12 @@ const permissionSource = extract("async function tenantRoleAllowsAction(", "\nas
 const adminSource = extract("async function requireAdmin(", "\nasync function requireInstructorOrAdmin(");
 const cleanString = (value) => String(value || "").trim();
 
-function importHarness({ exists = true } = {}) {
+function importHarness({ exists = true, activePortal = null, labels = ["aluno"] } = {}) {
   const credentials = new Map(exists ? [["account", "Chosen-after-recovery!"]] : []);
-  const current = { $id: "account", name: "Test Student", labels: ["aluno"] };
+  const current = { $id: "account", name: "Test Student", labels };
   const calls = [];
+  const labelUpdates = [];
+  let persistedPortal = activePortal;
   const sandbox = {
     cleanString,
     sagaEmailLooksValid: (email) => email.includes("@"),
@@ -30,20 +32,28 @@ function importHarness({ exists = true } = {}) {
     findAuthUserByEmail: async () => exists ? current : null,
     crypto: { randomBytes: () => ({ toString: () => "random-initial-password" }) },
     VALID_ROLES: new Set(["admin", "aluno", "instrutor"]),
-    updateSagaProfileFields: async () => calls.push("profile"),
+    updateSagaProfileFields: async (_userId, _data, role) => {
+      calls.push("profile");
+      persistedPortal ||= role;
+    },
+    getProfileByUserId: async () => ({ active_role: persistedPortal }),
+    resolveProfilePortal: async (profile) => profile.active_role,
     users: {
       get: async () => { if (exists) return current; throw new Error("not found"); },
       create: async (input) => { credentials.set(input.userId, input.password); calls.push("create"); return { ...current, $id: input.userId }; },
       updateStatus: async (input) => ({ ...current, $id: input.userId }),
       updateName: async () => current,
       updatePassword: async (input) => { calls.push("password"); credentials.set(input.userId, input.password); },
-      updateLabels: async () => calls.push("labels"),
+      updateLabels: async (input) => {
+        calls.push("labels");
+        labelUpdates.push({ userId: input.userId, labels: Array.from(input.labels) });
+      },
     },
   };
   vm.createContext(sandbox);
   vm.runInContext(`${importSource}\nthis.importUser = importSagaUser;`, sandbox);
   const student = { id: "158", email: "student@example.test", nome: "Test Student", cpf: "123.456.789-01" };
-  return { sandbox, student, credentials, calls };
+  return { sandbox, student, credentials, calls, labelUpdates };
 }
 
 test("repeated regular imports preserve a password chosen after recovery", async () => {
@@ -80,6 +90,26 @@ test("a newly imported account without a valid CPF receives a generated password
   const h = importHarness({ exists: false });
   await h.sandbox.importUser({ ...h.student, cpf: "" }, "aluno");
   assert.equal(h.credentials.get("saga_158"), "random-initial-password");
+});
+
+test("SAGA instructor imports preserve the active admin label required by maintenance collections", async () => {
+  const h = importHarness({ activePortal: "admin", labels: ["instrutor", "school-member"] });
+  for (let i = 0; i < 3; i++) await h.sandbox.importUser(h.student, "instrutor");
+  assert.equal(h.labelUpdates.length, 3);
+  for (const update of h.labelUpdates) assert.deepEqual(update.labels, ["school-member", "admin"]);
+  assert.ok(h.calls.indexOf("profile") < h.calls.indexOf("labels"));
+});
+
+test("imports respect a non-admin active portal even when SAGA supplies another category", async () => {
+  const h = importHarness({ activePortal: "aluno", labels: ["admin", "school-member"] });
+  await h.sandbox.importUser(h.student, "instrutor");
+  assert.deepEqual(h.labelUpdates[0].labels, ["school-member", "aluno"]);
+});
+
+test("new instructor accounts receive their persisted portal label", async () => {
+  const h = importHarness({ exists: false });
+  await h.sandbox.importUser(h.student, "instrutor");
+  assert.deepEqual(h.labelUpdates[0].labels, ["instrutor"]);
 });
 
 function passwordHarness({ actorRole = "admin", activeSlug = "admin", canManage = true, actorSchool = "school", targetSchool = "school", targetExists = true, auditFails = false, updateError = null } = {}) {

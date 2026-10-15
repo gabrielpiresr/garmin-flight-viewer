@@ -494,6 +494,8 @@ export function MaintenanceTab() {
   const [programItems, setProgramItems] = useState<MaintenanceProgramItem[]>([]);
   const [attachments, setAttachments] = useState<Record<string, MaintenanceAttachment[]>>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -506,27 +508,49 @@ export function MaintenanceTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
+    setLoadWarnings([]);
     try {
-      const [orderRows, aircraftRows, modelRows] = await Promise.all([
+      const [orderResult, aircraftResult, modelResult] = await Promise.allSettled([
         listWorkOrders(),
         listAircrafts(schoolId),
         listModels(),
       ]);
-      const planes = aircraftRows.filter((a) => a.type === "aviao");
-      const uniqueModelIds = [...new Set(planes.map((aircraft) => aircraft.model_id).filter(Boolean))];
-      const itemRows = (
-        await Promise.all(uniqueModelIds.map((modelId) => listProgramItemsByModel(modelId).catch(() => [] as MaintenanceProgramItem[])))
-      ).flat();
-      setOrders(orderRows);
-      setAircrafts(planes);
-      setModels(modelRows);
-      setProgramItems(itemRows);
+      const warnings: string[] = [];
+      const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+      // A falha de um cadastro auxiliar não deve esconder as OS já retornadas.
+      if (orderResult.status === "fulfilled") {
+        setOrders(orderResult.value);
+      } else {
+        setLoadError(`Não foi possível carregar as manutenções: ${errorMessage(orderResult.reason)}`);
+      }
+      if (modelResult.status === "fulfilled") {
+        setModels(modelResult.value);
+      } else {
+        warnings.push(`Não foi possível carregar os modelos: ${errorMessage(modelResult.reason)}`);
+      }
+      if (aircraftResult.status === "fulfilled") {
+        const planes = aircraftResult.value.filter((a) => a.type === "aviao");
+        setAircrafts(planes);
+        const uniqueModelIds = [...new Set(planes.map((aircraft) => aircraft.model_id).filter(Boolean))];
+        const programResults = await Promise.allSettled(uniqueModelIds.map(listProgramItemsByModel));
+        const itemRows: MaintenanceProgramItem[] = [];
+        for (const result of programResults) {
+          if (result.status === "fulfilled") itemRows.push(...result.value);
+          else warnings.push(`Não foi possível carregar o programa de manutenção: ${errorMessage(result.reason)}`);
+        }
+        setProgramItems(itemRows);
+      } else {
+        warnings.push(`Não foi possível carregar as aeronaves: ${errorMessage(aircraftResult.reason)}`);
+      }
+      setLoadWarnings(warnings);
     } catch (e) {
-      showToast({ variant: "error", message: (e as Error).message });
+      setLoadError(`Não foi possível carregar as manutenções: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -759,6 +783,16 @@ export function MaintenanceTab() {
         ) : null}
       </div>
 
+      {loadError || loadWarnings.length > 0 ? (
+        <div role="alert" className="rounded-xl border border-amber-700/60 bg-amber-500/10 p-4 text-sm text-amber-200">
+          {loadError ? <p>{loadError}</p> : null}
+          {loadWarnings.map((warning, index) => <p key={index}>{warning}</p>)}
+          <button type="button" onClick={() => void load()} disabled={loading} className="mt-2 rounded-lg border border-amber-700/60 px-3 py-1.5 font-medium disabled:opacity-50">
+            {loading ? "Carregando..." : "Tentar novamente"}
+          </button>
+        </div>
+      ) : null}
+
       {!showForm ? (
         <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3 md:grid-cols-3">
           <FilterSelect
@@ -852,6 +886,8 @@ export function MaintenanceTab() {
               Array.from({ length: 4 }).map((_, index) => (
                 <tr key={index}><td colSpan={6} className="px-4 py-3"><Skeleton className="h-5 w-full" /></td></tr>
               ))
+            ) : loadError && orders.length === 0 ? (
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-amber-200">Não foi possível atualizar a listagem de manutenções. Tente novamente acima.</td></tr>
             ) : visibleOrders.length === 0 ? (
               <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">Nenhuma manutenção lançada.</td></tr>
             ) : visibleOrders.map((order) => {

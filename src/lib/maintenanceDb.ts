@@ -343,7 +343,10 @@ function workOrderDocument(data: Partial<WorkOrderPayload>): Record<string, unkn
 }
 
 export async function listProgramItemsByModel(modelId: string): Promise<MaintenanceProgramItem[]> {
-  if (!modelId || !hasProgramCollection() || !databases || !DB_ID || !MAINTENANCE_PROGRAM_ITEMS_COL_ID) return [];
+  if (!modelId) return [];
+  if (!hasProgramCollection() || !databases || !DB_ID || !MAINTENANCE_PROGRAM_ITEMS_COL_ID) {
+    throw new Error("O serviço de programa de manutenção não está configurado. Contate o administrador.");
+  }
   const res = await databases.listDocuments(DB_ID, MAINTENANCE_PROGRAM_ITEMS_COL_ID, [
     Query.equal("aircraft_model_id", [modelId]),
     Query.isNull("deleted_at"),
@@ -377,7 +380,9 @@ export async function softDeleteProgramItem(id: string): Promise<void> {
 }
 
 export async function listWorkOrders(): Promise<MaintenanceWorkOrder[]> {
-  if (!hasWorkOrderCollection() || !databases || !DB_ID || !MAINTENANCE_WORK_ORDERS_COL_ID) return [];
+  if (!hasWorkOrderCollection() || !databases || !DB_ID || !MAINTENANCE_WORK_ORDERS_COL_ID) {
+    throw new Error("O serviço de manutenções não está configurado. Contate o administrador.");
+  }
   const res = await databases.listDocuments(DB_ID, MAINTENANCE_WORK_ORDERS_COL_ID, [
     Query.isNull("deleted_at"),
     Query.orderDesc("opened_at"),
