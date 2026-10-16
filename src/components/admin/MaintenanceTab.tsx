@@ -18,6 +18,7 @@ import { getFlightRecordMetaBatch, listAllFlightsByAircraft, type SavedFlightLis
 import { flightAircraftHours } from "../../lib/flightHours";
 import type { FlightRecordMeta } from "../../lib/flightRecordCodec";
 import { SCHOOL_ID } from "../../lib/appwrite";
+import { invalidateFleetMaintenanceContext } from "../../lib/scheduleCache";
 import type {
   Aircraft,
   AircraftModel,
@@ -50,6 +51,8 @@ type WorkOrderForm = {
   work_order_number: string;
   aircraft_id: string;
   maintenance_program_item_id: string;
+  manual_next_program_item_id: string;
+  manual_next_due_hours: string;
   work_order_type: MaintenanceWorkOrder["work_order_type"];
   status: MaintenanceWorkOrder["status"];
   opened_at: string;
@@ -102,6 +105,8 @@ const emptyForm: WorkOrderForm = {
   work_order_number: "",
   aircraft_id: "",
   maintenance_program_item_id: "",
+  manual_next_program_item_id: "",
+  manual_next_due_hours: "",
   work_order_type: "scheduled",
   status: "released",
   opened_at: "",
@@ -383,6 +388,8 @@ function formToPayload(form: WorkOrderForm): WorkOrderPayload {
     work_order_number: form.work_order_number.trim() || nextWorkOrderNumber(),
     aircraft_id: form.aircraft_id,
     maintenance_program_item_id: form.maintenance_program_item_id || null,
+    manual_next_program_item_id: form.manual_next_program_item_id || null,
+    manual_next_due_hours: form.manual_next_due_hours.trim() ? decimal(form.manual_next_due_hours) : null,
     work_order_type: form.work_order_type,
     status: form.status,
     opened_at: fromDatetimeLocal(form.opened_at) ?? new Date().toISOString(),
@@ -435,6 +442,8 @@ function workOrderToForm(order: MaintenanceWorkOrder): WorkOrderForm {
     work_order_number: order.work_order_number,
     aircraft_id: order.aircraft_id,
     maintenance_program_item_id: order.maintenance_program_item_id ?? "",
+    manual_next_program_item_id: order.manual_next_program_item_id ?? "",
+    manual_next_due_hours: formatNumberValue(order.manual_next_due_hours),
     work_order_type: order.work_order_type,
     status: order.status,
     opened_at: toDatetimeLocal(order.opened_at),
@@ -623,6 +632,11 @@ export function MaintenanceTab() {
     check("opened_at", required(form.opened_at), "Informe a data da manutenção.");
     check("aircraft_ttaf", decimal(form.aircraft_ttaf) != null, "Informe as horas da aeronave no momento da manutenção.");
     check("maintenance_program_item_id", required(form.maintenance_program_item_id), "Selecione a manutenção realizada.");
+    if (required(form.manual_next_program_item_id) || required(form.manual_next_due_hours)) {
+      check("manual_next_program_item_id", programItemsForAircraft.some((item) => item.id === form.manual_next_program_item_id), "Selecione a próxima manutenção manual.");
+      const dueHours = required(form.manual_next_due_hours) ? decimal(form.manual_next_due_hours) : null;
+      check("manual_next_due_hours", dueHours != null && dueHours > (decimal(form.aircraft_ttaf) ?? 0), "As horas totais da próxima manutenção devem ser maiores que as horas do lançamento.");
+    }
     if (!required(form.created_by || user?.id)) errors.push("Não foi possível identificar o usuário que lançou a manutenção.");
 
     return { errors, keys };
@@ -729,6 +743,7 @@ export function MaintenanceTab() {
           picCanac: created.released_by_canac,
         });
       }
+      invalidateFleetMaintenanceContext();
       setShowForm(false);
       setAttachmentFile(null);
     } catch (e) {
@@ -741,6 +756,7 @@ export function MaintenanceTab() {
   async function removeOrder(orderId: string) {
     try {
       await softDeleteWorkOrder(orderId);
+      invalidateFleetMaintenanceContext();
       setOrders((prev) => prev.filter((order) => order.id !== orderId));
       if (detailId === orderId) setDetailId(null);
     } catch (e) {
@@ -815,7 +831,7 @@ export function MaintenanceTab() {
               value={form.aircraft_id}
               options={["", ...aircrafts.map((a) => a.id)]}
               labels={{ "": "Selecione o avião", ...Object.fromEntries(aircrafts.map((a) => [a.id, `${a.registration} - ${modelMap.get(a.model_id)?.name ?? "Modelo"}`])) }}
-              onChange={(value) => setForm((f) => fillEmptyAircraftHours({ ...f, aircraft_id: value, maintenance_program_item_id: "", checklist_execution: [] }, aircraftMap.get(value)))}
+              onChange={(value) => setForm((f) => fillEmptyAircraftHours({ ...f, aircraft_id: value, maintenance_program_item_id: "", manual_next_program_item_id: "", manual_next_due_hours: "", checklist_execution: [] }, aircraftMap.get(value)))}
               tooltip="Aeronave na qual a manutenção foi feita."
               invalid={invalidFields.has("aircraft_id")}
             />
@@ -857,6 +873,29 @@ export function MaintenanceTab() {
               value={form.description_performed}
               onChange={(value) => setForm((f) => ({ ...f, description_performed: value }))}
             />
+          </div>
+          <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/30 p-4">
+            <h4 className="text-sm font-medium text-slate-200">Próxima manutenção manual (opcional)</h4>
+            <p className="mt-1 text-xs text-slate-400">Deixe os dois campos vazios para seguir o programa normal. Ao preencher, esta definição terá prioridade até o próximo lançamento de manutenção.</p>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Select
+                label="Próxima manutenção"
+                value={form.manual_next_program_item_id}
+                options={["", ...programItemsForAircraft.map((item) => item.id)]}
+                labels={{ "": "Seguir programa de manutenção", ...Object.fromEntries(programItemsForAircraft.map((item) => [item.id, `${item.code} - ${item.title}`])) }}
+                onChange={(value) => setForm((f) => ({ ...f, manual_next_program_item_id: value }))}
+                invalid={invalidFields.has("manual_next_program_item_id")}
+              />
+              <NumberField
+                label="Horas totais da aeronave para a próxima manutenção"
+                value={form.manual_next_due_hours}
+                onChange={(value) => setForm((f) => ({ ...f, manual_next_due_hours: numberInput(value) }))}
+                suffix="h"
+                tooltip="Horas totais em que a manutenção deverá ser feita. Ex.: 1.250 h, e não o intervalo de horas restantes."
+                invalid={invalidFields.has("manual_next_due_hours")}
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Informe o total de horas no vencimento (ex.: 1.250 h). Para voltar ao programa automático, limpe os dois campos.</p>
           </div>
           <div className="mt-4 flex gap-2">
             <button type="button" onClick={() => void saveOrder()} disabled={saving} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
@@ -936,6 +975,9 @@ export function MaintenanceTab() {
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
             <Info label="Data" value={formatDate(detailOrder.completed_at ?? detailOrder.opened_at)} />
             <Info label="Horas da aeronave" value={`${detailOrder.aircraft_ttaf} h`} />
+            <Info label="Próxima manutenção manual" value={detailOrder.manual_next_program_item_id && detailOrder.manual_next_due_hours != null
+              ? `${itemMap.get(detailOrder.manual_next_program_item_id)?.code ?? "Manutenção"} - ${itemMap.get(detailOrder.manual_next_program_item_id)?.title ?? "Item indisponível"} em ${detailOrder.manual_next_due_hours} h totais`
+              : "Seguir programa de manutenção"} />
             <Info label="Observação" value={detailOrder.description_performed || "-"} className="md:col-span-3" />
           </div>
           <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/30 p-4">

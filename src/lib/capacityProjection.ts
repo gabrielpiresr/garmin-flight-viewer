@@ -1,4 +1,5 @@
 import { effectiveDowntimeDays } from "./maintenanceRiskProjection.ts";
+import { crossedMaintenanceCandidates } from "./maintenanceProjectionDue.ts";
 import {
   CALENDAR_LABELS,
   CALENDAR_MODES,
@@ -458,11 +459,6 @@ function classifyOneStudent(
   };
 }
 
-function nextDueHours(currentHours: number, intervalHours: number): number {
-  if (!(intervalHours > 0)) return Number.POSITIVE_INFINITY;
-  return (Math.floor(currentHours / intervalHours) + 1) * intervalHours;
-}
-
 /** 50H no marco da 100H/200H entra na inspeção maior — não gera parada extra. */
 export function isCoveredByLargerInspection(
   dueHours: number,
@@ -497,13 +493,14 @@ export function projectAircraftSupply(
   dayCount: number,
 ): AircraftProjection {
   const items = aircraft.maintenanceItems
-    .filter((item) => item.intervalHours > 0 && (item.downtimeDays ?? 0) > 0)
-    .map((item) => ({ ...item, downtimeDays: Math.max(1, Math.round(item.downtimeDays as number)) }))
+    .filter((item) => item.intervalHours > 0 || item.manualDueAtHours != null)
+    .map((item) => ({ ...item, downtimeDays: (item.downtimeDays ?? 0) > 0 ? Math.max(1, Math.round(item.downtimeDays!)) : 0 }))
     .sort((a, b) => b.intervalHours - a.intervalHours);
 
   const days: AircraftDayRow[] = [];
   const events: AircraftMaintenanceEvent[] = [];
   let hours = Number.isFinite(aircraft.currentHours) ? Number(aircraft.currentHours) : 0;
+  let manualPerformed: boolean = false;
   let groundedRemaining = aircraft.groundedNow ? Math.max(1, aircraft.groundedDaysFromToday || 1) : 0;
   let activeItem = aircraft.groundedNow
     ? { code: "OS", title: aircraft.groundedReason || "OS aberta", intervalHours: 0, downtimeDays: groundedRemaining }
@@ -556,13 +553,18 @@ export function projectAircraftSupply(
 
     const hoursBefore = hours;
     hours = Number((hours + rate).toFixed(4));
-    const crossed = items
-      .map((item) => ({ item, due: nextDueHours(hoursBefore, item.intervalHours) }))
-      .filter(({ due }) => hoursBefore < due - 1e-9 && hours + 1e-9 >= due)
-      .filter(({ item, due }) => !isCoveredByLargerInspection(due, item.intervalHours, items))
+    const crossed: { item: (typeof items)[number]; due: number } | undefined = crossedMaintenanceCandidates(items, hoursBefore, hours, manualPerformed)
+      .filter(({ item }) => item.downtimeDays > 0 || (item.manualDueAtHours != null && !manualPerformed))
+      .filter(({ item, due }) => (item.manualDueAtHours != null && !manualPerformed)
+        || !isCoveredByLargerInspection(due, item.intervalHours, items.filter((row) => row.downtimeDays > 0)))
       .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
 
     if (crossed) {
+      manualPerformed ||= crossed.item.manualDueAtHours != null;
+      if (crossed.item.downtimeDays <= 0) {
+        days.push({ date, month: monthKey(date), weekend, hours: rate, grounded: false, theoreticalHours: round1(hours) });
+        continue;
+      }
       const shopDays = crossed.item.downtimeDays;
       const downtime = effectiveDowntimeDays(date, shopDays);
       weekendExtended = downtime > shopDays;

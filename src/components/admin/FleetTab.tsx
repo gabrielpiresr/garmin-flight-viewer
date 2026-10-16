@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAircrafts, createAircraft, updateAircraft, toggleAircraftActive, uploadAircraftPhoto } from "../../lib/aircraftDb";
 import { listModels } from "../../lib/aircraftModelsDb";
 import { listProgramItemsByModel, listWorkOrders } from "../../lib/maintenanceDb";
+import { programDueAfterManualCompletion, resolveManualMaintenanceCompletion, resolveManualNextMaintenance } from "../../lib/manualNextMaintenance";
 import { listAllSavedFlights, type SavedFlightListItem } from "../../lib/flightsDb";
 import { flightAircraftHours } from "../../lib/flightHours";
 import { listSagaSchedulesDirect, type SagaDirectScheduleItem } from "../../lib/sagaImportDb";
@@ -188,16 +189,18 @@ function nextDueHours(params: {
   baselineHours: number | null;
   interval: number | null;
   encompassingOrders: MaintenanceWorkOrder[];
+  completedManualHours: number | null;
 }): { remaining: number | null; dueAt: number | null } {
   const { currentHours, baselineHours, interval, encompassingOrders } = params;
   if (interval == null || interval <= 0 || currentHours == null) return { remaining: null, dueAt: null };
   const latestPerformed = encompassingOrders
     .filter(isCompletedMaintenance)
     .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
-  const referenceHours = baselineHours ?? currentHours;
-  const dueAt = latestPerformed
+  const referenceHours = params.completedManualHours ?? baselineHours ?? currentHours;
+  const programDueAt = latestPerformed
     ? latestPerformed.aircraft_ttaf + interval
     : Math.ceil((referenceHours - 0.0001) / interval) * interval;
+  const dueAt = programDueAfterManualCompletion(programDueAt, interval, params.completedManualHours);
   return {
     remaining: Number((dueAt - currentHours).toFixed(1)),
     dueAt,
@@ -211,7 +214,20 @@ function buildUpcomingMaintenance(params: {
   currentHours: number | null;
   scheduledFlights: ScheduledAircraftFlight[];
 }): UpcomingMaintenance[] {
+  const manual = resolveManualNextMaintenance(params.aircraftOrders, params.modelItems);
+  if (manual) {
+    const remainingHours = params.currentHours == null ? null : Number((manual.dueAtHours - params.currentHours).toFixed(1));
+    return [{
+      id: manual.item.id,
+      code: manual.item.code,
+      title: `${manual.item.title} (manual — ${manual.dueAtHours} h totais)`,
+      remainingHours,
+      remainingDays: null,
+      forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights),
+    }];
+  }
   const opening = resolveAircraftOpening(params.aircraft, params.aircraftOrders);
+  const manualCompletion = resolveManualMaintenanceCompletion(params.aircraftOrders, params.modelItems);
   const baselineDate = opening.baselineMs ? new Date(opening.baselineMs) : null;
   const now = new Date();
   const itemsWithRules = params.modelItems.map((item) => ({ item, rules: parseRecurrenceRules(item.recurrence_rules) }));
@@ -232,6 +248,7 @@ function buildUpcomingMaintenance(params: {
         baselineHours: opening.ttaf,
         interval: rules.hours,
         encompassingOrders,
+        completedManualHours: manualCompletion?.aircraft_ttaf ?? null,
       });
       const lastItemDate = latestDate(itemOrders.filter(isCompletedMaintenance));
       const referenceDate = lastItemDate ?? baselineDate;

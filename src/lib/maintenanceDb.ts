@@ -178,6 +178,8 @@ function toWorkOrder(doc: Record<string, unknown>): MaintenanceWorkOrder {
     work_order_number: (doc.work_order_number as string) ?? "",
     aircraft_id: (doc.aircraft_id as string) ?? "",
     maintenance_program_item_id: text(doc, "maintenance_program_item_id"),
+    manual_next_program_item_id: text(technical, "manual_next_program_item_id"),
+    manual_next_due_hours: num(technical, "manual_next_due_hours"),
     work_order_type: (doc.work_order_type as MaintenanceWorkOrder["work_order_type"]) ?? "scheduled",
     status: (doc.status as MaintenanceWorkOrder["status"]) ?? "open",
     opened_at: (doc.opened_at as string) ?? "",
@@ -309,6 +311,8 @@ function workOrderDocument(data: Partial<WorkOrderPayload>): Record<string, unkn
       cycles: data.cycles,
     }),
     technical_json: stringifyJsonObject({
+      manual_next_program_item_id: data.manual_next_program_item_id,
+      manual_next_due_hours: data.manual_next_due_hours,
       discrepancy_reported: data.discrepancy_reported,
       corrective_action: data.corrective_action,
       linked_discrepancy_id: data.linked_discrepancy_id,

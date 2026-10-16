@@ -69,6 +69,7 @@ export type CapacityStudentInput = {
 };
 
 export type CapacityMaintenanceItem = {
+  manualDueAtHours?: number;
   code: string;
   title: string;
   intervalHours: number;

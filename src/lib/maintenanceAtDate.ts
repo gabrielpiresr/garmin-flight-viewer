@@ -2,6 +2,7 @@ import type { SavedFlightListItem } from "./flightsDb";
 import { flightAircraftHours } from "./flightHours";
 import type { FlightRecordMeta } from "./flightRecordCodec";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../types/admin";
+import { programDueAfterManualCompletion, resolveManualMaintenanceCompletion, resolveManualNextMaintenance } from "./manualNextMaintenance";
 
 export type MaintenanceAsOfFlight = {
   lastInterventionType: string | null;
@@ -132,7 +133,14 @@ function nextDueItemAt(params: {
   });
   if (currentHours == null) return null;
 
+  const manual = resolveManualNextMaintenance(params.aircraftOrders, params.modelItems, params.asOfMs);
+  if (manual) return {
+    title: `${manual.item.code} — ${manual.item.title}`,
+    dueHours: Number((manual.dueAtHours - currentHours).toFixed(1)),
+  };
+
   let best: { title: string; remainingHours: number } | null = null;
+  const manualCompletion = resolveManualMaintenanceCompletion(params.aircraftOrders, params.modelItems, params.asOfMs);
   for (const item of params.modelItems) {
     if (isExcludedMaintenanceItem(item)) continue;
     const rules = parseRecurrenceRules(item.recurrence_rules);
@@ -144,7 +152,9 @@ function nextDueItemAt(params: {
         (order.status === "completed" || order.status === "released"),
     );
     const latestPerformed = itemOrders.sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
-    const dueAt = latestPerformed ? latestPerformed.aircraft_ttaf + rules.hours : Math.ceil((currentHours + 0.0001) / rules.hours) * rules.hours;
+    const programDueAt = latestPerformed ? latestPerformed.aircraft_ttaf + rules.hours
+      : Math.ceil(((manualCompletion?.aircraft_ttaf ?? currentHours) + 0.0001) / rules.hours) * rules.hours;
+    const dueAt = programDueAfterManualCompletion(programDueAt, rules.hours, manualCompletion?.aircraft_ttaf ?? null);
     const remainingHours = Number((dueAt - currentHours).toFixed(1));
     if (!best || remainingHours < best.remainingHours) {
       best = { title: `${item.code} — ${item.title}`, remainingHours };

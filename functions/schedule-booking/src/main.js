@@ -602,11 +602,12 @@ function projectMaintenanceRiskServer(params) {
   const avg = params.avgHoursPerDay > 0 ? params.avgHoursPerDay : 0;
   const dayCount = Math.max(0, Math.floor(params.dayCount));
   const items = (params.items || [])
-    .filter((item) => item.intervalHours > 0 && (item.downtimeDays || 0) > 0)
-    .map((item) => ({ ...item, downtimeDays: Math.max(1, Math.round(item.downtimeDays)) }))
+    .filter((item) => item.intervalHours > 0 || item.manualDueAtHours != null)
+    .map((item) => ({ ...item, downtimeDays: item.downtimeDays > 0 ? Math.max(1, Math.round(item.downtimeDays)) : 0 }))
     .sort((a, b) => b.intervalHours - a.intervalHours);
   const byDate = {};
   let hours = Number.isFinite(params.currentHours) ? params.currentHours : 0;
+  let manualPerformed = false;
   let groundedRemaining = 0;
   let activeItem = null;
   let pendingPostMedium = null;
@@ -645,14 +646,21 @@ function projectMaintenanceRiskServer(params) {
     }
     const hoursBefore = hours;
     hours = Number((hours + avg).toFixed(4));
-    const crossed = items
+    const manual = !manualPerformed ? items.find((item) => item.manualDueAtHours != null) : null;
+    const crossed = (manual ? [manual] : items.filter((item) => item.intervalHours > 0))
       .map((item) => ({
         item,
-        due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
+        due: manual ? item.manualDueAtHours : (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
       }))
-      .filter(({ due }) => hoursBefore < due - 1e-9 && hours + 1e-9 >= due)
+      .filter(({ due }) => (manual || hoursBefore < due - 1e-9) && hours + 1e-9 >= due)
+      .filter(({ item }) => item.downtimeDays > 0 || manual)
       .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
     if (crossed) {
+      manualPerformed ||= crossed.item.manualDueAtHours != null;
+      if (crossed.item.downtimeDays <= 0) {
+        byDate[date] = { risk, grounded, hours };
+        continue;
+      }
       risk = "medium";
       groundedRemaining = effectiveDowntimeDays(date, crossed.item.downtimeDays);
       activeItem = crossed.item;
@@ -679,9 +687,9 @@ function isExcludedMaintenanceItem(doc) {
   return haystack.includes("transit") || haystack.includes("trânsito") || haystack.includes("diaria") || haystack.includes("diária");
 }
 
-function parseProgramTheoryItems(docs) {
+function parseProgramTheoryItems(docs, includeManualCandidates = false) {
   return (docs || [])
-    .filter((doc) => !clean(doc.deleted_at) && !isExcludedMaintenanceItem(doc))
+    .filter((doc) => !clean(doc.deleted_at) && (includeManualCandidates || !isExcludedMaintenanceItem(doc)))
     .map((doc) => {
       const intervalHours = parseHoursInterval(doc.recurrence_rules);
       let downtimeDays = null;
@@ -699,13 +707,15 @@ function parseProgramTheoryItems(docs) {
         if (Number.isFinite(asNum) && asNum > 0) downtimeDays = Math.round(asNum);
       }
       return {
+        id: doc.$id,
+        excluded: isExcludedMaintenanceItem(doc),
         code: clean(doc.code),
         title: clean(doc.title),
         intervalHours: intervalHours || 0,
         downtimeDays,
       };
     })
-    .filter((item) => item.intervalHours > 0);
+    .filter((item) => includeManualCandidates || item.intervalHours > 0);
 }
 
 async function listProgramTheoryItemsByModel(modelId) {
@@ -716,10 +726,40 @@ async function listProgramTheoryItemsByModel(modelId) {
       sdk.Query.equal("aircraft_model_id", [modelId]),
       sdk.Query.limit(200),
     ]);
-    return parseProgramTheoryItems(result.documents);
+    return parseProgramTheoryItems(result.documents, true);
   } catch {
     return [];
   }
+}
+
+function theoryItemsWithManualNextMaintenance(items, orders, asOfMs = Date.now()) {
+  function orderTimestamp(order) {
+    const times = parseJson(order.times_json) || {};
+    return Date.parse(times.completed_at || times.released_at || order.opened_at || "") || 0;
+  }
+  const latest = (orders || [])
+    .filter((order) => !clean(order.deleted_at) && order.work_order_type !== "migration_baseline"
+      && order.status !== "canceled"
+      && (order.status === "completed" || order.status === "released" || order.aircraft_released)
+      && orderTimestamp(order) <= asOfMs)
+    .sort((a, b) => orderTimestamp(b) - orderTimestamp(a)
+      || number(b.aircraft_ttaf, 0) - number(a.aircraft_ttaf, 0)
+      || clean(b.$createdAt).localeCompare(clean(a.$createdAt))
+      || clean(b.$id).localeCompare(clean(a.$id)))[0];
+  const technical = parseJson(latest?.technical_json) || {};
+  const due = technical?.manual_next_due_hours;
+  const manual = typeof due === "number" && Number.isFinite(due) && due > number(latest?.aircraft_ttaf, 0)
+    ? items.find((item) => item.id === technical.manual_next_program_item_id)
+    : null;
+  return items
+    .filter((item) => manual === item || (!item.excluded && item.intervalHours > 0))
+    .map((item) => ({
+      code: item.code,
+      title: item.title,
+      intervalHours: item.intervalHours,
+      downtimeDays: item.downtimeDays,
+      ...(item === manual ? { manualDueAtHours: due } : {}),
+    }));
 }
 
 function flightHoursFromDoc(doc) {
@@ -760,7 +800,9 @@ async function buildMaintenanceTheoryContext(rules, aircraftDocs) {
   let orders = [];
   if (woCol) {
     try {
-      const result = await databases.listDocuments(DATABASE_ID, woCol, [sdk.Query.limit(500)]);
+      const result = await databases.listDocuments(DATABASE_ID, woCol, [
+        sdk.Query.isNull("deleted_at"), sdk.Query.orderDesc("opened_at"), sdk.Query.limit(500),
+      ]);
       orders = result.documents || [];
     } catch {
       orders = [];
@@ -873,12 +915,7 @@ async function buildMaintenanceTheoryContext(rules, aircraftDocs) {
     aircrafts.push({
       registration: regDisplay,
       hours,
-      maintenanceDue: allItems.map((item) => ({
-        code: item.code,
-        title: item.title,
-        intervalHours: item.intervalHours,
-        downtimeDays: item.downtimeDays,
-      })),
+      maintenanceDue: theoryItemsWithManualNextMaintenance(allItems, ordersByAircraftId[doc.$id] || [], now),
     });
   }
 

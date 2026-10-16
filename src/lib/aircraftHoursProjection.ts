@@ -4,13 +4,15 @@ import { listAllSavedFlights, type SavedFlightListItem } from "./flightsDb";
 import { flightAircraftHours } from "./flightHours";
 import { listAircraftHorimeterCorrections, resolveEffectiveHoursBaseline, type AircraftHorimeterCorrection } from "./aircraftHorimeterCorrectionsDb";
 import type { Aircraft, MaintenanceProgramItem, MaintenanceWorkOrder } from "../types/admin";
+import { resolveManualNextMaintenance } from "./manualNextMaintenance";
 
 // Horas totais atuais por aeronave — mesmo cálculo da aba Frota (FleetTab):
 // abertura do diário (logbook_ttaf) ou baseline de migração + horas voadas desde então.
 // Também expõe os intervalos de cada manutenção por horas para a escala
-// destacar todo múltiplo projetado, sem depender do histórico de OS.
+// destacar os múltiplos projetados, com prioridade para a próxima manutenção manual.
 
 export type AircraftMaintenanceDue = {
+  manualDueAtHours?: number;
   code: string;
   title: string;
   /** Intervalo da recorrência (h). Quando várias vencem juntas, prevalece o maior intervalo (ex.: 600h engloba a 100h). */
@@ -87,17 +89,20 @@ function isExcludedMaintenanceItem(item: MaintenanceProgramItem): boolean {
   return haystack.includes("transit") || haystack.includes("trânsito") || haystack.includes("diaria") || haystack.includes("diária");
 }
 
-/** Recorrências por horas usadas na escala, independentes das OS realizadas. */
-function maintenanceDueList(modelItems: MaintenanceProgramItem[]): AircraftMaintenanceDue[] {
+/** Recorrências da escala, incluindo a definição manual do último lançamento, quando houver. */
+function maintenanceDueList(modelItems: MaintenanceProgramItem[], orders: MaintenanceWorkOrder[]): AircraftMaintenanceDue[] {
   const due: AircraftMaintenanceDue[] = [];
+  const manual = resolveManualNextMaintenance(orders, modelItems);
   for (const item of modelItems) {
-    if (isExcludedMaintenanceItem(item)) continue;
+    const manualDueAtHours = manual?.item.id === item.id ? manual.dueAtHours : undefined;
+    if (isExcludedMaintenanceItem(item) && manualDueAtHours == null) continue;
     const interval = parseHoursInterval(item.recurrence_rules);
-    if (interval == null) continue;
+    if (interval == null && manualDueAtHours == null) continue;
     due.push({
+      manualDueAtHours,
       code: item.code,
       title: item.title,
-      intervalHours: interval,
+      intervalHours: interval ?? 0,
       downtimeDays: item.estimated_downtime_days != null && item.estimated_downtime_days > 0
         ? Math.round(item.estimated_downtime_days)
         : null,
@@ -163,7 +168,7 @@ export async function loadFleetMaintenanceContext(schoolId: string): Promise<Fle
       registration: aircraft.registration,
       type: aircraft.type,
       hours,
-      maintenanceDue: maintenanceDueList(programItemsByModel.get(aircraft.model_id) ?? []),
+      maintenanceDue: maintenanceDueList(programItemsByModel.get(aircraft.model_id) ?? [], aircraftOrders),
     };
   });
 

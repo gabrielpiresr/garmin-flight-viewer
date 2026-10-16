@@ -13,9 +13,12 @@
  * - Sem equipe no domingo: se a parada cair em sábado ou domingo, prolonga +1 dia.
  */
 
+import { crossedMaintenanceCandidates } from "./maintenanceProjectionDue.ts";
+
 export type MaintenanceRiskLevel = "low" | "medium" | "high";
 
 export type MaintenanceRiskItem = {
+  manualDueAtHours?: number;
   code: string;
   title: string;
   intervalHours: number;
@@ -55,11 +58,6 @@ export function effectiveDowntimeDays(hitDateIso: string, downtimeDays: number):
     if (weekday === 0 || weekday === 6) return base + 1;
   }
   return base;
-}
-
-function nextDueHours(currentHours: number, intervalHours: number): number {
-  if (!(intervalHours > 0)) return Number.POSITIVE_INFINITY;
-  return (Math.floor(currentHours / intervalHours) + 1) * intervalHours;
 }
 
 function riskRank(level: MaintenanceRiskLevel): number {
@@ -104,15 +102,16 @@ export function projectMaintenanceRisk(params: {
   const avg = params.avgHoursPerDay > 0 ? params.avgHoursPerDay : 0;
   const dayCount = Math.max(0, Math.floor(params.dayCount));
   const items = params.items
-    .filter((item) => item.intervalHours > 0 && (item.downtimeDays ?? 0) > 0)
+    .filter((item) => item.intervalHours > 0 || item.manualDueAtHours != null)
     .map((item) => ({
       ...item,
-      downtimeDays: Math.max(1, Math.round(item.downtimeDays as number)),
+      downtimeDays: (item.downtimeDays ?? 0) > 0 ? Math.max(1, Math.round(item.downtimeDays!)) : 0,
     }))
     .sort((a, b) => b.intervalHours - a.intervalHours);
 
   const byDate: Record<string, MaintenanceRiskDay> = {};
   let hours = Number.isFinite(params.currentHours) ? params.currentHours : 0;
+  let manualPerformed: boolean = false;
   let groundedRemaining = 0;
   let activeItem: (typeof items)[number] | null = null;
   let pendingPostMedium: { offset: number; item: (typeof items)[number] } | null = null;
@@ -161,12 +160,17 @@ export function projectMaintenanceRisk(params: {
     const hoursBefore = hours;
     hours = Number((hours + avg).toFixed(4));
 
-    const crossed = items
-      .map((item) => ({ item, due: nextDueHours(hoursBefore, item.intervalHours) }))
-      .filter(({ due }) => hoursBefore < due - 1e-9 && hours + 1e-9 >= due)
+    const crossed: { item: (typeof items)[number]; due: number } | undefined = crossedMaintenanceCandidates(items, hoursBefore, hours, manualPerformed)
+      .filter(({ item }) => item.downtimeDays > 0 || (item.manualDueAtHours != null && !manualPerformed))
       .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
 
     if (crossed) {
+      manualPerformed ||= crossed.item.manualDueAtHours != null;
+      if (crossed.item.downtimeDays <= 0) {
+        day.theoreticalHours = Number(hours.toFixed(1));
+        byDate[date] = day;
+        continue;
+      }
       day = mergeRisk(day, {
         risk: "medium",
         grounded: false,

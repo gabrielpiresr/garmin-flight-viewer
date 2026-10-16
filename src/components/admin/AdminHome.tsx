@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
-import { getPublicScheduleCached, invalidateFleetMaintenanceContext, loadFleetMaintenanceContextCached } from "../../lib/scheduleCache";
+import { getPublicScheduleCached, getFleetMaintenanceRevision, invalidateFleetMaintenanceContext, loadFleetMaintenanceContextCached } from "../../lib/scheduleCache";
 import { getAdminDashboardSummary, listAdminFlightReports } from "../../lib/adminUsersDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { programDueAfterManualCompletion, resolveManualMaintenanceCompletion, resolveManualNextMaintenance } from "../../lib/manualNextMaintenance";
+import { maintenanceProjectionCandidates } from "../../lib/maintenanceProjectionDue";
 import { type PublicScheduleFlight } from "../../lib/scheduleBookingDb";
 import { fetchPlaneItAircraftTotals, type PlaneItAircraftTotal } from "../../lib/planeItDb";
 import { createAircraftHorimeterCorrection } from "../../lib/aircraftHorimeterCorrectionsDb";
@@ -196,15 +198,17 @@ function nextDueHours(params: {
   currentHours: number | null;
   interval: number | null;
   encompassingOrders: MaintenanceWorkOrder[];
+  completedManualHours: number | null;
 }): { remaining: number | null; dueAt: number | null } {
   const { currentHours, interval, encompassingOrders } = params;
   if (interval == null || interval <= 0 || currentHours == null) return { remaining: null, dueAt: null };
   const latestPerformed = encompassingOrders
     .filter(isCompletedMaintenance)
     .sort((a, b) => b.aircraft_ttaf - a.aircraft_ttaf)[0];
-  const dueAt = latestPerformed
+  const programDueAt = latestPerformed
     ? latestPerformed.aircraft_ttaf + interval
-    : Math.ceil((currentHours - 0.0001) / interval) * interval;
+    : Math.ceil(((params.completedManualHours ?? currentHours) - 0.0001) / interval) * interval;
+  const dueAt = programDueAfterManualCompletion(programDueAt, interval, params.completedManualHours);
   return {
     remaining: Number((dueAt - currentHours).toFixed(1)),
     dueAt,
@@ -217,6 +221,20 @@ function buildNextMaintenance(params: {
   currentHours: number | null;
   scheduledFlights: ScheduledAircraftFlight[];
 }): UpcomingMaintenance | null {
+  const manual = resolveManualNextMaintenance(params.aircraftOrders, params.modelItems);
+  if (manual) {
+    const remainingHours = params.currentHours == null ? null : Number((manual.dueAtHours - params.currentHours).toFixed(1));
+    return {
+      id: manual.item.id,
+      code: manual.item.code,
+      title: `${manual.item.title} (manual)`,
+      intervalHours: parseRecurrenceRules(manual.item.recurrence_rules).hours,
+      dueAtHours: manual.dueAtHours,
+      remainingHours,
+      forecast: predictByScheduledFlights(remainingHours, params.scheduledFlights),
+    };
+  }
+  const manualCompletion = resolveManualMaintenanceCompletion(params.aircraftOrders, params.modelItems);
   const itemsWithRules = params.modelItems
     .filter((item) => !isExcludedMaintenanceItem(item))
     .map((item) => ({ item, rules: parseRecurrenceRules(item.recurrence_rules) }))
@@ -236,6 +254,7 @@ function buildNextMaintenance(params: {
         currentHours: params.currentHours,
         interval: rules.hours,
         encompassingOrders,
+        completedManualHours: manualCompletion?.aircraft_ttaf ?? null,
       });
       return {
         id: item.id,
@@ -340,6 +359,7 @@ function buildProjectionDays(params: {
   }
 
   let previous = params.baseHours?.hours ?? null;
+  let manualPerformed = false;
   return Array.from({ length: 7 }).map((_, index) => {
     const date = addDaysIso(params.today, index);
     const scheduledHours = Number((dayHours.get(date) ?? 0).toFixed(1));
@@ -347,12 +367,10 @@ function buildProjectionDays(params: {
     const projectedHours = previousHours == null ? null : Number((previousHours + scheduledHours).toFixed(1));
     const maintenance = projectedHours == null || previousHours == null
       ? null
-      : (params.baseHours?.maintenanceDue ?? [])
-        .filter((item) => {
-          const nextMultiple = (Math.floor(previousHours / item.intervalHours) + 1) * item.intervalHours;
-          return nextMultiple <= projectedHours + 1e-9;
-        })
-        .sort((a, b) => b.intervalHours - a.intervalHours)[0] ?? null;
+      : maintenanceProjectionCandidates(params.baseHours?.maintenanceDue ?? [], previousHours, manualPerformed)
+        .filter(({ due }) => due <= projectedHours + 1e-9)
+        .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0]?.item ?? null;
+    manualPerformed ||= maintenance?.manualDueAtHours != null;
     previous = projectedHours;
     return {
       date,
@@ -461,7 +479,7 @@ export function AdminHome(_props: Props) {
 
   const load = useCallback(async (force = false) => {
     const schoolId = user?.schoolId || "escola_principal";
-    const cacheKey = `${schoolId}|${monthPeriod.fromDate}|${monthPeriod.toDate}|${scheduleEnd}`;
+    const cacheKey = `${schoolId}|${monthPeriod.fromDate}|${monthPeriod.toDate}|${scheduleEnd}|${getFleetMaintenanceRevision()}`;
     const cached = adminHomeCache.get(cacheKey);
     if (!force && cached && Date.now() - cached.at < ADMIN_HOME_CACHE_TTL_MS) {
       setData(cached.primary);

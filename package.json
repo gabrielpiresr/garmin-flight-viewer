@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:maintenance": "node --test scripts/maintenance-loading.test.cjs scripts/manual-next-maintenance.test.cjs",
     "test:automations": "node --test functions/admin-users/src/studentAutomations.test.cjs",
     "test:birthday-digest": "node --test functions/admin-users/src/birthdayDigest.test.cjs",
     "test:flight-radar-watch": "node --test functions/admin-users/src/flightRadarWatch.test.cjs",

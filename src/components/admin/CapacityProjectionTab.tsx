@@ -74,6 +74,7 @@ function toAircraftInputs(ctx: FleetMaintenanceContext): CapacityAircraftInput[]
       active: aircraft.active,
       currentHours: base?.hours ?? null,
       maintenanceItems: (base?.maintenanceDue ?? []).map((item) => ({
+        manualDueAtHours: item.manualDueAtHours,
         code: item.code,
         title: item.title,
         intervalHours: item.intervalHours,

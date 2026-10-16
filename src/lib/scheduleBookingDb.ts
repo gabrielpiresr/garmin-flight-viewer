@@ -77,6 +77,7 @@ type FunctionResponse = {
       registration: string;
       hours: number;
       maintenanceDue: Array<{
+        manualDueAtHours?: number;
         code: string;
         title: string;
         intervalHours: number;

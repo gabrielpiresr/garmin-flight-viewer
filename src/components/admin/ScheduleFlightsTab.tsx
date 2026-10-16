@@ -33,6 +33,7 @@ import { ScheduleStudentSummaryPanel } from "./ScheduleStudentSummaryPanel";
 import { getStudentCreditStatement } from "../../lib/creditsDb";
 import { getFlightCreditSalesConfig } from "../../lib/flightCreditSalesDb";
 import { type AircraftBaseHours } from "../../lib/aircraftHoursProjection";
+import { crossedMaintenanceCandidates } from "../../lib/maintenanceProjectionDue";
 import {
   projectMaintenanceRisk,
   effectiveDowntimeDays,
@@ -4849,7 +4850,7 @@ export function ScheduleFlightsTab({
         const base = projectionHoursSource === "planeIt"
           ? planeItHoursByRegistration.get(reg) ?? null
           : info?.hours ?? null;
-        const dueList = (info?.maintenanceDue ?? []).filter((item) => item.intervalHours > 0);
+        const dueList = (info?.maintenanceDue ?? []).filter((item) => item.intervalHours > 0 || item.manualDueAtHours != null);
         const applyRiskWindows = scheduleRules.maintenanceAlertEnabled;
         const riskItems = applyRiskWindows
           ? dueList.filter((item) => (item.downtimeDays ?? 0) > 0)
@@ -4870,6 +4871,7 @@ export function ScheduleFlightsTab({
 
         const regEvents = events.filter((event) => event.reg === reg);
         let cursor = base;
+        let manualPerformed: boolean = false;
         let groundedRemaining = 0;
         let activeItem: (typeof riskItems)[number] | null = null;
         let pendingPostMedium: { offset: number; item: (typeof riskItems)[number] } | null = null;
@@ -4913,22 +4915,15 @@ export function ScheduleFlightsTab({
           const hoursBefore = cursor;
           cursor = Number((hoursBefore + dayAdd).toFixed(1));
 
-          const crossedRisk = riskItems
-            .map((item) => ({
-              item,
-              due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
-            }))
-            .filter(({ due }) => hoursBefore < due - 1e-9 && cursor + 1e-9 >= due)
+          const candidates: Array<{ item: (typeof dueList)[number]; due: number }> = crossedMaintenanceCandidates(dueList, hoursBefore, cursor, manualPerformed);
+          const crossedRisk = candidates
+            .filter(({ item }) => applyRiskWindows && (item.downtimeDays ?? 0) > 0)
             .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
 
-          const crossedAny = dueList
-            .map((item) => ({
-              item,
-              due: (Math.floor(hoursBefore / item.intervalHours) + 1) * item.intervalHours,
-            }))
-            .filter(({ due }) => hoursBefore < due - 1e-9 && cursor + 1e-9 >= due)
+          const crossedAny = candidates
             .sort((a, b) => b.item.intervalHours - a.item.intervalHours)[0];
 
+          manualPerformed ||= crossedAny?.item.manualDueAtHours != null;
           if (crossedRisk) {
             risk = "medium";
             maintenance = crossedRisk.item.code;
@@ -4992,6 +4987,7 @@ export function ScheduleFlightsTab({
           currentHours: base,
           avgHoursPerDay: avg,
           items: (info?.maintenanceDue ?? []).map((item) => ({
+            manualDueAtHours: item.manualDueAtHours,
             code: item.code,
             title: item.title,
             intervalHours: item.intervalHours,
@@ -5076,6 +5072,7 @@ export function ScheduleFlightsTab({
           currentHours: base,
           avgHoursPerDay: avg,
           items: (info?.maintenanceDue ?? []).map((item) => ({
+            manualDueAtHours: item.manualDueAtHours,
             code: item.code,
             title: item.title,
             intervalHours: item.intervalHours,
@@ -5133,9 +5130,11 @@ export function ScheduleFlightsTab({
           plannedRiskByIdent.set(ident, { riskByDate, codeByDate });
           continue;
         }
-        const riskItems = (info?.maintenanceDue ?? []).filter((item) => item.intervalHours > 0 && (item.downtimeDays ?? 0) > 0);
+        const dueItems = info?.maintenanceDue ?? [];
+        const riskItems = dueItems.filter((item) => (item.intervalHours > 0 || item.manualDueAtHours != null) && (item.downtimeDays ?? 0) > 0);
         const regEvents = plannedEvents.filter((event) => event.ident === ident);
         let cursor = base;
+        let manualPerformed: boolean = false;
         let groundedRemaining = 0;
         let activeItem: (typeof riskItems)[number] | null = null;
         let pendingPostMedium: { offset: number; item: (typeof riskItems)[number] } | null = null;
@@ -5165,9 +5164,9 @@ export function ScheduleFlightsTab({
             const before = cursor;
             cursor = Number((cursor + dayAdd).toFixed(1));
             let crossedRisk: { item: (typeof riskItems)[number] } | null = null;
-            for (const item of riskItems) {
-              const due = (Math.floor(before / item.intervalHours) + 1) * item.intervalHours;
-              if (before < due && cursor >= due) {
+            for (const { item } of crossedMaintenanceCandidates(dueItems, before, cursor, manualPerformed)) {
+              manualPerformed ||= item.manualDueAtHours != null;
+              if ((item.downtimeDays ?? 0) > 0) {
                 crossedRisk = { item };
                 break;
               }

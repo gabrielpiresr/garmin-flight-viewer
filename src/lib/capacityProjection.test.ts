@@ -107,6 +107,23 @@ test("oferta do avião separa semana e FDS e conta parada de manutenção", () =
   assert.ok(firstMonth.groundedWeekdayDays + firstMonth.groundedWeekendDays >= 2);
 });
 
+test("oferta prioriza a próxima manutenção manual e retoma o programa após a parada simulada", () => {
+  const aircraft: CapacityAircraftInput = {
+    id: "ac1", registration: "PT-ABC", type: "aviao", active: true, currentHours: 95,
+    maintenanceItems: [
+      { code: "50H", title: "Inspeção 50h", intervalHours: 50, downtimeDays: 1 },
+      { code: "100H", title: "Inspeção 100h", intervalHours: 100, downtimeDays: 2, manualDueAtHours: 115 },
+    ],
+    groundedNow: false, groundedReason: null, groundedDaysFromToday: 0,
+  };
+  const projection = projectAircraftSupply(aircraft, { ...settings, weekdayAvgHoursPerDay: 5, weekendAvgHoursPerDay: 5 }, "2026-10-05", 20);
+  assert.equal(projection.days[0].grounded, false);
+  assert.equal(projection.events[0].code, "100H");
+  assert.equal(projection.events[0].hitHours, 115);
+  assert.equal(projection.events[0].hitDate, "2026-10-08");
+  assert.ok(projection.events.some((event) => event.code === "50H" && event.hitHours === 150));
+});
+
 test("veredito NÃO quando FDS fica negativo e memória mostra a conta", () => {
   const result = buildCapacityProjection({
     today: "2026-08-20",

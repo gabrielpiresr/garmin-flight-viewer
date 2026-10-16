@@ -120,6 +120,11 @@ export function invalidateSagaScheduleEvents(): void {
 
 const fleetContextStore = new Map<string, CacheEntry<FleetMaintenanceContext>>();
 const fleetContextInflight = new Map<string, Promise<FleetMaintenanceContext>>();
+let fleetMaintenanceRevision = 0;
+
+export function getFleetMaintenanceRevision(): number {
+  return fleetMaintenanceRevision;
+}
 
 export function loadFleetMaintenanceContextCached(
   schoolId: string,
@@ -135,8 +140,10 @@ export function loadFleetMaintenanceContextCached(
 }
 
 export function invalidateFleetMaintenanceContext(): void {
+  fleetMaintenanceRevision += 1;
   fleetContextStore.clear();
   fleetContextInflight.clear();
+  invalidatePublicSchedule();
 }
 
 // ─── Semana de escala do admin/instrutor (getScheduleWeekData) ────────────────────

@@ -184,6 +184,9 @@ export type MaintenanceWorkOrder = {
   work_order_number: string;
   aircraft_id: string;
   maintenance_program_item_id: string | null;
+  manual_next_program_item_id?: string | null;
+  /** Absolute total aircraft hours at which the manual next maintenance is due. */
+  manual_next_due_hours?: number | null;
   work_order_type: MaintenanceWorkOrderType;
   status: MaintenanceWorkOrderStatus;
   opened_at: string;
