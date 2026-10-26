@@ -1,7 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { formatAnacExamDate, formatAnacExamFinalResult } from "../../lib/anacExamDisplay";
 import type { UserRole } from "../../lib/rbac";
 import { forceAdminUserAnacSync } from "../../lib/adminUsersDb";
+import { requestAdminUserSelection } from "../../lib/adminUserSelection";
+import { navigateToTab } from "../../lib/routedTabs";
+import { usePermissions } from "../../contexts/PermissionsContext";
 import {
   loadNextMissions,
   loadStudentFlightSummary,
@@ -11,6 +15,7 @@ import {
   type ScheduleStudentSummary,
 } from "../../lib/scheduleStudentSummary";
 import { useToast } from "../ui/ToastProvider";
+import { PaymentLinkModal } from "./CaktoReceiptsTab";
 
 function parseBrDate(value: string): Date | null {
   const match = String(value || "").match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -109,14 +114,17 @@ export function ScheduleStudentSummaryPanel({
   studentLabel,
   viewer,
   creditsSlot,
+  onOpenUser,
 }: {
   /** id do usuário local do aluno; null quando é evento SAGA sem cadastro local. */
   studentUserId: string | null;
   studentLabel?: string;
   viewer: { userId: string; role: UserRole };
-  creditsSlot?: ReactNode;
+  creditsSlot?: (onGeneratePaymentLink?: () => void) => ReactNode;
+  onOpenUser?: () => void;
 }) {
   const { showToast } = useToast();
+  const { canTab } = usePermissions();
   // Três blocos independentes: cada um carrega e é exibido assim que fica pronto
   // (o perfil é uma leitura só e aparece quase instantâneo; voos e próxima missão
   // não bloqueiam mais um ao outro nem à identificação).
@@ -128,6 +136,7 @@ export function ScheduleStudentSummaryPanel({
   const [trackName, setTrackName] = useState<string | null>(null);
   const [missionsLoading, setMissionsLoading] = useState(false);
   const [syncingAnac, setSyncingAnac] = useState(false);
+  const [showPaymentLink, setShowPaymentLink] = useState(false);
 
   async function reloadProfileCard(userId: string) {
     const data = await loadStudentProfileCard(userId);
@@ -136,6 +145,7 @@ export function ScheduleStudentSummaryPanel({
   }
 
   useEffect(() => {
+    setShowPaymentLink(false);
     if (!studentUserId) {
       setProfile(null);
       setFlightSummary(null);
@@ -225,12 +235,13 @@ export function ScheduleStudentSummaryPanel({
               : "Selecione um aluno para ver o resumo."}
           </p>
         </Card>
-        {creditsSlot}
+        {creditsSlot?.()}
       </div>
     );
   }
 
   const metrics = flightSummary?.metrics ?? null;
+  const medicalExpired = !!profile && isExpiredDate(profile.medical.validade);
 
   return (
     <div className="space-y-3">
@@ -244,7 +255,22 @@ export function ScheduleStudentSummaryPanel({
           </div>
         ) : (
           <>
-            <p className="text-sm font-semibold text-slate-100">{profile?.fullName || studentLabel || "—"}</p>
+            <div className="flex items-center gap-2">
+              <p className="min-w-0 flex-1 text-sm font-semibold text-slate-100">{profile?.fullName || studentLabel || "—"}</p>
+              {viewer.role === "admin" ? (
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshAnac()}
+                  disabled={syncingAnac}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-cyan-600 hover:text-cyan-200 disabled:opacity-50"
+                  title="Atualizar dados da ANAC"
+                  aria-label="Atualizar dados da ANAC"
+                >
+                  <span aria-hidden="true" className={syncingAnac ? "animate-spin" : ""}>↻</span>
+                  {syncingAnac ? "Atualizando…" : "ANAC"}
+                </button>
+              ) : null}
+            </div>
             <div className="mt-1 space-y-0.5 text-xs text-slate-400">
               <p>{profile?.email || "Sem email"}</p>
               <p>ANAC {profile?.anacCode || "—"}</p>
@@ -256,19 +282,43 @@ export function ScheduleStudentSummaryPanel({
                 {missionsLoading && !missions ? "…" : trackName || "—"}
               </p>
             </div>
-            <div className="mt-3 border-t border-slate-700/60 pt-2">
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            {canTab("users") ? (
+              <button
+                type="button"
+                onClick={() => {
+                  requestAdminUserSelection({
+                    userId: studentUserId,
+                    email: profile?.email || "",
+                    name: profile?.fullName || studentLabel || "",
+                  });
+                  onOpenUser?.();
+                  navigateToTab("/admin/usuarios");
+                }}
+                className="mt-3 w-full rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/20"
+              >
+                Abrir em usuários
+              </button>
+            ) : null}
+            <div className={medicalExpired
+              ? "mt-3 rounded-lg border-2 border-red-500 bg-red-500/20 p-3"
+              : "mt-3 border-t border-slate-700/60 pt-2"}>
+              <p className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${medicalExpired ? "text-red-200" : "text-slate-500"}`}>
                 Certificado médico
               </p>
+              {medicalExpired ? (
+                <p className="mb-2 rounded-md bg-red-600 px-2 py-1.5 text-center text-sm font-bold uppercase tracking-wide text-white">
+                  CMA vencido
+                </p>
+              ) : null}
               <div className="grid gap-1 text-xs text-slate-300">
                 <p>
                   <span className="text-slate-500">Classe:</span> {profile?.medical.classe || "—"}
                 </p>
                 <p>
                   <span className="text-slate-500">Validade:</span>{" "}
-                  <span className={profile && isExpiredDate(profile.medical.validade) ? "text-red-400" : ""}>
+                  <span className={medicalExpired ? "font-bold text-red-200" : ""}>
                     {profile?.medical.validade || "—"}
-                    {profile && isExpiredDate(profile.medical.validade) ? " · vencida" : ""}
+                    {medicalExpired ? " · vencida" : ""}
                   </span>
                 </p>
                 <p>
@@ -286,18 +336,6 @@ export function ScheduleStudentSummaryPanel({
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   Resultados teóricos ANAC
                 </p>
-                {viewer.role === "admin" ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleRefreshAnac()}
-                    disabled={syncingAnac}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700 text-sm text-slate-300 hover:border-cyan-600 hover:text-cyan-200 disabled:opacity-50"
-                    title="Atualizar ANAC"
-                    aria-label="Atualizar ANAC"
-                  >
-                    {syncingAnac ? "..." : "↻"}
-                  </button>
-                ) : null}
               </div>
               {profile?.examResults.filter(isDisplayableExamResult).length ? (
                 <div className="space-y-1 text-xs">
@@ -322,7 +360,7 @@ export function ScheduleStudentSummaryPanel({
       </Card>
 
       {/* 3. Créditos — logo abaixo dos dados do aluno (carrega independente do resumo). */}
-      {creditsSlot}
+      {creditsSlot?.(viewer.role === "admin" ? () => setShowPaymentLink(true) : undefined)}
 
       {flightsLoading && !flightSummary ? (
         <SummarySkeleton />
@@ -420,6 +458,18 @@ export function ScheduleStudentSummaryPanel({
           )}
         </Card>
       )}
+      {showPaymentLink && viewer.role === "admin" ? createPortal(
+        <PaymentLinkModal
+          key={studentUserId}
+          onClose={() => setShowPaymentLink(false)}
+          initialUser={{
+            userId: studentUserId,
+            name: profile?.fullName || studentLabel || "",
+            email: profile?.email || "",
+          }}
+        />,
+        document.body,
+      ) : null}
     </div>
   );
 }

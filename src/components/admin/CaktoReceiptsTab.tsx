@@ -38,20 +38,22 @@ export type PaymentLinkInitialCharge = {
   label?: string;
 };
 
+type PaymentLinkUser = Pick<AdminUserSummary, "userId" | "name" | "email">;
+
 export function PaymentLinkModal({
   onClose,
   initialUser = null,
   initialCharge = null,
 }: {
   onClose: () => void;
-  initialUser?: AdminUserSummary | null;
+  initialUser?: PaymentLinkUser | null;
   initialCharge?: PaymentLinkInitialCharge | null;
 }) {
   const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(initialUser);
+  const [selectedUser, setSelectedUser] = useState<PaymentLinkUser | null>(initialUser);
   const [packages, setPackages] = useState<FlightCreditPackage[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
   const [selectedPackageId, setSelectedPackageId] = useState(initialCharge?.packageId ?? "");

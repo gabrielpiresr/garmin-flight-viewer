@@ -6132,7 +6132,7 @@ export function ScheduleFlightsTab({
   }
 
   // Bloco de créditos do aluno — destaque no saldo atual e projeção após este voo.
-  function renderStudentCreditsBlock() {
+  function renderStudentCreditsBlock(onGeneratePaymentLink?: () => void) {
     if (!formDraft) return null;
 
     const scheduledLoading = scheduleRules.sagaOnlySchedule && formStudentScheduledFlights === null;
@@ -6199,6 +6199,15 @@ export function ScheduleFlightsTab({
             </div>
           </>
         )}
+        {onGeneratePaymentLink ? (
+          <button
+            type="button"
+            onClick={onGeneratePaymentLink}
+            className="mt-3 w-full rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+          >
+            Gerar link de pagamento
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -7539,6 +7548,27 @@ export function ScheduleFlightsTab({
               );
             })()}
 
+            {(() => {
+              const student = weekData.students.find((item) => item.userId === formDraft.studentId);
+              const instructor = formDraft.instructorId ? instructorById.get(formDraft.instructorId) : null;
+              const studentWeight = isNoStudentId(formDraft.studentId) ? 0 : student?.weightKg ?? null;
+              const instructorWeight = !formDraft.instructorId && !formDraft.instructorLabel ? 0 : instructor?.weightKg ?? null;
+              const totalWeight = studentWeight !== null && instructorWeight !== null ? studentWeight + instructorWeight : null;
+              const formatWeight = (weight: number | null) => weight === null
+                ? "Não informado"
+                : `${weight.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} kg`;
+              return (
+                <div className="mx-4 mb-3 rounded-xl border border-slate-700 bg-slate-800/50 p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Pesos dos ocupantes</p>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div><p className="text-slate-400">Aluno</p><p className="mt-1 font-semibold text-slate-100">{formatWeight(studentWeight)}</p></div>
+                    <div><p className="text-slate-400">INVA</p><p className="mt-1 font-semibold text-slate-100">{formatWeight(instructorWeight)}</p></div>
+                    <div><p className="text-sky-300">Total</p><p className="mt-1 font-bold text-sky-100">{totalWeight === null ? "Incompleto" : formatWeight(totalWeight)}</p></div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* No modo SAGA a disponibilidade operacional local não se aplica. */}
             {!selectedAircraftHasSupply && !scheduleRules.sagaOnlySchedule ? (
               <div className="mx-4 mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
@@ -7584,7 +7614,11 @@ export function ScheduleFlightsTab({
                   }
                   studentLabel={formDraft.studentLabel}
                   viewer={user ? { userId: user.id, role: user.role } : { userId: "", role: "admin" }}
-                  creditsSlot={renderStudentCreditsBlock()}
+                  creditsSlot={renderStudentCreditsBlock}
+                  onOpenUser={() => {
+                    setFormDraft(null);
+                    setPendingFlexibleShifts([]);
+                  }}
                 />
               </div>
             </div>
