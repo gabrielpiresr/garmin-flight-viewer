@@ -60,12 +60,14 @@ export const DEFAULT_ADMIN_PERMISSIONS: RolePermissions = {
  * Abas opcionais (dre, schedule) estão incluídas mas desativadas por padrão.
  */
 const ALL_INSTRUCTOR_TAB_KEYS: InstructorTabKey[] = [
+  "provas",
   "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "users", "fuelings", "profile", "help", "manual-instrutor",
   "dre", "schedule", "schedule.voos", "schedule.disponibilidades", "schedule.gerador", "contratos", "reports", "indique-ganhe", "solo-flight", "aisweb", "whatsapp", "album", "painel", "marketplace",
 ];
 
 /** Abas ativadas por padrão para o instrutor */
 const INSTRUCTOR_DEFAULT_ON_TABS: Set<InstructorTabKey> = new Set([
+  "provas",
   "home", "journey", "flights", "notices", "manuals", "manuais-internos", "maneuvers", "students", "fuelings", "profile", "help", "manual-instrutor", "reports", "solo-flight", "aisweb", "whatsapp", "album", "painel",
 ]);
 

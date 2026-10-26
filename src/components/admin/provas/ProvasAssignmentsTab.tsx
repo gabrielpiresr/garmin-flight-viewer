@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getAdminUserDetail, searchFlightPickerUsers } from "../../../lib/adminUsersDb";
+import { getAdminUserDetail } from "../../../lib/adminUsersDb";
 import { getPdfBrand } from "../../../lib/pdfBrand";
 import { listProvas } from "../../../lib/provasDb";
 import {
@@ -8,10 +8,9 @@ import {
   listProvaJourneyRequirements,
   updateProvaJourneyRequirement,
 } from "../../../lib/provasJourneyDb";
-import { getAdminProvaAttempt, listProvaAssignments, releaseProva } from "../../../lib/provasStudentDb";
+import { getAdminProvaAttempt, listProvaAssignments, listProvasForRelease, releaseProva, searchProvaStudents } from "../../../lib/provasStudentDb";
 import { listTrainingTracks } from "../../../lib/trainingTracksDb";
-import type { AdminUserSummary } from "../../../types/adminUsers";
-import type { ProvaAssignment, ProvaAttempt, ProvaBankCard, ProvaJourneyRequirement } from "../../../types/provas";
+import type { Prova, ProvaAssignment, ProvaAttempt, ProvaJourneyRequirement } from "../../../types/provas";
 import type { StudentIdentity } from "../../../types/schedule";
 import type { TrainingMission, TrainingStage, TrainingTrack } from "../../../types/trainingTrack";
 import { Skeleton } from "../../ui/Skeleton";
@@ -43,18 +42,6 @@ function prazoLabel(row: ProvaAssignment) {
   return formatWhen(row.expiresAt);
 }
 
-function toStudentIdentity(user: AdminUserSummary): StudentIdentity {
-  return {
-    userId: user.userId,
-    label: user.name || user.email || user.userId,
-    nickname: user.profile?.nickname || null,
-    email: user.email || null,
-    anacCode: user.profile?.anacCode || null,
-    weightKg: null,
-    heightCm: null,
-  };
-}
-
 function flattenTrackMissions(track: TrainingTrack | null): Array<{ stage: TrainingStage; mission: TrainingMission; index: number }> {
   if (!track) return [];
   let index = 0;
@@ -83,9 +70,9 @@ function requirementInputFromRow(row: ProvaJourneyRequirement) {
   };
 }
 
-export function ProvasAssignmentsTab() {
+export function ProvasAssignmentsTab({ instructorView = false }: { instructorView?: boolean }) {
   const { showToast } = useToast();
-  const [provas, setProvas] = useState<ProvaBankCard[]>([]);
+  const [provas, setProvas] = useState<Prova[]>([]);
   const [assignments, setAssignments] = useState<ProvaAssignment[]>([]);
   const [journeyRequirements, setJourneyRequirements] = useState<ProvaJourneyRequirement[]>([]);
   const [tracks, setTracks] = useState<TrainingTrack[]>([]);
@@ -123,11 +110,12 @@ export function ProvasAssignmentsTab() {
     setLoading(true);
     try {
       const [bank, rows, links, trackList] = await Promise.all([
-        listProvas(),
+        instructorView ? listProvasForRelease().then((data) => ({ data, error: null })) : listProvas(),
         listProvaAssignments(),
-        listProvaJourneyRequirements({ includeInactive: true }),
-        listTrainingTracks({ includeInactive: true }),
+        instructorView ? Promise.resolve({ data: [] }) : listProvaJourneyRequirements({ includeInactive: true }),
+        instructorView ? Promise.resolve({ data: [] }) : listTrainingTracks({ includeInactive: true }),
       ]);
+      if (bank.error) throw bank.error;
       setProvas(bank.data);
       setAssignments(rows);
       setJourneyRequirements(links.data);
@@ -136,7 +124,7 @@ export function ProvasAssignmentsTab() {
       showToast({ variant: "error", message: error instanceof Error ? error.message : "Falha ao carregar as liberações." });
     }
     setLoading(false);
-  }, [showToast]);
+  }, [instructorView, showToast]);
 
   useEffect(() => {
     void load();
@@ -166,9 +154,9 @@ export function ProvasAssignmentsTab() {
     let cancelled = false;
     const handle = window.setTimeout(() => {
       setPickerLoading(true);
-      void searchFlightPickerUsers({ role: "aluno", search: pickerQuery.trim(), limit: 20 })
-        .then((users) => {
-          if (!cancelled) setStudents(users.map(toStudentIdentity));
+      void searchProvaStudents(pickerQuery.trim())
+        .then((students) => {
+          if (!cancelled) setStudents(students);
         })
         .catch(() => {
           if (!cancelled) setStudents([]);
@@ -208,7 +196,9 @@ export function ProvasAssignmentsTab() {
     try {
       const [attempt, student, { downloadProvaAttemptPdf }] = await Promise.all([
         getAdminProvaAttempt(row.attemptId),
-        getAdminUserDetail(row.studentUserId),
+        instructorView
+          ? Promise.resolve({ userId: row.studentUserId, name: row.studentName, email: "", profile: null })
+          : getAdminUserDetail(row.studentUserId),
         import("../../../lib/provaAttemptPdf"),
       ]);
       const missingImages = await downloadProvaAttemptPdf({
@@ -406,7 +396,7 @@ export function ProvasAssignmentsTab() {
         )}
       </div>
 
-      <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      {!instructorView ? <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-sky-400/80">Jornada</p>
           <h3 className="text-lg font-semibold text-slate-100">Vincular prova à trilha</h3>
@@ -541,7 +531,7 @@ export function ProvasAssignmentsTab() {
             Nenhuma prova vinculada à jornada ainda.
           </p>
         )}
-      </div>
+      </div> : null}
 
       <div className="flex gap-2">
         <input

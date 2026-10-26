@@ -99,6 +99,7 @@ export type InstructorTabKey =
   | "schedule.disponibilidades"
   | "schedule.gerador"
   | "contratos"
+  | "provas"
   | "reports"
   | "indique-ganhe"
   | "solo-flight"
@@ -290,6 +291,7 @@ export const ADMIN_TAB_LABELS: Record<AdminTabKey, string> = {
 
 /** Labels descritivos para abas do portal instrutor */
 export const INSTRUCTOR_TAB_LABELS: Record<InstructorTabKey, string> = {
+  "provas": "Provas › Liberações",
   "home": "Home",
   "journey": "Jornada",
   "flights": "Meus Voos",

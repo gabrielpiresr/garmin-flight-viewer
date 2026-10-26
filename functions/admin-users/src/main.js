@@ -9655,6 +9655,18 @@ async function requireUsersListAccess(actorUserId) {
   throw Object.assign(new Error("Role sem permissao para acessar usuarios."), { status: 403 });
 }
 
+async function requireProvaAccess(actorUserId) {
+  const actor = await requireInstructorOrAdmin(actorUserId);
+  const profile = await getProfileByUserId(actorUserId);
+  const activeSlug = parseActiveRoleSlug(profile, parseAssignedRoleSlugs(profile));
+  if (activeSlug === "admin") return actor;
+  const role = await getTenantRoleDocBySlug(activeSlug);
+  if (role && parseRolePermissionsJson(role.permissions_json).tabs.provas === false) {
+    throw Object.assign(new Error("Role sem permissao para acessar provas."), { status: 403 });
+  }
+  return actor;
+}
+
 function contractPermissions(recipientUserId) {
   return [
     sdk.Permission.read(sdk.Role.users()),
@@ -13581,8 +13593,8 @@ async function listSummaries({ search = "", role = "", customRoleSlug = "", limi
   };
 }
 
-async function searchFlightPickerUsers(actorUserId, payload = {}) {
-  await requireAdmin(actorUserId);
+async function searchFlightPickerUsers(actorUserId, payload = {}, authorize = requireAdmin) {
+  await authorize(actorUserId);
   const role = cleanString(payload.role);
   if (!VALID_ROLES.has(role)) {
     throw Object.assign(new Error("Perfil invalido para busca."), { status: 400 });
@@ -39866,6 +39878,19 @@ module.exports = async ({ req, res, log, error }) => {
         DATABASE_ID,
         PROFILES_COLLECTION_ID,
         requireAdmin,
+        requireInstructorOrAdmin: requireProvaAccess,
+        searchStudents: async (userId, searchPayload) => {
+          const result = await searchFlightPickerUsers(userId, { ...searchPayload, role: "aluno" }, requireProvaAccess);
+          return result.users.map((student) => ({
+            userId: student.userId,
+            label: student.profile.fullName || student.name || student.email || student.userId,
+            nickname: student.profile.nickname || null,
+            email: student.email || null,
+            anacCode: student.profile.anacCode || null,
+            weightKg: null,
+            heightCm: null,
+          }));
+        },
         schoolId: SCHOOL_ID,
       });
       const result = await provaService.handle(action, payload, actorUserId);

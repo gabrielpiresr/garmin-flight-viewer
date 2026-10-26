@@ -33,6 +33,7 @@ const FlightReportsTab = lazy(() =>
   import("../admin/FlightReportsTab").then((module) => ({ default: module.FlightReportsTab })),
 );
 const AdminUsersTab = lazy(() => import("../admin/AdminUsersTab").then((module) => ({ default: module.AdminUsersTab })));
+const ProvasAssignmentsTab = lazy(() => import("../admin/provas/ProvasAssignmentsTab").then((module) => ({ default: module.ProvasAssignmentsTab })));
 const InstructorStudentsTab = lazy(() =>
   import("./InstructorStudentsTab").then((module) => ({ default: module.InstructorStudentsTab })),
 );
@@ -78,6 +79,7 @@ type InstructorSection =
   | "whatsapp"
   | "album"
   | "painel"
+  | "provas"
   | "marketplace";
 
 type NavItem = {
@@ -92,7 +94,7 @@ const INSTRUCTOR_MOBILE_PRIMARY_NAV: InstructorSection[] = ["home", "schedule", 
 const INSTRUCTOR_MOBILE_NAV_GROUPS: Array<{ title: string; ids: InstructorSection[] }> = [
   {
     title: "Operação",
-    ids: ["home", "schedule", "flights", "students", "solo-flight", "fuelings", "aisweb", "whatsapp", "album"],
+    ids: ["home", "schedule", "flights", "students", "provas", "solo-flight", "fuelings", "aisweb", "whatsapp", "album"],
   },
   {
     title: "Conteúdo",
@@ -105,6 +107,16 @@ const INSTRUCTOR_MOBILE_NAV_GROUPS: Array<{ title: string; ids: InstructorSectio
 ];
 
 const NAV_ITEMS: NavItem[] = [
+  {
+    id: "provas",
+    label: "Provas",
+    sublabel: "Liberações e resultados dos alunos",
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="h-5 w-5" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H6a2 2 0 00-2 2v13h16V7a2 2 0 00-2-2h-3M9 3h6v4H9V3zm-1 9h8m-8 4h5" />
+      </svg>
+    ),
+  },
   {
     id: "home",
     label: "Home",
@@ -354,6 +366,7 @@ const INSTRUCTOR_MENU_ORDER: readonly InstructorSection[] = [
   "album",
   "marketplace",
   "students",
+  "provas",
   "users",
   "maneuvers",
   "painel",
@@ -380,6 +393,7 @@ const SECTION_ROUTES = [
   { id: "maneuvers", path: "/instrutor/manobras" },
   { id: "painel", path: "/instrutor/painel" },
   { id: "students", path: "/instrutor/alunos" },
+  { id: "provas", path: "/instrutor/provas", aliases: ["/instrutor/provas/liberacoes"] },
   { id: "users", path: "/instrutor/usuarios" },
   { id: "profile", path: "/instrutor/perfil" },
   { id: "help", path: "/instrutor/ajuda" },
@@ -754,6 +768,11 @@ export function InstructorLayout() {
               <LazyTab>
                 <InstructorStudentsTab />
               </LazyTab>
+            </div>
+          )}
+          {openedSections.has("provas") && canTab("provas") && (
+            <div hidden={section !== "provas"}>
+              <LazyTab><ProvasAssignmentsTab instructorView /></LazyTab>
             </div>
           )}
           {section === "users" && (

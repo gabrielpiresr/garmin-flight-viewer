@@ -1,4 +1,6 @@
 const PROVA_ACTIONS = new Set([
+  "listProvasForRelease",
+  "searchProvaStudents",
   "releaseProva",
   "listMyProvas",
   "startProvaAttempt",
@@ -178,6 +180,8 @@ function createProvaService({
   DATABASE_ID,
   PROFILES_COLLECTION_ID,
   requireAdmin,
+  requireInstructorOrAdmin = requireAdmin,
+  searchStudents,
   schoolId = "escola_principal",
 }) {
   const COL = {
@@ -206,17 +210,14 @@ function createProvaService({
   }
 
   async function profileName(userId) {
-    if (!PROFILES_COLLECTION_ID || !userId) return "";
-    try {
-      const res = await databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
-        sdk.Query.equal("user_id", userId),
-        sdk.Query.limit(1),
-      ]);
-      const doc = res.documents[0];
-      return asString(doc?.full_name || doc?.nickname || doc?.email);
-    } catch {
-      return "";
-    }
+    const res = await databases.listDocuments(DATABASE_ID, PROFILES_COLLECTION_ID, [
+      sdk.Query.equal("user_id", userId),
+      sdk.Query.equal("school_id", schoolId),
+      sdk.Query.limit(1),
+    ]);
+    const doc = res.documents[0];
+    if (!doc) throw httpError(400, "Aluno não encontrado nesta escola.");
+    return asString(doc.full_name || doc.nickname || doc.email);
   }
 
   function attemptDeadline(fromDate, hours) {
@@ -301,8 +302,30 @@ function createProvaService({
     return { attempt: toAttempt(updatedAttempt, { includeResults: true }) };
   }
 
+  async function listProvasForRelease(actorUserId) {
+    await requireInstructorOrAdmin(actorUserId);
+    const docs = await listAll(COL.provas, [
+      sdk.Query.equal("school_id", schoolId),
+      sdk.Query.equal("status", "published"),
+      sdk.Query.orderDesc("$updatedAt"),
+    ]);
+    return {
+      provas: docs.map((doc) => ({
+        id: doc.$id,
+        schoolId: asString(doc.school_id),
+        title: asString(doc.title),
+        description: asString(doc.description),
+        passingPercent: asNumber(doc.passing_percent, 70),
+        timeLimitHours: asNumber(doc.time_limit_hours, 24),
+        status: "published",
+        createdAt: asString(doc.$createdAt),
+        updatedAt: asString(doc.$updatedAt),
+      })),
+    };
+  }
+
   async function releaseProva(actorUserId, payload) {
-    await requireAdmin(actorUserId);
+    await requireInstructorOrAdmin(actorUserId);
     const provaId = asString(payload.provaId);
     const studentUserIds = Array.isArray(payload.studentUserIds)
       ? [...new Set(payload.studentUserIds.map((id) => asString(id)).filter(Boolean))]
@@ -311,14 +334,18 @@ function createProvaService({
     if (!studentUserIds.length) throw httpError(400, "Selecione ao menos um aluno.");
 
     const prova = await databases.getDocument(DATABASE_ID, COL.provas, provaId);
+    if (asString(prova.school_id) !== schoolId) throw httpError(403, "Prova de outra escola.");
     if (asString(prova.status) !== "published") throw httpError(400, "Publique a prova antes de liberar.");
     const hours = Math.max(1, asNumber(prova.time_limit_hours, 24));
     const releasedAt = new Date();
     const releasedIso = releasedAt.toISOString();
 
+    const students = await Promise.all(studentUserIds.map(async (userId) => ({
+      userId,
+      name: await profileName(userId),
+    })));
     let released = 0;
-    for (const studentUserId of studentUserIds) {
-      const studentName = await profileName(studentUserId);
+    for (const { userId: studentUserId, name: studentName } of students) {
       await databases.createDocument(
         DATABASE_ID,
         COL.assignments,
@@ -479,7 +506,7 @@ function createProvaService({
   }
 
   async function listProvaAssignments(actorUserId, payload) {
-    await requireAdmin(actorUserId);
+    await requireInstructorOrAdmin(actorUserId);
     const queries = [sdk.Query.equal("school_id", schoolId), sdk.Query.orderDesc("released_at")];
     if (payload?.provaId) queries.push(sdk.Query.equal("prova_id", asString(payload.provaId)));
     const docs = await listAll(COL.assignments, queries);
@@ -501,8 +528,9 @@ function createProvaService({
   }
 
   async function getAdminProvaAttempt(actorUserId, payload) {
-    await requireAdmin(actorUserId);
+    await requireInstructorOrAdmin(actorUserId);
     const attempt = await databases.getDocument(DATABASE_ID, COL.attempts, asString(payload.attemptId));
+    if (asString(attempt.school_id) !== schoolId) throw httpError(403, "Tentativa de outra escola.");
     return { attempt: toAttempt(attempt, { includeResults: true }) };
   }
 
@@ -522,6 +550,11 @@ function createProvaService({
 
   async function handle(action, payload, actorUserId) {
     switch (action) {
+      case "searchProvaStudents":
+        await requireInstructorOrAdmin(actorUserId);
+        return { students: await searchStudents(actorUserId, payload) };
+      case "listProvasForRelease":
+        return listProvasForRelease(actorUserId);
       case "releaseProva":
         return releaseProva(actorUserId, payload);
       case "listMyProvas":

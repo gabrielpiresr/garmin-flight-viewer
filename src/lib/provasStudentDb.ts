@@ -1,5 +1,7 @@
 import { ADMIN_USERS_FUNCTION_ID, functions } from "./appwrite";
+import type { StudentIdentity } from "../types/schedule";
 import type {
+  Prova,
   ProvaAssignment,
   ProvaAttempt,
   ProvaQuestionResult,
@@ -8,6 +10,8 @@ import type {
 } from "../types/provas";
 
 type ProvasFnResponse = {
+  provas?: Prova[];
+  students?: StudentIdentity[];
   message?: string;
   assignments?: ProvaAssignment[];
   assignment?: ProvaAssignment;
@@ -74,6 +78,16 @@ export async function getProvaAttempt(attemptId: string): Promise<ProvaAttempt> 
   const response = await executeProvas({ action: "getProvaAttempt", attemptId });
   if (!response.attempt) throw new Error("Tentativa não encontrada.");
   return response.attempt;
+}
+
+export async function listProvasForRelease(): Promise<Prova[]> {
+  const response = await executeProvas({ action: "listProvasForRelease" });
+  return response.provas ?? [];
+}
+
+export async function searchProvaStudents(search: string): Promise<StudentIdentity[]> {
+  const response = await executeProvas({ action: "searchProvaStudents", search, limit: 20 });
+  return response.students ?? [];
 }
 
 export async function releaseProva(provaId: string, studentUserIds: string[]): Promise<number> {
